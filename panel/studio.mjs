@@ -145,6 +145,8 @@ function renderNode(item,node) {
   if(node.status==='awaiting-approval') html+='<div class="divider"></div><form id="approval" data-run="'+e(item.id)+'" data-node="'+e(node.id)+'"><label class="label" for="approval-note">이번 단계에서 허용할 작업</label><textarea class="field" id="approval-note" name="note" required maxlength="2000" placeholder="예: 내부 테스트 빌드와 업로드 전 자료를 준비해 주세요.">'+e(draft('approval','note'))+'</textarea><label class="checkbox"><input type="checkbox" name="actualSubmission" id="actual-submission" '+(draft('approval','actualSubmission',false)?'checked':'')+'>실제 Play 제출까지 명시적으로 승인</label><div id="submission-fields" '+(!draft('approval','actualSubmission',false)?'hidden':'')+'><p class="hint spacer">선택한 대상에 한해 기존 프로젝트 배포 도구를 에이전트가 사용합니다. 연결이나 권한이 없으면 중단합니다.</p><label class="label" for="submission-package">패키지 이름</label><input class="field mono" id="submission-package" name="packageName" value="'+e(draft('approval','packageName'))+'" placeholder="com.example.app"><div class="field-grid"><div><label class="label" for="submission-track">트랙</label><input class="field" id="submission-track" name="track" value="'+e(draft('approval','track',node.id==='internal'?'internal':'production'))+'"></div><div><label class="label" for="submission-version">버전 코드</label><input class="field" id="submission-version" type="number" min="1" name="versionCode" value="'+e(draft('approval','versionCode'))+'"></div></div></div><div class="actions"><button class="button primary" type="submit">범위 승인 후 계속</button></div><p class="hint">실제 제출을 선택하지 않으면 준비·검토만 수행합니다.</p></form>';
   if(node.launchUncertain) html+='<label class="checkbox"><input type="checkbox" id="retry-ack">Orca에서 이전 실행 상태를 확인했습니다.</label><p class="hint">응답을 못 받았더라도 에이전트는 시작됐을 수 있습니다. 중복 실행 여부를 먼저 확인하세요.</p>';
   if(node.pendingReceipt?.terminalId) html+='<div class="actions">'+button('이전 에이전트 확인','focus-terminal','data-terminal="'+e(node.pendingReceipt.terminalId)+'"','small')+'</div><label class="checkbox"><input type="checkbox" id="retry-stop">이전 에이전트가 실행 중이면 종료하고 다시 배정</label>';
+  const recoveryJob=(item.jobs??[]).find(job=>job.nonce===node.pendingReceipt?.nonce);
+  if(node.status==='blocked'&&node.pendingReceipt?.terminalId&&recoveryJob?.state==='awaiting-report'&&!recoveryJob.sessionId&&!recoveryJob.promptRecovery&&!['cancelled','completed'].includes(item.status)) html+='<div class="callout warning"><strong>터미널이 열렸지만 첫 지시가 전달되지 않았나요?</strong><br>이전 에이전트를 열어 작업을 시작하지 않은 빈 입력 화면인지 확인하세요. 확인한 경우 같은 터미널에 지시를 한 번 전달할 수 있습니다.</div><label class="checkbox"><input type="checkbox" id="delivery-ack">작업이 시작되지 않았고 입력이 비어 있음을 확인했습니다.</label><div class="actions">'+button('기존 터미널에 지시 전달','deliver-prompt','data-run="'+e(item.id)+'" data-node="'+e(node.id)+'"','small')+'</div>';
   if(['failed','blocked'].includes(node.status)&&!node.active&&!['cancelled','completed'].includes(item.status)) html+='<div class="actions">'+button('이 단계 다시 시도','retry-node','data-run="'+e(item.id)+'" data-node="'+e(node.id)+'"','primary')+'</div><p class="hint">정해진 시도 횟수 안에서만 다시 실행합니다. 한도를 넘으면 새 흐름을 만들어 범위를 조정해 주세요.</p>';
   return html+'</aside>';
 }
@@ -242,6 +244,11 @@ app.addEventListener('click',async event=>{
       const acknowledgeUncertain=app.querySelector('#retry-ack')?.checked===true;
       if(selected?.launchUncertain&&!acknowledgeUncertain)throw new Error('Orca에서 이전 실행 상태를 확인한 후 체크해 주세요.');
       await request('nodes.retry',{runId:target.dataset.run,nodeId:target.dataset.node,acknowledgeUncertain,stopPrevious:app.querySelector('#retry-stop')?.checked===true});
+    }
+    else if(action==='deliver-prompt') {
+      if(app.querySelector('#delivery-ack')?.checked!==true)throw new Error('이전 에이전트의 빈 입력 화면을 확인한 후 체크해 주세요.');
+      await request('nodes.deliverPrompt',{runId:target.dataset.run,nodeId:target.dataset.node,acknowledgeUnsent:true});
+      toast('기존 터미널에 지시를 전달했습니다. 일시정지 상태라면 재개를 눌러 주세요.');
     }
     else if(action==='archive-run'){await request('runs.archive',{runId:target.dataset.run});ui.runId=null;toast('기록을 보존하고 실행을 보관했습니다.');}
     else if(action==='open-workspace')await request('workspace.open',{workspaceId:target.dataset.workspace});

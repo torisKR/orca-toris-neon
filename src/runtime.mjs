@@ -30,6 +30,20 @@ const STAGE_BRIEFS = {
 };
 export const PROVIDERS = ['codex', 'claude', 'cursor', 'grok', 'antigravity', 'gemini', 'opencode', 'kiro'];
 const clone = (value) => structuredClone(value);
+// Orca rejects own properties whose value is undefined, although structuredClone
+// preserves them. Normalize only at persistence/RPC boundaries, just as a JSON
+// wire encoding does; reject values that could silently corrupt domain data.
+function jsonValue(value) {
+  const encoded = JSON.stringify(value, (_key, item) => {
+    if (['bigint', 'function', 'symbol'].includes(typeof item) ||
+        (typeof item === 'number' && !Number.isFinite(item))) {
+      throw runtimeError('invalid_params', '실행 데이터에 JSON으로 저장할 수 없는 값이 있습니다.');
+    }
+    return item;
+  });
+  if (encoded === undefined) throw runtimeError('invalid_params', '응답 데이터가 비어 있습니다.');
+  return JSON.parse(encoded);
+}
 const nowIso = (clock) => new Date(clock()).toISOString();
 
 export function runtimeError(code, message) {
@@ -239,8 +253,9 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     return run;
   };
   const persist = async () => {
-    await orca.storage.set(STORE_KEY, clone(state));
-    try { orca.panels?.post('state.changed', clone(state)); } catch {}
+    const snapshot = jsonValue(state);
+    await orca.storage.set(STORE_KEY, snapshot);
+    try { orca.panels?.post('state.changed', snapshot); } catch {}
     try {
       const working = state.runs.reduce((sum, run) => sum + activeJobs(run).filter((job) => job.state === 'running').length, 0);
       const blocked = state.runs.filter((run) => run.status === 'blocked').length;
@@ -350,6 +365,12 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       run = getRun(run.id);
       const job = (run.jobs || []).find((entry) => entry.nonce === originalJob.nonce);
       if (!job || !matchingNodeJob(run, job)) continue;
+      if (job.promptRecovery?.state === 'sending') {
+        job.promptRecovery.state = 'uncertain';
+        job.promptRecovery.reason = '재시작 전에 저장된 프롬프트 전달 요청의 결과를 확인할 수 없습니다. 자동 재전송하지 않습니다.';
+        markBlocked(run, job, job.promptRecovery.reason, true);
+        continue;
+      }
       if (!job.terminalId) {
         markBlocked(run, job, '실행 요청의 응답이 불명확합니다. Orca 터미널을 확인하기 전에는 다시 배정하지 않습니다.', true);
         continue;
@@ -530,7 +551,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
         ...(input.nodes ? { nodes: input.nodes } : {}), now: now()
       });
       run.isolate = input.isolate !== false;
-      run.baseBranch = input.baseBranch ? requireString(input.baseBranch, '기준 브랜치', 128) : undefined;
+      if (input.baseBranch) run.baseBranch = requireString(input.baseBranch, '기준 브랜치', 128);
       if (!run.isolate) {
         const workspace = await validateWorkspace(requireString(input.workspaceId, '기존 작업 공간', 256), projectId);
         run.workspaceId = workspace.id;
@@ -643,6 +664,87 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       appendEvent(run, '단계별 에이전트 배정을 변경했습니다.', now);
       replaceRun(run); await persist(); return clone(run);
     }),
+    'nodes.deliverPrompt': (input) => queue(async () => {
+      if (input.acknowledgeUnsent !== true) {
+        throw runtimeError('invalid_params', '해당 터미널이 비어 있고 아직 프롬프트가 전달되지 않았음을 직접 확인해야 합니다.');
+      }
+      let run = clone(getRun(input.runId));
+      if (['completed', 'cancelled'].includes(run.status)) throw runtimeError('conflict', '종료된 실행에는 프롬프트를 전달할 수 없습니다.');
+      const node = findNode(run, input.nodeId);
+      const job = (run.jobs || []).find((entry) => entry.nonce === node.pendingReceipt?.nonce);
+      if (node.status !== 'blocked' || node.active || !node.pendingReceipt || !job?.terminalId ||
+          job.state !== 'awaiting-report' || job.nodeId !== node.id || job.workspaceId !== run.workspaceId) {
+        throw runtimeError('conflict', '보고서 대기 중인 중단 단계의 기존 소유 터미널만 전달 복구할 수 있습니다.');
+      }
+      if (job.promptRecovery) throw runtimeError('conflict', '이 배정의 프롬프트 전달 복구는 이미 요청했습니다. 결과가 불명확해도 재전송하지 않습니다.');
+      if (job.sessionId || node.pendingReceipt.sessionId) throw runtimeError('conflict', '이미 에이전트 세션이 연결된 작업에는 프롬프트를 다시 전달할 수 없습니다.');
+      try {
+        await readReceipt(job.receiptPath, job.receiptDirectory);
+        throw runtimeError('conflict', '결과 보고서가 이미 있습니다. 전달 복구 대신 새로고침으로 결과를 확인하세요.');
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      const agents = await listAgents(run.workspaceId);
+      const agent = agents.find((entry) => entry.terminalId === job.terminalId);
+      if (!agent || agent.agent !== job.agent || !['done', 'waiting'].includes(agent.state) || agent.sessionId) {
+        throw runtimeError('conflict', '같은 종류의 빈 에이전트가 대기/종료 상태인 경우만 복구할 수 있습니다. 진행 중인 작업이나 기존 세션에는 전송하지 않습니다.');
+      }
+      let focused;
+      try { focused = await call('terminal.focus', { terminalId: job.terminalId }); }
+      catch (error) {
+        throw runtimeError('action_failed', '기존 에이전트 터미널을 활성 작업 공간으로 열지 못했습니다. 프롬프트를 전달하지 않았습니다: ' + safeError(error).message);
+      }
+      if (focused?.focused !== true) {
+        throw runtimeError('conflict', '다른 화면 이동으로 에이전트 터미널 활성화가 취소됐습니다. 프롬프트를 전달하지 않았으므로 터미널을 확인한 뒤 다시 시도하세요.');
+      }
+      if (job.phase === 'review' && (!job.sourceFingerprint || await fingerprint(run.workspacePath) !== job.sourceFingerprint)) {
+        throw runtimeError('conflict', '검토 배정 이후 소스가 변경됐습니다. 이전 검토 프롬프트를 전달하지 않았습니다.');
+      }
+      job.promptRecovery = {
+        state: 'sending', at: nowIso(now), terminalId: job.terminalId,
+        acknowledgedEmpty: true
+      };
+      job.state = 'running';
+      node.active = { ...node.pendingReceipt, ...job };
+      node.status = job.phase === 'review' ? 'review' : 'running';
+      node.failureReason = null;
+      node.runtimeMessage = '확인된 빈 터미널에 기존 배정 프롬프트를 한 번 전달합니다.';
+      delete node.pendingReceipt;
+      delete node.launchUncertain;
+      if (run.status !== 'paused') run.status = 'running';
+      appendEvent(run, node.title + '의 빈 터미널에 기존 프롬프트 전달 복구를 요청했습니다.', now, { nodeId: node.id, nonce: job.nonce, terminalId: job.terminalId });
+      replaceRun(run);
+      await persist(); // One durable recovery intent per nonce, before any send.
+      try {
+        const result = await call('terminal.sendText', {
+          terminalId: job.terminalId, text: buildNodePrompt(run, node, job), enter: true
+        });
+        if (result?.accepted !== true) {
+          job.promptRecovery.state = 'rejected';
+          job.promptRecovery.reason = 'Orca가 프롬프트 전달을 수락하지 않았습니다. 자동 또는 반복 전달하지 않습니다.';
+          run = markBlocked(run, job, job.promptRecovery.reason);
+          appendEvent(run, job.promptRecovery.reason, now, { nodeId: node.id });
+          await persist();
+          throw runtimeError('action_failed', job.promptRecovery.reason);
+        }
+        job.promptRecovery.state = 'sent';
+        job.promptRecovery.acceptedAt = nowIso(now);
+        node.runtimeMessage = '프롬프트 전달 요청이 수락됐습니다. 완료 보고서로 실제 결과를 확인합니다.';
+        appendEvent(run, node.title + '의 기존 배정 프롬프트 전달 요청이 수락됐습니다.', now, { nodeId: node.id, nonce: job.nonce });
+        await persist();
+        return clone(run);
+      } catch (error) {
+        // A definite host refusal was already recorded; all other failures have
+        // an uncertain delivery outcome and must never cause an automatic resend.
+        if (job.promptRecovery.state === 'rejected') throw error;
+        job.promptRecovery.state = 'uncertain';
+        job.promptRecovery.reason = '프롬프트 전달 결과가 불명확합니다: ' + safeError(error).message;
+        run = markBlocked(getRun(run.id), job, job.promptRecovery.reason, true);
+        appendEvent(run, '전달 복구 결과가 불명확해 자동 재전송을 중단했습니다.', now, { nodeId: node.id, nonce: job.nonce });
+        await persist();
+        throw runtimeError('action_failed', job.promptRecovery.reason);
+      }
+    }),
     'nodes.retry': (input) => queue(async () => {
       let run = clone(getRun(input.runId));
       const node = findNode(run, input.nodeId);
@@ -716,14 +818,16 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     });
     if (orca.events?.on) {
       subscriptions.push(orca.events.on('agent.status.changed', (event) => queue(async () => {
+        if (!event || typeof event.terminalId !== 'string' || !['working', 'blocked', 'waiting', 'done'].includes(event.state)) return;
         for (const original of [...state.runs]) {
           let run = getRun(original.id);
           if (run.status === 'cancelled') continue;
           const job = activeJobs(run).find((candidate) => candidate.terminalId && candidate.terminalId === event.terminalId);
           if (!job || !matchingNodeJob(run, job)) continue;
-          if (event.sessionId) job.sessionId = event.sessionId;
+          if (typeof event.sessionId === 'string' && event.sessionId) job.sessionId = event.sessionId;
           job.agentState = event.state;
-          job.agentOutcome = event.mainAgent?.outcome;
+          if (typeof event.mainAgent?.outcome === 'string') job.agentOutcome = event.mainAgent.outcome;
+          else delete job.agentOutcome;
           if (event.state === 'done') await acceptReceipt(run, job, event.mainAgent?.outcome);
         }
         await persist(); schedulePump();
@@ -732,7 +836,9 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     return api;
   }
   const api = {
-    initialize, handlers, getState: () => clone(state),
+    initialize,
+    handlers: Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, async (input) => jsonValue(await handler(input))])),
+    getState: () => jsonValue(state),
     drain: async () => { let pending; do { pending = chain; await pending; } while (pending !== chain); },
     dispose: () => { disposed = true; for (const subscription of subscriptions) subscription?.dispose?.(); },
     flush: () => chain

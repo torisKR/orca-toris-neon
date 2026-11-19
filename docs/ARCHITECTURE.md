@@ -96,6 +96,24 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 | 취소 | 취소 의도를 먼저 저장하고 해당 실행이 소유한 활성 터미널의 종료를 요청 |
 | 터미널 종료 실패 | 취소 자체와 별도로 실패 목록을 남김. 종료됐다고 가정하지 않음 |
 
+### 첫 지시 전달 복구
+
+정상 시작은 Orca 공식 `agent.launch`를 사용합니다. 호스트가 터미널을 생성했지만 첫 지시가 전달되지 않은 경우에만 명시적인 `nodes.deliverPrompt` 복구를 제공합니다. 사용자는 먼저 기존 터미널을 열어 **입력이 비어 있고 작업을 시작하지 않았음**을 확인하고 패널 확인란을 선택해야 합니다.
+
+```js
+await window.orca.plugin.request("nodes.deliverPrompt", {
+  runId,
+  nodeId,
+  acknowledgeUnsent: true
+});
+```
+
+복구는 차단된 단계에 `pendingReceipt`가 있고, 이 실행이 소유한 기존 터미널을 확인할 수 있으며, 배정 상태가 `awaiting-report`일 때만 가능합니다. 기존 세션 ID와 완료 보고 파일이 없어야 하고, 현재 터미널의 에이전트가 배정된 공급자와 일치하며 `done` 또는 `waiting` 상태인지 확인합니다. 검토 배정은 저장된 검토 소스 지문이 현재 소스와 일치해야 합니다.
+
+Orca의 `terminal.sendText`는 활성 작업 공간에서만 허용되므로, 먼저 공식 `terminal.focus`로 이 실행이 소유한 터미널을 열고 `focused === true`를 확인합니다. 포커스가 실패하면 지시를 보내거나 한 번의 전달 의도를 기록하지 않습니다.
+
+포커스 확인 후 전달 전에 `job.promptRecovery`에 의도를 저장해 같은 `nonce`에서는 한 번만 시도합니다. 기존 시도 번호와 `nonce`를 유지하며 새 에이전트를 생성하지 않습니다. 응답이 불명확하면 자동 재전송을 막습니다. 이 복구는 기존 일시정지를 해제하지 않으므로 실행 재개는 사용자가 별도로 선택합니다.
+
 ### 작업 공간 복구와 실행 보관
 
 작업 공간 생성 요청이 실제로 완료됐는지 알 수 없으면 `workspaceCreation.state=uncertain`으로 기록하고 자동 재생성을 막습니다. 사용자가 Orca에서 생성된 공간을 확인했다면 `runs.attachWorkspace({runId, workspaceId})`로 연결할 수 있습니다.
@@ -219,6 +237,7 @@ await window.orca.plugin.request("runs.approve", {
 | `runs.approve` | runId, nodeId, note, submission? | 준비 또는 특정 대상 제출 승인 |
 | `runs.updateAssignments` | runId, assignments | 변경 가능한 단계의 작업자·검토자 교체 |
 | `nodes.retry` | runId, nodeId, acknowledgeUncertain?, stopPrevious? | 명시적 재시도 |
+| `nodes.deliverPrompt` | runId, nodeId, acknowledgeUnsent: true | 시작되지 않은 빈 기존 터미널에 같은 배정 지시를 한 번 전달 |
 | `runs.cancel` | runId | 취소 및 소유한 터미널 종료 요청 |
 | `runs.attachWorkspace` | runId, workspaceId | 생성 결과가 불명확한 실행에 검증한 기존 공간 연결. 일시정지 유지 |
 | `runs.archive` | runId | 완료·취소 실행을 이력·결과 참조를 유지하며 보관 |

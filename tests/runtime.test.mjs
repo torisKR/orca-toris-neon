@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import { createRuntime, buildNodePrompt } from '../src/runtime.mjs';
 
 const NOW = Date.parse('2026-11-19T05:00:00Z');
+function assertJsonValue(value, location = '$') {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number') return assert.ok(Number.isFinite(value), location + ': finite number required');
+  assert.equal(typeof value, 'object', location + ': Orca requires JSON, including optional own properties');
+  for (const [key, item] of Object.entries(value)) assertJsonValue(item, location + '.' + key);
+}
 function harness(options = {}) {
   const store = options.store || new Map();
   const receipts = new Map();
@@ -19,6 +25,7 @@ function harness(options = {}) {
     storage: {
       get: async (key) => structuredClone(store.get(key) ?? null),
       set: async (key, value) => {
+        assertJsonValue(value);
         writes++;
         maxWrites = Math.max(maxWrites, writes);
         await Promise.resolve();
@@ -26,7 +33,7 @@ function harness(options = {}) {
         writes--;
       }
     },
-    panels: { post() {} },
+    panels: { post(_name, value) { assertJsonValue(value); } },
     events: { on: (name, callback) => {
       events.set(name, callback);
       return { dispose: () => events.delete(name) };
@@ -60,6 +67,7 @@ function harness(options = {}) {
           if (agent) agent.state = 'done';
           return { closed: true };
         }
+        if (name === 'terminal.sendText') return { accepted: true };
         if (name === 'terminal.focus') return { focused: true };
         if (name === 'workspace.open') return { opened: true };
         if (name === 'statusBar.update') return { ok: true };
@@ -473,6 +481,223 @@ test('a cleanly cancelled plan can be archived to free an active-run slot', asyn
   await h.runtime.handlers['runs.archive']({ runId });
   assert.equal(h.runtime.getState().runs.length, 0);
   assert.equal(h.runtime.getState().archivedRuns[0].status, 'cancelled');
+});
+
+test('native-style events with omitted optional fields stay valid at strict JSON boundaries', async () => {
+  const h = harness();
+  const created = await h.create();
+  assertJsonValue(created);
+  assert.equal(Object.hasOwn(created, 'baseBranch'), false);
+  await h.start();
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'working' });
+  await h.runtime.drain();
+  let snapshot = await h.runtime.handlers['state.get']();
+  assertJsonValue(snapshot);
+  assert.equal(Object.hasOwn(snapshot.runs[0].jobs[0], 'agentOutcome'), false);
+  assert.equal(snapshot.runs[0].jobs[0].terminalId, 't1');
+  assert.equal(h.store.get('toris-neon.runtime.v1').runs[0].jobs[0].terminalId, 't1');
+  // A done event is also valid without mainAgent, outcome or sessionId.
+  h.report();
+  h.agents[0].state = 'done';
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'done' });
+  await h.runtime.drain();
+  snapshot = await h.runtime.handlers['state.get']();
+  assertJsonValue(snapshot);
+  assert.equal(snapshot.runs[0].jobs[0].state, 'complete');
+  assert.equal(h.currentJob().phase, 'review');
+  assert.equal(launchCalls(h).length, 2);
+});
+
+test('state RPC normalizes optional host metadata without dropping false, zero or null', async () => {
+  const h = harness({ host: async (name) => {
+    if (name === 'project.list') return { projects: [{ id: 'p1', name: undefined, hidden: false, count: 0, hostId: null }] };
+    if (name === 'workspace.readContext') return { workspaceId: undefined, branch: 'main', terminals: [{ id: 't0', title: undefined }] };
+  } });
+  await h.runtime.initialize();
+  const snapshot = await h.runtime.handlers['state.get']();
+  assertJsonValue(snapshot);
+  assert.deepEqual(snapshot.projects, [{ id: 'p1', hidden: false, count: 0, hostId: null }]);
+  assert.deepEqual(snapshot.context, { branch: 'main', terminals: [{ id: 't0' }] });
+});
+
+test('malformed status events cannot poison ownership or trigger duplicate launches', async () => {
+  const h = harness();
+  await h.create(); await h.start();
+  const before = h.runtime.getState();
+  await h.events.get('agent.status.changed')({ terminalId: 't1' });
+  await h.runtime.drain();
+  assert.deepEqual(h.runtime.getState(), before);
+  assertJsonValue(await h.runtime.handlers['state.get']());
+  assert.equal(launchCalls(h).length, 1);
+});
+
+async function makeUnsentPrompt(h, phase = 'work') {
+  await h.create(); await h.start();
+  if (phase === 'review') { h.report(); await h.done(); }
+  await h.runtime.handlers['runs.pause']({ runId: h.getRun().id });
+  const job = h.currentJob();
+  const agent = h.agents.find((entry) => entry.terminalId === job.terminalId);
+  agent.state = 'waiting';
+  delete agent.sessionId;
+  await h.events.get('agent.status.changed')({ terminalId: job.terminalId, state: 'done' });
+  await h.runtime.drain();
+  return job;
+}
+const sendCalls = (h) => h.calls.filter((call) => call.name === 'terminal.sendText');
+
+test('explicit unsent-prompt recovery focuses, persists intent, then reuses the same nonce and terminal', async () => {
+  let focusObserved = false;
+  const h = harness({ host: async (name, input, { store }) => {
+    if (name === 'terminal.focus') {
+      const run = store.get('toris-neon.runtime.v1').runs[0];
+      assert.equal(run.jobs[0].promptRecovery, undefined, 'focus happens before reserving recovery');
+      assert.equal(run.jobs[0].terminalId, input.terminalId);
+      focusObserved = true;
+      return { focused: true };
+    }
+    if (name === 'terminal.sendText') {
+      assert.equal(focusObserved, true, 'focus must succeed before delivery');
+      const run = store.get('toris-neon.runtime.v1').runs[0];
+      const node = run.nodes[0];
+      const job = run.jobs.find((entry) => entry.nonce === node.active.nonce);
+      assert.equal(job.promptRecovery.state, 'sending');
+      assert.equal(job.terminalId, input.terminalId);
+      assert.equal(node.active.attempt, 1);
+      assert.equal(run.status, 'paused');
+      return { accepted: true };
+    }
+  } });
+  const original = await makeUnsentPrompt(h);
+  const result = await h.runtime.handlers['nodes.deliverPrompt']({
+    runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: true
+  });
+  assert.equal(result.status, 'paused');
+  assert.equal(result.nodes[0].active.nonce, original.nonce);
+  assert.equal(result.nodes[0].active.attempt, original.attempt);
+  assert.equal(result.nodes[0].attempts, 1);
+  assert.equal(result.nodes[0].active.terminalId, original.terminalId);
+  assert.equal(result.jobs[0].promptRecovery.state, 'sent');
+  assert.equal(sendCalls(h).length, 1);
+  assert.equal(launchCalls(h).length, 1);
+  assert.equal(sendCalls(h)[0].input.enter, true);
+  assert.match(sendCalls(h)[0].input.text, new RegExp(original.nonce));
+  await assert.rejects(h.runtime.handlers['nodes.deliverPrompt']({
+    runId: result.id, nodeId: 'build', acknowledgeUnsent: true
+  }));
+  assert.equal(sendCalls(h).length, 1);
+});
+
+test('failed or lost terminal focus does not reserve or send a recovery prompt', async () => {
+  for (const refusal of ['false', 'error']) {
+    const h = harness({ host: async (name) => {
+      if (name !== 'terminal.focus') return undefined;
+      if (refusal === 'error') throw Object.assign(new Error('desktop unavailable'), { code: 'unavailable' });
+      return { focused: false };
+    } });
+    await makeUnsentPrompt(h);
+    const before = h.runtime.getState();
+    await assert.rejects(h.runtime.handlers['nodes.deliverPrompt']({
+      runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: true
+    }), /프롬프트를 전달하지 않았/);
+    assert.equal(sendCalls(h).length, 0);
+    assert.equal(h.getRun().jobs[0].promptRecovery, undefined);
+    assert.deepEqual(h.runtime.getState(), before);
+  }
+});
+
+test('prompt recovery refuses missing acknowledgement, existing receipt/session and active/mismatched agents', async () => {
+  for (const condition of ['ack', 'receipt', 'job-session', 'agent-session', 'working', 'blocked', 'wrong-agent']) {
+    const h = harness();
+    const job = await makeUnsentPrompt(h);
+    if (condition === 'receipt') h.report(job);
+    if (condition === 'job-session') {
+      await h.events.get('agent.status.changed')({ terminalId: job.terminalId, state: 'done', sessionId: 'existing-session' });
+      await h.runtime.drain();
+    }
+    const agent = h.agents.find((entry) => entry.terminalId === job.terminalId);
+    if (condition === 'agent-session') agent.sessionId = 'already-started';
+    if (condition === 'working' || condition === 'blocked') agent.state = condition;
+    if (condition === 'wrong-agent') agent.agent = 'grok';
+    const before = h.runtime.getState();
+    await assert.rejects(h.runtime.handlers['nodes.deliverPrompt']({
+      runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: condition !== 'ack'
+    }), condition);
+    assert.equal(sendCalls(h).length, 0, condition);
+    assert.deepEqual(h.runtime.getState(), before, condition);
+  }
+});
+
+test('review prompt recovery refuses source drift without consuming the one-shot marker', async () => {
+  const h = harness();
+  const job = await makeUnsentPrompt(h, 'review');
+  h.source('source-v2');
+  const before = h.runtime.getState();
+  await assert.rejects(h.runtime.handlers['nodes.deliverPrompt']({
+    runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: true
+  }), /소스가 변경/);
+  assert.deepEqual(h.runtime.getState(), before);
+  assert.equal(sendCalls(h).length, 0);
+  assert.equal(h.getRun().jobs.find((entry) => entry.nonce === job.nonce).promptRecovery, undefined);
+});
+
+test('refused prompt delivery is recorded once and remains blocked without a repeated send', async () => {
+  const h = harness({ host: async (name) => name === 'terminal.sendText' ? { accepted: false } : undefined });
+  await makeUnsentPrompt(h);
+  const input = { runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: true };
+  await assert.rejects(h.runtime.handlers['nodes.deliverPrompt'](input), /수락하지/);
+  assert.equal(h.getRun().status, 'paused');
+  assert.equal(h.getRun().nodes[0].status, 'blocked');
+  assert.equal(h.getRun().jobs[0].promptRecovery.state, 'rejected');
+  await assert.rejects(h.runtime.handlers['nodes.deliverPrompt'](input), /이미 요청/);
+  assert.equal(sendCalls(h).length, 1);
+});
+
+test('ambiguous prompt delivery stays uncertain across restart and cannot resend', async () => {
+  const h = harness({ host: async (name) => {
+    if (name === 'terminal.sendText') throw Object.assign(new Error('response timeout'), { code: 'timeout' });
+  } });
+  await makeUnsentPrompt(h);
+  const input = { runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: true };
+  await assert.rejects(h.runtime.handlers['nodes.deliverPrompt'](input), /불명확/);
+  assert.equal(h.getRun().jobs[0].promptRecovery.state, 'uncertain');
+  assert.equal(h.getRun().nodes[0].status, 'blocked');
+  h.runtime.dispose();
+  const restarted = createRuntime({ orca: h.orca, now: () => NOW });
+  await restarted.initialize();
+  await restarted.drain();
+  await assert.rejects(restarted.handlers['nodes.deliverPrompt'](input));
+  assert.equal(sendCalls(h).length, 1);
+  assert.equal(launchCalls(h).length, 1);
+  assert.equal(restarted.getState().runs[0].jobs[0].promptRecovery.state, 'uncertain');
+  restarted.dispose();
+});
+
+test('a sending intent recovered after a worker restart becomes uncertain instead of resending', async () => {
+  const h = harness();
+  await makeUnsentPrompt(h);
+  const saved = h.store.get('toris-neon.runtime.v1');
+  const run = saved.runs[0];
+  const node = run.nodes[0];
+  const job = run.jobs[0];
+  job.promptRecovery = { state: 'sending', at: new Date(NOW).toISOString(), terminalId: job.terminalId, acknowledgedEmpty: true };
+  job.state = 'running';
+  node.active = { ...node.pendingReceipt, ...job };
+  node.status = 'running';
+  delete node.pendingReceipt;
+  h.store.set('toris-neon.runtime.v1', saved);
+  h.runtime.dispose();
+  const restarted = createRuntime({ orca: h.orca, now: () => NOW });
+  await restarted.initialize();
+  const recovered = restarted.getState().runs[0];
+  assert.equal(recovered.status, 'paused');
+  assert.equal(recovered.nodes[0].status, 'blocked');
+  assert.equal(recovered.jobs[0].promptRecovery.state, 'uncertain');
+  await assert.rejects(restarted.handlers['nodes.deliverPrompt']({
+    runId: recovered.id, nodeId: 'build', acknowledgeUnsent: true
+  }));
+  assert.equal(sendCalls(h).length, 0);
+  assert.equal(launchCalls(h).length, 1);
+  restarted.dispose();
 });
 
 test('the task prompt contains nonce-scoped receipt, prior feedback and local instructions', () => {

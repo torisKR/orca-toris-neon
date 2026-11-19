@@ -194,3 +194,59 @@ test('read-only Play check is forced only by the explicit check button',async()=
   assert.deepEqual(h.requests('play.check')[0].input,{accountId:'account-1',force:true});
   assert.equal(h.requests('play.account.save').length,0);
 });
+
+function recoveryState() {
+  const state=baseState(),run=workflow();
+  const node=run.nodes.find(item=>item.id==='build');
+  node.status='blocked';
+  node.pendingReceipt={nonce:'receipt-1',terminalId:'terminal-1'};
+  run.jobs=[{nonce:'receipt-1',terminalId:'terminal-1',nodeId:'build',state:'awaiting-report'}];
+  state.runs=[run];
+  return state;
+}
+
+test('prompt delivery without the empty-input acknowledgement makes no worker request',async()=>{
+  const h=await harness({state:recoveryState()});
+  await h.click({action:'open-run',run:'run-1'});
+  h.app.querySelector=selector=>selector==='#delivery-ack'?{checked:false}:null;
+  const before=h.calls.length;
+  const button=await h.click({action:'deliver-prompt',run:'run-1',node:'build'});
+  assert.equal(h.requests('nodes.deliverPrompt').length,0);
+  assert.equal(h.calls.length,before);
+  assert.match(h.toast.textContent,/빈 입력 화면.*체크/);
+  assert.equal(button.disabled,false);
+});
+
+test('acknowledged prompt delivery targets only the existing task and refreshes its state',async()=>{
+  const h=await harness({state:recoveryState()});
+  await h.click({action:'open-run',run:'run-1'});
+  h.app.querySelector=selector=>selector==='#delivery-ack'?{checked:true}:null;
+  const before=h.calls.length;
+  await h.click({action:'deliver-prompt',run:'run-1',node:'build'});
+  assert.deepEqual(h.calls.slice(before),[
+    {name:'nodes.deliverPrompt',input:{runId:'run-1',nodeId:'build',acknowledgeUnsent:true}},
+    {name:'state.get',input:{}},
+  ]);
+  assert.equal(h.requests('runs.start').length,0);
+  assert.equal(h.requests('agent.launch').length,0);
+  assert.match(h.toast.textContent,/기존 터미널/);
+});
+
+test('first-prompt recovery is offered only for a blocked reportless terminal without a previous session or send',async()=>{
+  const scenarios=[
+    ['eligible',()=>{},true],
+    ['working stage',run=>{run.nodes[1].status='running';},false],
+    ['missing terminal',run=>{delete run.nodes[1].pendingReceipt.terminalId;},false],
+    ['running job',run=>{run.jobs[0].state='running';},false],
+    ['known session',run=>{run.jobs[0].sessionId='session-1';},false],
+    ['previous recovery',run=>{run.jobs[0].promptRecovery={state:'sent'};},false],
+    ['cancelled run',run=>{run.status='cancelled';},false],
+    ['completed run',run=>{run.status='completed';},false],
+  ];
+  for(const [name,change,offered] of scenarios) {
+    const state=recoveryState();change(state.runs[0]);
+    const h=await harness({state});
+    await h.click({action:'open-run',run:'run-1'});
+    assert.equal(h.app.innerHTML.includes('data-action="deliver-prompt"'),offered,name);
+  }
+});
