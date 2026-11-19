@@ -226,7 +226,7 @@ export function buildNodePrompt(run, node, job) {
 
 export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(homedir(), '.toris-neon', 'runs'),
   fingerprint = sourceFingerprint, readReceipt = boundedJson, ensureDirectory,
-  validateArtifact, id = randomUUID } = {}) {
+  validateArtifact, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   if (!orca?.host || !orca?.storage) throw new Error('Orca host and storage are required.');
   let state = { version: 1, runs: [], archivedRuns: [] };
   let chain = Promise.resolve();
@@ -238,9 +238,9 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     chain = operation.catch(() => {});
     return operation;
   };
-  const call = (method, params = {}) => {
+  const call = (method, params = {}, options) => {
     if (orca.host.has && !orca.host.has(method)) throw runtimeError('unknown_method', '현재 Orca에서 ' + method + ' API를 지원하지 않습니다.');
-    return orca.host.call(method, params);
+    return orca.host.call(method, params, options);
   };
   const getRun = (runId) => {
     const run = state.runs.find((item) => item.id === runId);
@@ -696,6 +696,30 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       }
       if (focused?.focused !== true) {
         throw runtimeError('conflict', '다른 화면 이동으로 에이전트 터미널 활성화가 취소됐습니다. 프롬프트를 전달하지 않았으므로 터미널을 확인한 뒤 다시 시도하세요.');
+      }
+      // Native focus acknowledgement precedes propagation of the active worktree.
+      // Observe the official context for at most 2.5 seconds before reserving a send.
+      const focusAbort = new AbortController();
+      const focusTimeout = () => runtimeError('conflict', '2.5초 안에 에이전트 터미널이 활성 작업 공간에 반영되지 않았습니다. 프롬프트를 전달하지 않았으므로 화면을 확인한 뒤 다시 시도하세요.');
+      let focusTimer;
+      try {
+        const propagated = (async () => {
+          for (let attempt = 0; attempt <= 25; attempt++) {
+            if (focusAbort.signal.aborted) throw focusTimeout();
+            const context = await call('workspace.readContext', {}, { signal: focusAbort.signal });
+            if (context?.workspaceId === run.workspaceId &&
+                context.terminals?.some((terminal) => terminal.id === job.terminalId)) return;
+            if (attempt < 25) await sleep(100);
+          }
+          throw focusTimeout();
+        })();
+        const timedOut = new Promise((_, reject) => {
+          focusTimer = setTimeout(() => { reject(focusTimeout()); focusAbort.abort(); }, 2500);
+        });
+        await Promise.race([propagated, timedOut]);
+      } finally {
+        clearTimeout(focusTimer);
+        focusAbort.abort();
       }
       if (job.phase === 'review' && (!job.sourceFingerprint || await fingerprint(run.workspacePath) !== job.sourceFingerprint)) {
         throw runtimeError('conflict', '검토 배정 이후 소스가 변경됐습니다. 이전 검토 프롬프트를 전달하지 않았습니다.');

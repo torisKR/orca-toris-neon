@@ -18,6 +18,7 @@ function harness(options = {}) {
   const workspaces = [];
   let sequence = 0;
   let terminalSequence = 0;
+  let focusedTerminalId = null;
   let source = 'source-v1';
   let writes = 0;
   let maxWrites = 0;
@@ -45,11 +46,14 @@ function harness(options = {}) {
         calls.push({ name, input: structuredClone(input) });
         if (options.host) {
           const result = await options.host(name, input, { calls, store, agents, workspaces });
-          if (result !== undefined) return result;
+          if (result !== undefined) {
+            if (name === 'terminal.focus' && result?.focused === true) focusedTerminalId = input.terminalId;
+            return result;
+          }
         }
         if (name === 'project.list') return { projects: [{ id: 'p1', name: 'App', kind: 'git', hostId: 'local', path: '/repo' }] };
         if (name === 'workspace.list') return { workspaces };
-        if (name === 'workspace.readContext') return null;
+        if (name === 'workspace.readContext') return focusedTerminalId ? { workspaceId: 'w1', branch: 'main', displayName: 'Test', terminals: [{ id: focusedTerminalId }] } : null;
         if (name === 'workspace.create') {
           workspaces.push({ id: 'w1', name: input.name, projectId: 'p1', kind: 'worktree', hostId: 'local', path: '/repo/worktree' });
           return { workspaceId: 'w1' };
@@ -68,7 +72,7 @@ function harness(options = {}) {
           return { closed: true };
         }
         if (name === 'terminal.sendText') return { accepted: true };
-        if (name === 'terminal.focus') return { focused: true };
+        if (name === 'terminal.focus') { focusedTerminalId = input.terminalId; return { focused: true }; }
         if (name === 'workspace.open') return { opened: true };
         if (name === 'statusBar.update') return { ok: true };
         throw new Error('Unexpected host API: ' + name);
@@ -76,7 +80,7 @@ function harness(options = {}) {
     }
   };
   const runtime = createRuntime({
-    orca, now: () => NOW, id: () => 'id-' + (++sequence),
+    orca, now: () => NOW, id: () => 'id-' + (++sequence), sleep: options.sleep || (async () => {}),
     receiptRoot: '/private/neon/runs',
     fingerprint: async () => source,
     ensureDirectory: async () => {},
@@ -603,6 +607,56 @@ test('failed or lost terminal focus does not reserve or send a recovery prompt',
     assert.equal(h.getRun().jobs[0].promptRecovery, undefined);
     assert.deepEqual(h.runtime.getState(), before);
   }
+});
+
+test('recovery waits for matching workspace and terminal context before reserving or sending', async () => {
+  let polls = 0;
+  const waits = [];
+  const h = harness({
+    sleep: async (ms) => { waits.push(ms); },
+    host: async (name, _input, { store }) => {
+      if (name === 'workspace.readContext') {
+        polls++;
+        assert.equal(store.get('toris-neon.runtime.v1').runs[0].jobs[0].promptRecovery, undefined);
+        if (polls === 1) return { workspaceId: 'other', terminals: [{ id: 't1' }] };
+        if (polls === 2) return { workspaceId: 'w1', terminals: [{ id: 'other-terminal' }] };
+        return { workspaceId: 'w1', terminals: [{ id: 't1' }] };
+      }
+      if (name === 'terminal.sendText') {
+        assert.equal(polls, 3);
+        assert.equal(store.get('toris-neon.runtime.v1').runs[0].jobs[0].promptRecovery.state, 'sending');
+        return { accepted: true };
+      }
+    }
+  });
+  await makeUnsentPrompt(h);
+  await h.runtime.handlers['nodes.deliverPrompt']({ runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: true });
+  assert.deepEqual(waits, [100, 100]);
+  assert.equal(sendCalls(h).length, 1);
+});
+
+test('focus propagation that never matches is bounded and leaves no recovery marker or send', async () => {
+  let polls = 0;
+  let waits = 0;
+  const h = harness({
+    sleep: async () => { waits++; },
+    host: async (name) => {
+      if (name === 'workspace.readContext') {
+        polls++;
+        return { workspaceId: 'other', terminals: [{ id: 't1' }] };
+      }
+    }
+  });
+  await makeUnsentPrompt(h);
+  const before = h.runtime.getState();
+  await assert.rejects(h.runtime.handlers['nodes.deliverPrompt']({
+    runId: h.getRun().id, nodeId: 'build', acknowledgeUnsent: true
+  }), /활성 작업 공간에 반영되지 않았/);
+  assert.equal(polls, 26);
+  assert.equal(waits, 25);
+  assert.equal(sendCalls(h).length, 0);
+  assert.equal(h.getRun().jobs[0].promptRecovery, undefined);
+  assert.deepEqual(h.runtime.getState(), before);
 });
 
 test('prompt recovery refuses missing acknowledgement, existing receipt/session and active/mismatched agents', async () => {
