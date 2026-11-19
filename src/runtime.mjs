@@ -107,12 +107,16 @@ export async function sourceFingerprint(workspacePath) {
     encoding: 'utf8', timeout: 20_000, maxBuffer: 8 * 1024 * 1024,
     windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
   })).stdout;
-  const [head, tracked, names, indexEntries] = await Promise.all([
+  // Settle all children before reporting failure so none outlive checkout inspection.
+  const reads = await Promise.allSettled([
     git(['rev-parse', 'HEAD']),
     git(['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--']),
     git(['ls-files', '--others', '--exclude-standard', '-z']),
     git(['ls-files', '--stage', '-z'])
   ]);
+  const failed = reads.find(result => result.status === 'rejected');
+  if (failed) throw failed.reason;
+  const [head, tracked, names, indexEntries] = reads.map(result => result.value);
   if (indexEntries.split('\0').some((entry) => /^(120000|160000) /.test(entry))) {
     throw runtimeError('not_permitted', '심볼릭 링크/서브모듈이 포함된 소스는 현재 검증 기준을 안전하게 확정할 수 없습니다. 일반 소스 파일로 구성된 작업 공간을 사용하세요.');
   }

@@ -35,7 +35,9 @@ const isLocal = hostId => !hostId || hostId === 'local';
 export async function fingerprint(directory) {
   try {
     const git = args => exec('git', ['-C', directory, ...args], { encoding:'utf8', timeout:15000, maxBuffer:8*1024*1024, windowsHide:true });
-    const [head, branch, status, diff, untracked, tracked] = await Promise.all([
+    // Wait for every Git child before returning, including on non-Git directories.
+    // Otherwise a rejected sibling can still hold the checkout open on Windows.
+    const reads = await Promise.allSettled([
       git(['rev-parse','HEAD']),
       git(['rev-parse','--abbrev-ref','HEAD']),
       git(['status','--porcelain=v1','--ignore-submodules=none','-z']),
@@ -43,6 +45,9 @@ export async function fingerprint(directory) {
       git(['ls-files','--others','--exclude-standard','-z']),
       git(['ls-files','--stage','-z'])
     ]);
+    const failed = reads.find(result => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    const [head, branch, status, diff, untracked, tracked] = reads.map(result => result.value);
     // Git records a link's target name, not its live target contents. Never call that fresh.
     if (tracked.stdout.split('\0').some(item => item.startsWith('120000 '))) return {available:false,reason:'추적 중인 심볼릭 링크 대상까지 검증하지 못해 신선도를 판단하지 않습니다.'};
     if (/^[+-]Subproject commit [a-f0-9]+-dirty$/m.test(diff.stdout)) return {available:false,reason:'수정된 서브모듈의 내부 내용을 확인하지 못해 검증 신선도를 판단하지 않습니다.'};
