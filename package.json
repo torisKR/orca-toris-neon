@@ -1,0 +1,20 @@
+{
+  "name": "orca-toris-neon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "앱 제작 그래프, 멀티 에이전트 수정 루프, Play Store 점검과 오늘 이어하기.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node tools/check.mjs",
+    "preview": "node tools/preview.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/torisKR/orca-toris-neon"
+  }
+}

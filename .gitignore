@@ -1,0 +1,14 @@
+node_modules/
+.orca/
+.DS_Store
+coverage/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+*service-account*.json
+*credentials*.json
+*.log

@@ -1,0 +1,117 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "toris-neon",
+  "name": "Toris Neon · App Studio",
+  "version": "0.1.0",
+  "description": "앱 제작 그래프, 멀티 에이전트 수정 루프, Play Store 점검과 오늘 이어하기.",
+  "engines": {
+    "orca": ">=1.4.260"
+  },
+  "pluginApi": 1,
+  "main": "src/worker.mjs",
+  "repository": "https://github.com/torisKR/orca-toris-neon",
+  "homepage": "https://github.com/torisKR/orca-toris-neon",
+  "license": "MIT",
+  "author": {
+    "name": "torisKR",
+    "url": "https://toris.kr"
+  },
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "workspace:create"
+    },
+    {
+      "kind": "agent:read"
+    },
+    {
+      "kind": "agent:launch"
+    },
+    {
+      "kind": "terminal:read"
+    },
+    {
+      "kind": "terminal:send"
+    },
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "secrets:own"
+    },
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "history:read"
+    },
+    {
+      "kind": "notifications:show"
+    }
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "studio",
+        "title": "Toris Neon",
+        "icon": "rocket",
+        "entry": "panel/index.html",
+        "ui": "html"
+      }
+    ],
+    "commands": [
+      {
+        "id": "neon.today",
+        "title": "Toris Neon: 오늘 이어하기"
+      },
+      {
+        "id": "neon.graph",
+        "title": "Toris Neon: Auto App 상태"
+      },
+      {
+        "id": "neon.play",
+        "title": "Toris Neon: Play Store 점검 상태"
+      }
+    ],
+    "events": [
+      {
+        "on": "agent.status.changed"
+      },
+      {
+        "on": "workspace.changed"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "pipeline",
+        "text": "Toris Neon",
+        "icon": "activity",
+        "tooltip": "앱 제작 흐름과 이어하기",
+        "command": "neon.today"
+      }
+    ],
+    "settings": [
+      {
+        "key": "worklogRoot",
+        "title": "작업 일지 폴더",
+        "description": "비어 있으면 ~/projects/toris-docs/journal/dev에서 오늘과 어제의 일지를 읽습니다. 일지는 수정하지 않습니다.",
+        "type": "string",
+        "default": "",
+        "maxLength": 2048
+      },
+      {
+        "key": "notifications",
+        "title": "작업 알림",
+        "description": "검토와 승인 대기 시 알림을 표시합니다.",
+        "type": "boolean",
+        "default": true
+      }
+    ]
+  }
+}
