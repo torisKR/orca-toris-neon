@@ -48,6 +48,7 @@ function host(options={}) {
   let clock = options.now ?? NOW;
   const state = options.state ?? {runs:[]};
   let getStateCalls = 0;
+  const getStateInputs = [];
   const orca = {
     storage: {
       async get(key) { return values.has(key) ? structuredClone(values.get(key)) : null; },
@@ -74,13 +75,13 @@ function host(options={}) {
   };
   const service = createTodayService({
     orca,
-    getState:()=>{getStateCalls++;return structuredClone(state);},
+    getState:input=>{getStateCalls++;getStateInputs.push(input);return structuredClone(state);},
     now:()=>clock,
-    inspect:async()=>structuredClone(current),
-    readLogs:async()=>structuredClone(options.logs??[]),
+    inspect:options.inspect ?? (async()=>structuredClone(current)),
+    readLogs:options.readLogs ?? (async()=>structuredClone(options.logs??[])),
   });
   return {
-    service,calls,values,orca,
+    service,calls,values,orca,getStateInputs,
     setClock:value=>{clock=value;},
     setCurrent:value=>{current=value;},
     setAgents:value=>{agents=value;},
@@ -296,4 +297,232 @@ test('invalid saves and unknown workspaces fail before storage or launch mutatio
   await assert.rejects(h.service.resume({workspaceId:row.id}),throwsCode('invalid_params'));
   assert.equal(h.stored(),undefined);
   assert.equal(h.called('agent.launch').length,0);
+});
+
+
+test('index flags which can hide modified tracked files cannot report a fresh verification', async t => {
+  const folder = await repository(t);
+  for (const flag of ['assume-unchanged','skip-worktree']) {
+    await git(folder,['update-index','--'+flag,'app.txt']);
+    const before = await fingerprint(folder);
+    await fs.writeFile(path.join(folder,'app.txt'),flag==='assume-unchanged'?'bravo\n':'delta\n');
+    const after = await fingerprint(folder);
+    assert.notEqual(verificationFreshness({verified:'tests passed',fingerprint:before},after),'fresh',flag);
+    await git(folder,['update-index','--no-'+flag,'app.txt']);
+  }
+});
+
+test('replacing a tracked regular file with a symlink does not verify its uninspected target', {skip:process.platform==='win32'}, async t => {
+  const folder = await repository(t);
+  const outside = await temporary(t);
+  await fs.writeFile(path.join(outside,'target.txt'),'alpha\n');
+  await fs.unlink(path.join(folder,'app.txt'));
+  await fs.symlink(path.join(outside,'target.txt'),path.join(folder,'app.txt'));
+  const first = await fingerprint(folder);
+  await fs.writeFile(path.join(outside,'target.txt'),'bravo\n');
+  const second = await fingerprint(folder);
+  assert.equal(first.available,false);
+  assert.equal(second.available,false);
+});
+
+function historicalNote(index, extra={}) {
+  return {id:'note-'+index,workspaceId:'workspace-'+index,projectName:'App '+index,state:'Saved '+index,next:'Continue '+index,verified:'tests passed',fingerprint:{available:true,hash:'one'},at:'2026-11-18T16:00:00Z',day:'2026-11-19',...extra};
+}
+
+test('snapshot pages every workspace, hashes only comparable visible notes, and bounds concurrent inspections', async () => {
+  const notes = Array.from({length:40},(_,i)=>historicalNote(i));
+  notes[37].verified='';
+  notes[36].fingerprint={available:false};
+  const workspaces = notes.map((note,i)=>({...row,id:note.workspaceId,path:'/virtual/'+(i===38?39:i)}));
+  const inspected=[];
+  let active=0, maximum=0;
+  const h = host({
+    workspaces,stored:{version:1,notes,resumes:[]},
+    inspect:async directory=>{
+      inspected.push(directory);
+      maximum=Math.max(maximum,++active);
+      await new Promise(resolve=>setImmediate(resolve));
+      active--;
+      return {available:true,hash:'one'};
+    }
+  });
+  const result = await h.service.snapshot({noteOffset:0,noteLimit:6});
+  assert.deepEqual(result.notes.map(note=>note.id),['note-39','note-38','note-37','note-36','note-35','note-34']);
+  assert.deepEqual(result.notesPage,{offset:0,limit:6,total:40,hasMore:true});
+  assert.deepEqual(inspected.sort(),['/virtual/34','/virtual/35','/virtual/39']);
+  assert.ok(maximum<=2);
+  assert.equal(result.notes[2].verificationFreshness,'unknown');
+  assert.equal(result.notes[3].verificationFreshness,'unknown');
+  assert.deepEqual(h.getStateInputs,[{view:'timeline'}]);
+  const last = await h.service.snapshot({noteOffset:36,noteLimit:6});
+  assert.equal(last.notes.length,4);
+  assert.equal(last.notesPage.hasMore,false);
+  assert.equal((await h.service.snapshot()).notes.length,40);
+  for (const input of [{noteOffset:-1},{noteOffset:1.5},{noteLimit:0},{noteLimit:101}]) {
+    await assert.rejects(h.service.snapshot(input),throwsCode('invalid_params'));
+  }
+});
+
+test('concurrent identical snapshots share in-flight IO without caching a subsequent freshness result', async () => {
+  let inspections=0;
+  let hash='one';
+  const h = host({stored:{version:1,notes:[historicalNote(1)],resumes:[]},inspect:async()=>{
+    inspections++;
+    await new Promise(resolve=>setImmediate(resolve));
+    return {available:true,hash};
+  }});
+  const first = await Promise.all([h.service.snapshot(),h.service.snapshot()]);
+  assert.equal(inspections,1);
+  assert.equal(h.getStateCalls(),1);
+  assert.equal(first[0].notes[0].verificationFreshness,'fresh');
+  hash='changed';
+  const next = await h.service.snapshot();
+  assert.equal(inspections,2);
+  assert.equal(next.notes[0].verificationFreshness,'stale');
+});
+
+test('event aggregation sorts instants across offsets and numeric timestamps, retaining epoch zero', async () => {
+  const h = host({state:{
+    runs:[{id:'active',goal:'Active',events:[
+      {id:'offset',at:'2026-11-19T08:00:00+09:00'},
+      {id:'utc',at:'2026-11-19T00:30:00Z'},
+      {id:'numeric',timestamp:Date.parse('2026-11-19T02:00:00Z')},
+      {id:'epoch',at:0},
+    ]}],
+    archivedRuns:[{id:'archived',goal:'Archived',events:[{id:'time',time:'2026-11-19T03:00:00Z'}]}],
+  }});
+  const today = await h.service.snapshot();
+  assert.deepEqual(today.todayEvents.map(event=>event.id),['time','numeric','utc','offset']);
+  assert.ok(today.todayEvents.every(event=>typeof event.at==='string'));
+  const epoch = await h.service.snapshot({date:'1970-01-01'});
+  assert.deepEqual(epoch.todayEvents.map(event=>event.id),['epoch']);
+});
+
+test('saving and resuming preserve history beyond former silent retention limits', async () => {
+  let inspections=0;
+  const h = host({
+    stored:{version:1,
+      notes:Array.from({length:1000},(_,i)=>historicalNote(i,{workspaceId:row.id})),
+      resumes:Array.from({length:300},(_,i)=>({id:'receipt-'+i,workspaceId:row.id,noteId:'note-'+i,sessionId:null,status:'uncertain'})),
+    },
+    inspect:async()=>{inspections++;return {available:true,hash:'one'};},
+  });
+  await h.service.save({...noteInput,verified:''});
+  assert.equal(h.stored().notes.length,1001);
+  assert.equal(h.stored().notes[0].id,'note-0');
+  assert.equal(inspections,0);
+  await h.service.resume({workspaceId:row.id});
+  assert.equal(h.stored().resumes.length,301);
+  assert.equal(h.stored().resumes[0].id,'receipt-0');
+});
+
+test('the same prior session cannot be resumed twice merely by saving a newer handoff', async () => {
+  const h = host({sessions:[{sessionId:'session-one',workspaceId:row.id,agent:'claude'}]});
+  await h.service.resume({workspaceId:row.id,sessionId:'session-one'});
+  h.setAgents([{terminalId:'terminal-resume',state:'working'}]);
+  await saveNote(h);
+  const again = await h.service.resume({workspaceId:row.id,sessionId:'session-one'});
+  assert.equal(again.reused,true);
+  assert.equal(h.called('agent.resume').length,1);
+  const uncertain = host({
+    sessions:[{sessionId:'session-one',workspaceId:row.id,agent:'claude'}],
+    handlers:{'agent.resume':async()=>{throw new Error('timeout');}},
+  });
+  await assert.rejects(uncertain.service.resume({workspaceId:row.id,sessionId:'session-one'}),throwsCode('launch_uncertain'));
+  await saveNote(uncertain);
+  await assert.rejects(uncertain.service.resume({workspaceId:row.id,sessionId:'session-one'}),throwsCode('launch_uncertain'));
+  assert.equal(uncertain.called('agent.resume').length,1);
+});
+
+test('worklogs include projects beyond 100 and expose preview omissions instead of silently hiding them', async t => {
+  const folder = await temporary(t);
+  const day = '2026-11-19';
+  for (let i=0;i<101;i++) {
+    const project=path.join(folder,'project-'+String(i).padStart(3,'0'));
+    await fs.mkdir(project);
+    await fs.writeFile(path.join(project,day+'.md'),'Work '+i);
+  }
+  await fs.mkdir(path.join(folder,'프로젝트'));
+  await fs.writeFile(path.join(folder,'프로젝트',day+'.md'),'한글 경로 기록');
+  await fs.mkdir(path.join(folder,'long-preview'));
+  await fs.writeFile(path.join(folder,'long-preview',day+'.md'),'a'.repeat(17000));
+  await fs.mkdir(path.join(folder,'oversized'));
+  await fs.writeFile(path.join(folder,'oversized',day+'.md'),'b'.repeat(129*1024));
+  const warnings=[];
+  const records = await readWorklogs(folder,[day],{onWarning:warning=>warnings.push(warning)});
+  assert.equal(records.length,103);
+  assert.ok(records.some(record=>record.project==='project-100'));
+  assert.ok(records.some(record=>record.project==='프로젝트'));
+  assert.equal(records.find(record=>record.project==='long-preview').truncated,true);
+  assert.ok(warnings.some(warning=>warning.includes('oversized')));
+  assert.ok(warnings.some(warning=>warning.includes('long-preview')));
+});
+
+test('session truncation and worklog IO failures are visible while other Today records remain available', async () => {
+  const h = host({
+    stored:{version:1,notes:[historicalNote(1)],resumes:[]},
+    handlers:{'agent.listSessions':async()=>({sessions:[],truncated:true})},
+    readLogs:async()=>{throw new Error('EACCES');},
+  });
+  const result = await h.service.snapshot();
+  assert.equal(result.notes.length,1);
+  assert.equal(result.sessionsTruncated,true);
+  assert.ok(result.warnings.some(warning=>warning.includes('세션') && warning.includes('80')));
+  assert.ok(result.warnings.some(warning=>warning.includes('일지')));
+});
+
+
+test('saving during an in-flight snapshot prevents newer requests from sharing its old handoff', async () => {
+  let entered, release;
+  const started = new Promise(resolve=>{entered=resolve;});
+  const gate = new Promise(resolve=>{release=resolve;});
+  const h = host({stored:{version:1,notes:[historicalNote(1)],resumes:[]},inspect:async()=>{
+    entered();
+    await gate;
+    return {available:true,hash:'one'};
+  }});
+  const old = h.service.snapshot();
+  await started;
+  const saved = await h.service.save({...noteInput,state:'new handoff',verified:''});
+  const fresh = h.service.snapshot();
+  release();
+  const [before,after] = await Promise.all([old,fresh]);
+  assert.equal(before.notes[0].id,'note-1');
+  assert.equal(after.notes[0].id,saved.id);
+  assert.equal(after.notes[0].state,'new handoff');
+  assert.equal(after.notes[0].verificationFreshness,'unknown');
+});
+
+test('remote workspaces cannot borrow a local fingerprint for the same pathname', async () => {
+  let inspections=0;
+  const h = host({
+    workspaces:[row,{...row,id:'workspace-2',hostId:'ssh:office'}],
+    stored:{version:1,notes:[historicalNote(1),historicalNote(2)],resumes:[]},
+    inspect:async()=>{inspections++;return {available:true,hash:'one'};},
+  });
+  const result = await h.service.snapshot();
+  assert.equal(inspections,1);
+  assert.equal(result.notes.find(note=>note.workspaceId==='workspace-1').verificationFreshness,'fresh');
+  assert.equal(result.notes.find(note=>note.workspaceId==='workspace-2').verificationFreshness,'unknown');
+});
+
+test('missing hashes and undated events stay unknown and explicitly retained', async () => {
+  assert.equal(verificationFreshness({verified:'passed',fingerprint:{available:true}},{available:true}),'unknown');
+  assert.equal(verificationFreshness({verified:'passed',fingerprint:{available:true,hash:''}},{available:true,hash:''}),'unknown');
+  const h = host({state:{runs:[{id:'run',events:[{id:'missing'},{id:'invalid',at:'not-a-date'}]}]}});
+  const result = await h.service.snapshot();
+  assert.deepEqual(result.undatedEvents.map(event=>event.id),['missing','invalid']);
+  assert.equal(result.todayEvents.length,0);
+  assert.ok(result.warnings.some(warning=>warning.includes('2건')));
+});
+
+test('simultaneous resume requests launch once and incomplete prior receipts stay blocked', async () => {
+  const h = host();
+  const note = await saveNote(h);
+  const results = await Promise.all([h.service.resume({workspaceId:row.id}),h.service.resume({workspaceId:row.id})]);
+  assert.equal(results[1].reused,true);
+  assert.equal(h.called('agent.launch').length,1);
+  const broken = host({stored:{version:1,notes:[note],resumes:[{workspaceId:row.id,noteId:note.id,sessionId:null,status:'started',terminalId:null}]}});
+  await assert.rejects(broken.service.resume({workspaceId:row.id}),throwsCode('launch_uncertain'));
+  assert.equal(broken.called('agent.launch').length,0);
 });

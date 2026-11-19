@@ -15,6 +15,7 @@ const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 const MAX_RUNS = 40;
 const MAX_ARCHIVED_RUNS = 200;
+const FAILED_AGENT_OUTCOMES = new Set(['failure', 'cancellation', 'superseded', 'interruption']);
 const STAGE_BRIEFS = {
   research: '목표 사용자, 문제, 경쟁 앱, 차별점, 수익화 가설과 근거를 조사하고 research.md를 작성하세요. 추정과 확인 사실을 구분하고 현재 정보에는 출처를 남기세요.',
   brief: '조사 결과로 MVP 요구사항, 사용자 여정, 기능별 수용 조건, 비기능 요구사항, 제외 범위를 확정한 brief.md를 작성하세요.',
@@ -45,6 +46,56 @@ function jsonValue(value) {
   return JSON.parse(encoded);
 }
 const nowIso = (clock) => new Date(clock()).toISOString();
+
+// Keep transport payloads small without changing the durable evidence record.
+function reportSummary(report) {
+  if (!report || typeof report !== 'object') return report;
+  const { evidence, ...summary } = report;
+  return { ...summary, evidenceCount: Array.isArray(evidence) ? evidence.length : 0 };
+}
+function nodeSummary(node) {
+  const { history, report, review, feedback, lastFailure, receipt, ...summary } = node;
+  return {
+    ...summary, report: reportSummary(report), review: reportSummary(review),
+    ...(feedback === undefined ? {} : { feedback: reportSummary(feedback) }),
+    ...(lastFailure === undefined ? {} : { lastFailure: reportSummary(lastFailure) }),
+    ...(receipt ? { receipt: {
+      path: receipt.path, at: receipt.at, phase: receipt.phase,
+      artifactCount: Array.isArray(receipt.artifacts) ? receipt.artifacts.length : 0
+    } } : {})
+  };
+}
+function runSummary(run) {
+  const { events, acceptedReports, nodes, jobs, ...summary } = run;
+  const current = new Set(nodes.flatMap(node => [node.active?.nonce, node.pendingReceipt?.nonce]).filter(Boolean));
+  return {
+    ...summary, nodes: nodes.map(nodeSummary),
+    jobs: (jobs || []).filter(job => current.has(job.nonce)),
+    nodeCount: nodes.length, passedCount: nodes.filter(node => node.status === 'passed').length
+  };
+}
+function archiveSummary(run) {
+  return {
+    id: run.id, goal: run.goal, status: run.status, projectId: run.projectId,
+    archivedAt: run.archivedAt, createdAt: run.createdAt, updatedAt: run.updatedAt,
+    nodeCount: run.nodes.length, passedCount: run.nodes.filter(node => node.status === 'passed').length
+  };
+}
+function timelineRun(run) {
+  return { id: run.id, goal: run.goal, projectId: run.projectId, updatedAt: run.updatedAt, events: run.events || [] };
+}
+function projectState(state, view = 'full') {
+  if (view === 'full') return state;
+  if (view === 'summary') return {
+    version: state.version, revision: state.revision, view,
+    runs: state.runs.map(runSummary), archivedRuns: state.archivedRuns.map(archiveSummary)
+  };
+  if (view === 'timeline') return {
+    version: state.version, revision: state.revision, view,
+    runs: state.runs.map(timelineRun), archivedRuns: state.archivedRuns.map(timelineRun)
+  };
+  throw runtimeError('invalid_params', '지원되지 않는 실행 조회 형식입니다.');
+}
 
 export function runtimeError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -126,12 +177,17 @@ export async function sourceFingerprint(workspacePath) {
     git(['rev-parse', 'HEAD']),
     git(['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--']),
     git(['ls-files', '--others', '--exclude-standard', '-z']),
-    git(['ls-files', '--stage', '-z'])
+    git(['ls-files', '--stage', '-v', '-z'])
   ]);
   const failed = reads.find(result => result.status === 'rejected');
   if (failed) throw failed.reason;
   const [head, tracked, names, indexEntries] = reads.map(result => result.value);
-  if (indexEntries.split('\0').some((entry) => /^(120000|160000) /.test(entry))) {
+  const entries = indexEntries.split('\0').filter(Boolean);
+  if (entries.some(entry => /^[a-zS] /.test(entry))) {
+    throw runtimeError('not_permitted', 'assume-unchanged/skip-worktree 파일은 실제 변경이 숨겨질 수 있어 검증 기준을 확정할 수 없습니다. Git 플래그를 해제하고 다시 검증하세요.');
+  }
+  if (entries.some(entry => /^\S (120000|160000) /.test(entry)) ||
+      /^(?:new file mode|new mode) 120000$/m.test(tracked)) {
     throw runtimeError('not_permitted', '심볼릭 링크/서브모듈이 포함된 소스는 현재 검증 기준을 안전하게 확정할 수 없습니다. 일반 소스 파일로 구성된 작업 공간을 사용하세요.');
   }
   const hash = createHash('sha256').update(head).update('\0').update(tracked).update('\0');
@@ -157,6 +213,11 @@ function findNode(run, id) {
   const node = run.nodes.find((item) => item.id === id);
   if (!node) throw runtimeError('invalid_params', '실행에 해당 단계가 없습니다.');
   return node;
+}
+function checkExpectedNonce(node, expectedNonce) {
+  if (expectedNonce !== undefined && expectedNonce !== (node.active?.nonce ?? node.pendingReceipt?.nonce)) {
+    throw runtimeError('stale_assignment', '확인한 배정이 이미 변경됐습니다. 현재 단계와 터미널을 다시 확인하세요.');
+  }
 }
 function activeJobs(run) {
   return (run.jobs || []).filter((job) => ['launching', 'running', 'awaiting-report', 'uncertain'].includes(job.state));
@@ -228,11 +289,13 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   fingerprint = sourceFingerprint, readReceipt = boundedJson, ensureDirectory,
   validateArtifact, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   if (!orca?.host || !orca?.storage) throw new Error('Orca host and storage are required.');
-  let state = { version: 1, runs: [], archivedRuns: [] };
+  let state = { version: 1, revision: 0, runs: [], archivedRuns: [] };
   let chain = Promise.resolve();
   let disposed = false;
   let pumpQueued = false;
   const subscriptions = [];
+  const catalog = new Map();
+  let lastStatusKey = null;
   const queue = (work) => {
     const operation = chain.then(work);
     chain = operation.catch(() => {});
@@ -241,6 +304,32 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   const call = (method, params = {}, options) => {
     if (orca.host.has && !orca.host.has(method)) throw runtimeError('unknown_method', '현재 Orca에서 ' + method + ' API를 지원하지 않습니다.');
     return orca.host.call(method, params, options);
+  };
+  // Coalesce concurrent UI reads. Safety checks and mutations always call the
+  // host directly; this cache is used only for the display catalog.
+  const catalogRead = (method, force = false) => {
+    const ttl = method === 'project.list' ? 5000 : method === 'workspace.list' ? 1500 : 250;
+    const cached = catalog.get(method);
+    if (cached?.pending) return cached.pending;
+    if (!force && cached && cached.expiresAt > now()) return Promise.resolve(cached.value);
+    const entry = {};
+    const pending = Promise.resolve().then(() => call(method, method === 'workspace.list' ? { includeStatus: true } : {}));
+    entry.pending = pending.then(value => {
+      if (catalog.get(method) === entry) {
+        entry.value = value;
+        entry.expiresAt = now() + ttl;
+        delete entry.pending;
+      }
+      return value;
+    }, error => {
+      if (catalog.get(method) === entry) catalog.delete(method);
+      throw error;
+    });
+    catalog.set(method, entry);
+    return entry.pending;
+  };
+  const invalidateCatalog = (...methods) => {
+    for (const method of methods) catalog.delete(method);
   };
   const getRun = (runId) => {
     const run = state.runs.find((item) => item.id === runId);
@@ -253,13 +342,18 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     return run;
   };
   const persist = async () => {
-    const snapshot = jsonValue(state);
+    const snapshot = jsonValue({ ...state, revision: state.revision + 1 });
     await orca.storage.set(STORE_KEY, snapshot);
-    try { orca.panels?.post('state.changed', snapshot); } catch {}
+    state.revision = snapshot.revision;
+    try { orca.panels?.post('state.changed', jsonValue(projectState(snapshot, 'summary'))); } catch {}
     try {
       const working = state.runs.reduce((sum, run) => sum + activeJobs(run).filter((job) => job.state === 'running').length, 0);
       const blocked = state.runs.filter((run) => run.status === 'blocked').length;
-      await call('statusBar.update', { id: 'pipeline', text: 'NEON · ' + working + ' 실행' + (blocked ? ' · ' + blocked + ' 확인' : ''), tone: blocked ? 'warning' : working ? 'accent' : 'neutral' });
+      const statusKey = working + ':' + blocked;
+      if (statusKey !== lastStatusKey) {
+        await call('statusBar.update', { id: 'pipeline', text: 'NEON · ' + working + ' 실행' + (blocked ? ' · ' + blocked + ' 확인' : ''), tone: blocked ? 'warning' : working ? 'accent' : 'neutral' });
+        lastStatusKey = statusKey;
+      }
     } catch {}
   };
   const markBlocked = (run, job, reason, uncertain = false) => {
@@ -303,7 +397,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       for (const field of ['runId', 'nodeId', 'nonce', 'phase', 'attempt']) {
         if (report?.[field] !== job[field]) throw runtimeError('invalid_params', '완료 보고서의 ' + field + ' 식별자가 현재 배정과 다릅니다.');
       }
-      if (['failure', 'cancellation', 'superseded', 'interruption'].includes(outcome) && report.outcome === 'passed') {
+      if (FAILED_AGENT_OUTCOMES.has(outcome) && report.outcome === 'passed') {
         throw runtimeError('invalid_params', '에이전트 종료 상태와 성공 보고서가 일치하지 않습니다.');
       }
       if (!Array.isArray(report.evidence) || report.evidence.length > 64) {
@@ -354,7 +448,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   };
   const listAgents = async (workspaceId) => (await call('agents.list', { workspaceId })).agents || [];
   const reconcile = async (run, explicit = false) => {
-    if (!run.workspaceId || !activeJobs(run).length) return run;
+    if (['cancelled', 'completed'].includes(run.status) || !run.workspaceId || !activeJobs(run).length) return run;
     let agents;
     try { agents = await listAgents(run.workspaceId); }
     catch (error) {
@@ -529,16 +623,23 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   };
 
   const handlers = {
-    'state.get': async () => {
-      await chain;
+    'state.get': async (input = {}) => {
+      // Read-only views must remain responsive while a serialized host launch is
+      // pending. Every visible launch intent has already been reserved in state.
       const names = ['project.list', 'workspace.list', 'workspace.readContext', 'agents.list'];
-      const results = await Promise.allSettled(names.map((name) => call(name, name === 'workspace.list' ? { includeStatus: true } : {})));
+      const results = await Promise.allSettled(names.map((name) => catalogRead(name, input.forceHost === true)));
       const value = (index, key, fallback) => results[index].status === 'fulfilled' ? (key ? results[index].value?.[key] ?? fallback : results[index].value) : fallback;
       return {
-        ...clone(state), projects: value(0, 'projects', []), workspaces: value(1, 'workspaces', []),
+        ...projectState(state, input.view), projects: value(0, 'projects', []), workspaces: value(1, 'workspaces', []),
         context: value(2, null, null), agents: value(3, 'agents', []), providers: PROVIDERS,
         warnings: results.flatMap((result, index) => result.status === 'rejected' ? [names[index] + ': ' + safeError(result.reason).message] : [])
       };
+    },
+    'runs.get': async (input = {}) => {
+      const run = state.runs.find(entry => entry.id === input.runId) ||
+        state.archivedRuns.find(entry => entry.id === input.runId);
+      if (!run) throw runtimeError('invalid_params', '실행을 찾을 수 없습니다.');
+      return run;
     },
     'runs.create': (input = {}) => queue(async () => {
       if (state.runs.length >= MAX_RUNS) throw runtimeError('too_large', '최대 40개 실행을 보관합니다. 기존 실행을 완료한 뒤 보관 정리를 진행하세요.');
@@ -623,7 +724,9 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       replaceRun(run); await persist(); schedulePump(); return clone(run);
     }),
     'runs.refresh': (input) => queue(async () => {
-      let run = await reconcile(getRun(input.runId), true);
+      const current = getRun(input.runId);
+      if (['cancelled', 'completed'].includes(current.status)) return clone(current);
+      let run = await reconcile(current, true);
       replaceRun(run); await persist(); schedulePump(); return clone(run);
     }),
     'runs.approve': (input) => queue(async () => {
@@ -671,6 +774,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       let run = clone(getRun(input.runId));
       if (['completed', 'cancelled'].includes(run.status)) throw runtimeError('conflict', '종료된 실행에는 프롬프트를 전달할 수 없습니다.');
       const node = findNode(run, input.nodeId);
+      checkExpectedNonce(node, input.expectedNonce);
       const job = (run.jobs || []).find((entry) => entry.nonce === node.pendingReceipt?.nonce);
       if (node.status !== 'blocked' || node.active || !node.pendingReceipt || !job?.terminalId ||
           job.state !== 'awaiting-report' || job.nodeId !== node.id || job.workspaceId !== run.workspaceId) {
@@ -772,17 +876,21 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     'nodes.retry': (input) => queue(async () => {
       let run = clone(getRun(input.runId));
       const node = findNode(run, input.nodeId);
+      checkExpectedNonce(node, input.expectedNonce);
       const previousJobs = activeJobs(run).filter((job) => job.nodeId === node.id);
       if (node.launchUncertain && input.acknowledgeUncertain !== true) {
         throw runtimeError('conflict', '이전 배정의 시작 여부가 불명확합니다. Orca 터미널을 확인한 뒤 acknowledgeUncertain=true로 명시적으로 재시도하세요.');
       }
       const candidate = retryNode(run, input.nodeId, { now: now() });
+      const agents = previousJobs.some((job) => job.terminalId) ? await listAgents(run.workspaceId) : [];
       for (const job of previousJobs) {
-        if (job.terminalId && ['running', 'uncertain'].includes(job.state)) {
-          const agents = await listAgents(run.workspaceId);
+        if (job.terminalId) {
           const running = agents.find((agent) => agent.terminalId === job.terminalId && agent.state !== 'done');
           if (running && input.stopPrevious !== true) throw runtimeError('conflict', '이전 에이전트가 아직 실행 중입니다. 먼저 종료하거나 stopPrevious=true로 재시도하세요.');
-          if (running) await call('terminal.close', { terminalId: job.terminalId });
+          if (running) {
+            const closed = await call('terminal.close', { terminalId: job.terminalId });
+            if (closed?.closed !== true) throw runtimeError('action_failed', '이전 에이전트 터미널의 종료를 확인하지 못했습니다. 재시도 작업을 시작하지 않았습니다.');
+          }
         }
         const previous = candidate.jobs.find((entry) => entry.nonce === job.nonce);
         if (previous) previous.state = 'superseded';
@@ -794,6 +902,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     }),
     'runs.cancel': (input) => queue(async () => {
       let run = getRun(input.runId);
+      if (run.status === 'completed' || (run.status === 'cancelled' && !activeJobs(run).length && !(run.stopFailures || []).length)) return clone(run);
       const owned = activeJobs(run).filter((job) => job.terminalId);
       run = cancelRun(run, { now: now(), reason: '사용자가 실행을 취소했습니다.' });
       run.stopFailures = [];
@@ -801,7 +910,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       await persist(); // Cancellation intent precedes terminal mutations.
       for (const job of owned) {
         try {
-          await call('terminal.close', { terminalId: job.terminalId });
+          const closed = await call('terminal.close', { terminalId: job.terminalId });
+          if (closed?.closed !== true) throw runtimeError('action_failed', '소유한 에이전트 터미널의 종료를 확인하지 못했습니다.');
           const saved = run.jobs.find((item) => item.nonce === job.nonce);
           if (saved) saved.state = 'cancelled';
         } catch (error) {
@@ -827,7 +937,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     const saved = await orca.storage.get(STORE_KEY);
     if (saved !== null && saved !== undefined) {
       if (saved.version !== 1 || !Array.isArray(saved.runs) || (saved.archivedRuns !== undefined && !Array.isArray(saved.archivedRuns))) throw runtimeError('invalid_params', '저장된 실행 데이터 형식이 지원되지 않습니다. 원본 데이터를 덮어쓰지 않았습니다.');
-      state = { ...clone(saved), archivedRuns: clone(saved.archivedRuns || []) };
+      if (saved.revision !== undefined && (!Number.isSafeInteger(saved.revision) || saved.revision < 0)) throw runtimeError('invalid_params', '저장된 실행 revision이 올바르지 않습니다. 원본 데이터를 덮어쓰지 않았습니다.');
+      state = { ...clone(saved), revision: saved.revision || 0, archivedRuns: clone(saved.archivedRuns || []) };
     }
     await queue(async () => {
       for (const entry of [...state.runs]) {
@@ -842,27 +953,43 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     });
     if (orca.events?.on) {
       subscriptions.push(orca.events.on('agent.status.changed', (event) => queue(async () => {
+        invalidateCatalog('agents.list', 'workspace.list', 'workspace.readContext');
         if (!event || typeof event.terminalId !== 'string' || !['working', 'blocked', 'waiting', 'done'].includes(event.state)) return;
+        let changed = false;
         for (const original of [...state.runs]) {
           let run = getRun(original.id);
-          if (run.status === 'cancelled') continue;
+          if (['cancelled', 'completed'].includes(run.status)) continue;
           const job = activeJobs(run).find((candidate) => candidate.terminalId && candidate.terminalId === event.terminalId);
           if (!job || !matchingNodeJob(run, job)) continue;
-          if (typeof event.sessionId === 'string' && event.sessionId) job.sessionId = event.sessionId;
+          const receivedAt = Number.isFinite(event.receivedAt) ? event.receivedAt
+            : Number.isFinite(event.mainAgent?.stateStartedAt) ? event.mainAgent.stateStartedAt : null;
+          if (receivedAt !== null && (receivedAt < Date.parse(job.startedAt) ||
+              receivedAt < (job.lastAgentEventAt ?? -Infinity))) continue;
+          const sessionId = typeof event.sessionId === 'string' && event.sessionId ? event.sessionId : job.sessionId;
+          const incomingOutcome = typeof event.mainAgent?.outcome === 'string' ? event.mainAgent.outcome : undefined;
+          // A missing or later inconclusive status cannot erase a known failed turn.
+          const outcome = FAILED_AGENT_OUTCOMES.has(job.agentOutcome) ? job.agentOutcome : incomingOutcome ?? job.agentOutcome;
+          const semanticChange = job.agentState !== event.state || job.sessionId !== sessionId || job.agentOutcome !== outcome;
+          if (receivedAt !== null) job.lastAgentEventAt = receivedAt;
+          if (!semanticChange) continue;
+          if (sessionId !== undefined) job.sessionId = sessionId;
           job.agentState = event.state;
-          if (typeof event.mainAgent?.outcome === 'string') job.agentOutcome = event.mainAgent.outcome;
-          else delete job.agentOutcome;
-          if (event.state === 'done') await acceptReceipt(run, job, event.mainAgent?.outcome);
+          if (outcome !== undefined) job.agentOutcome = outcome;
+          changed = true;
+          if (event.state === 'done') await acceptReceipt(run, job, job.agentOutcome);
         }
-        await persist(); schedulePump();
+        if (changed) { await persist(); schedulePump(); }
       }).catch((error) => orca.log?.('Toris Neon event: ' + safeError(error).message))));
+      subscriptions.push(orca.events.on('workspace.changed', () => {
+        invalidateCatalog('project.list', 'workspace.list', 'workspace.readContext', 'agents.list');
+      }));
     }
     return api;
   }
   const api = {
     initialize,
     handlers: Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, async (input) => jsonValue(await handler(input))])),
-    getState: () => jsonValue(state),
+    getState: (input = {}) => jsonValue(projectState(state, input.view)),
     drain: async () => { let pending; do { pending = chain; await pending; } while (pending !== chain); },
     dispose: () => { disposed = true; for (const subscription of subscriptions) subscription?.dispose?.(); },
     flush: () => chain

@@ -121,6 +121,7 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
   }
   const tokens = new Map();
   const checks = new Map();
+  const activeChecks = new Set();
   const cooldowns = new Map();
   let mutation = Promise.resolve();
   let activeRequests = 0;
@@ -132,12 +133,28 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
     return work;
   };
   const iso = () => new Date(now()).toISOString();
+  const isFresh = observedAt => {
+    const age = typeof observedAt === "string" ? now() - Date.parse(observedAt) : NaN;
+    return Number.isFinite(age) && age >= 0 && age < cacheTtlMs;
+  };
   async function protection() {
     try { const result = await secrets.protection(); return { status: result?.status === "os-keyring" ? "os-keyring" : "unavailable" }; }
     catch { return { status: "unavailable" }; }
   }
   async function requireProtection() {
     if ((await protection()).status !== "os-keyring") throw new PlayError("keyring_unavailable", "Protected OS keyring storage is unavailable. Unlock or configure the OS keyring before adding or using a Play account.");
+  }
+  async function readStoredCredential(id) {
+    try { return await secrets.get(secretKey(id)); }
+    catch { throw new PlayError("credential_unavailable", "The saved service account credential could not be unlocked."); }
+  }
+  async function restoreCredential(id, value) {
+    try {
+      if (value == null) await secrets.delete(secretKey(id));
+      else { await requireProtection(); await secrets.set(secretKey(id), value); }
+    } catch {
+      throw new PlayError("credential_update_uncertain", "Account settings could not be saved and credential recovery could not be confirmed. Check OS keyring access and save the intended credential again.");
+    }
   }
   async function loadAccounts() {
     let value;
@@ -159,8 +176,9 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
     catch { throw new PlayError("storage", "Play observations could not be saved."); }
   }
   function accountView(account, cache) {
-    const ageStale = observedAt => !observedAt || now() - Date.parse(observedAt) > cacheTtlMs;
-    const apps = (cache.apps ?? []).map(app => {
+    const ageStale = observedAt => !isFresh(observedAt);
+    const selected = new Set(account.packages);
+    const apps = (cache.apps ?? []).filter(app => !selected.size || selected.has(app.packageName)).map(app => {
       const tracks = account.tracks.map(track => {
         const saved = app.tracks?.find(item => item.track === track);
         return saved ? { ...saved, stale: Boolean(saved.stale || ageStale(saved.observedAt)) }
@@ -258,7 +276,9 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
   async function performCheck(accountId, force) {
     const account = await getAccount(accountId);
     const before = await loadCache(accountId);
-    if (!force && before.checkedAt && now() - Date.parse(before.checkedAt) < cacheTtlMs && !before.error) return accountView(account, before);
+    const cachedView = accountView(account, before);
+    if (!force && isFresh(before.checkedAt) && !before.error && !cachedView.discovery.stale && !cachedView.discovery.error &&
+        cachedView.apps.every(app => app.tracks.every(track => !track.stale && !track.error))) return cachedView;
     if ((cooldowns.get(accountId) ?? 0) > now()) return accountView(account, before);
     const at = iso();
     let bearer;
@@ -270,13 +290,13 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
       return accountView(account, failed);
     }
     let discovered = [], discovery = { observedAt: at, stale: false, error: null };
-    try { discovered = await discover(bearer); }
+    try { discovered = await discover(bearer); discovery.observedAt = iso(); }
     catch (error) {
       if (error.status === 401) tokens.delete(accountId);
       discovery = { observedAt: before.discovery?.observedAt ?? null, stale: true, error: publicError(error) };
       discovered = (before.apps ?? []).map(app => ({ packageName: app.packageName, name: app.name }));
-      if (error.retryAfterMs) {
-        cooldowns.set(accountId, now() + error.retryAfterMs);
+      if (error.status === 401 || error.retryAfterMs) {
+        if (error.retryAfterMs) cooldowns.set(accountId, Math.max(cooldowns.get(accountId) ?? 0, now() + error.retryAfterMs));
         const failed = staleCache(before, error, at);
         await storeCache(accountId, failed);
         return accountView(account, failed);
@@ -286,7 +306,7 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
     // Explicit package names are an allowlist; an empty list inspects every discovered app.
     const candidates = (account.packages.length ? account.packages.map(packageName => chosen.get(packageName) ?? { packageName, name: packageName })
       : [...chosen.values()]).slice(0, MAX_PACKAGES);
-    let cooldownError = null;
+    let stopError = null;
     const jobs = candidates.flatMap(app => account.tracks.map(track => ({ app, track })));
     const outcomes = new Array(jobs.length);
     let index = 0;
@@ -295,13 +315,13 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
         const slot = index++, { app, track } = jobs[slot];
         const old = before.apps?.find(item => item.packageName === app.packageName)?.tracks?.find(item => item.track === track);
         try {
-          if (cooldownError) throw cooldownError;
+          if (stopError) throw stopError;
           const response = await request(`${PUBLISHER_URL}/${encodeURIComponent(app.packageName)}/tracks/${encodeURIComponent(track)}/releases`, { headers: { authorization: `Bearer ${bearer}` } });
           if (response.releases !== undefined && !Array.isArray(response.releases)) throw new PlayError("invalid_response", "Google returned an invalid releases list.");
           outcomes[slot] = { track, releases: (response.releases ?? []).map(normalizeRelease), observedAt: iso(), attemptedAt: at, stale: false, error: null };
         } catch (error) {
-          if (error.status === 401) tokens.delete(accountId);
-          if (error.retryAfterMs) { cooldownError = error; cooldowns.set(accountId, now() + error.retryAfterMs); }
+          if (error.status === 401) { tokens.delete(accountId); stopError ??= error; }
+          if (error.retryAfterMs) { stopError = error; cooldowns.set(accountId, Math.max(cooldowns.get(accountId) ?? 0, now() + error.retryAfterMs)); }
           outcomes[slot] = { track, releases: old?.releases ?? [], observedAt: old?.observedAt ?? null, attemptedAt: at, stale: true, error: publicError(error) };
         }
       }
@@ -309,7 +329,7 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
     const apps = candidates.map((app, position) => ({ ...app, tracks: outcomes.slice(position * account.tracks.length, (position + 1) * account.tracks.length) }));
     const incomplete = discovery.error || apps.some(app => app.tracks.some(track => track.error));
     const after = { version: 1, attemptedAt: at, checkedAt: incomplete ? before.checkedAt ?? null : iso(),
-      discovery, apps, error: discovery.error ?? (cooldownError ? publicError(cooldownError) : incomplete ? { code: "partial", message: "Some tracks could not be checked. Their previous observations are shown as stale." } : null) };
+      discovery, apps, error: discovery.error ?? (stopError ? publicError(stopError) : incomplete ? { code: "partial", message: "Some tracks could not be checked. Their previous observations are shown as stale." } : null) };
     await storeCache(accountId, after);
     return accountView(account, after);
   }
@@ -325,7 +345,7 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
         if (input.id !== undefined && (typeof input.id !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(input.id))) throw new PlayError("invalid_input", "Choose a saved Play account.");
         const current = input.id ? accounts.find(account => account.id === input.id) : null;
         if (input.id && !current) throw new PlayError("not_found", "That Play account is not registered.");
-        if (current && checks.has(current.id)) throw new PlayError("busy", "Wait for this account's check to finish before editing it.");
+        if (current && activeChecks.has(current.id)) throw new PlayError("busy", "Wait for this account's check to finish before editing it.");
         const name = typeof input.name === "string" ? text(input.name, 80) : current?.name ?? "";
         if (!name) throw new PlayError("invalid_input", "Give this Play account a name.");
         const packages = inputs(input.packages, "packages", current?.packages ?? []);
@@ -352,42 +372,51 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
           key = parseCredential(raw);
         } else if (!current) throw new PlayError("invalid_credential", "Add the service account JSON for this new account.");
         const id = current?.id ?? randomUUID();
+        const previousKey = current && key ? await readStoredCredential(id) : null;
+        // Invalidate first: an observation write failure must not leave changed credentials/settings
+        // paired with an apparently fresh result from the previous configuration.
+        let cache = await loadCache(id);
+        if (current) cache = { ...cache, checkedAt: null, discovery: { ...(cache.discovery ?? {}), stale: true },
+          apps: (cache.apps ?? []).map(app => ({ ...app, tracks: (app.tracks ?? []).map(track => ({ ...track, stale: true })) })) };
+        await storeCache(id, cache);
         if (key) {
+          tokens.delete(id);
           try { await secrets.set(secretKey(id), JSON.stringify(key)); }
           catch { throw new PlayError("keyring_unavailable", "The service account could not be saved in the protected OS keyring."); }
-          tokens.delete(id);
         }
         const account = { id, name, packages, tracks, createdAt: current?.createdAt ?? iso(), updatedAt: iso() };
         if (current) accounts[accounts.findIndex(item => item.id === id)] = account; else accounts.push(account);
         try { await saveAccounts(accounts); }
         catch (error) {
-          if (!current && key) { try { await secrets.delete(secretKey(id)); } catch { /* No credential contents are exposed. */ } }
+          if (key) await restoreCredential(id, previousKey);
           throw error;
         }
-        // Credentials/package filters may have changed: keep prior observations visibly stale.
-        let cache = await loadCache(id);
-        if (current) cache = { ...cache, checkedAt: null, discovery: { ...(cache.discovery ?? {}), stale: true },
-          apps: (cache.apps ?? []).map(app => ({ ...app, tracks: (app.tracks ?? []).map(track => ({ ...track, stale: true })) })) };
-        await storeCache(id, cache);
-        cooldowns.delete(id);
         return accountView(account, cache);
       });
     },
     async removeAccount({ accountId } = {}) {
       return serialized(async () => {
         const account = await getAccount(accountId);
-        if (checks.has(account.id)) throw new PlayError("busy", "Wait for this account's check to finish before removing it.");
+        if (activeChecks.has(account.id)) throw new PlayError("busy", "Wait for this account's check to finish before removing it.");
+        await requireProtection();
+        const previousKey = await readStoredCredential(account.id);
+        tokens.delete(account.id);
         try { await secrets.delete(secretKey(account.id)); } catch { throw new PlayError("keyring_unavailable", "The saved credential could not be removed from the OS keyring."); }
-        await saveAccounts((await loadAccounts()).filter(item => item.id !== account.id));
+        try { await saveAccounts((await loadAccounts()).filter(item => item.id !== account.id)); }
+        catch (error) { await restoreCredential(account.id, previousKey); throw error; }
         await storeCache(account.id, { version: 1, apps: [] });
-        tokens.delete(account.id); cooldowns.delete(account.id);
+        cooldowns.delete(account.id);
         return { removed: account.id };
       });
     },
     async check({ accountId, force = false } = {}) {
       if (checks.has(accountId)) return checks.get(accountId);
-      // Wait for in-flight account edits; then publish the check before reading account metadata.
-      const work = mutation.then(() => performCheck(accountId, Boolean(force)));
+      // Earlier edits finish first. Only a check that has started can block a later edit.
+      const work = mutation.then(async () => {
+        activeChecks.add(accountId);
+        try { return await performCheck(accountId, Boolean(force)); }
+        finally { activeChecks.delete(accountId); }
+      });
       checks.set(accountId, work);
       try { return await work; } finally { checks.delete(accountId); }
     },

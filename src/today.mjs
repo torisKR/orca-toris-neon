@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 const exec = promisify(execFile);
 const STORE = 'neon.today.v1';
 const ZONE = 'Asia/Seoul';
+const KST_FORMATTER = new Intl.DateTimeFormat('en-CA', {timeZone:ZONE,year:'numeric',month:'2-digit',day:'2-digit'});
 const PROVIDERS = new Set(['codex','claude','cursor','grok','gemini','antigravity','opencode','opencode2','pi','kimi','kiro','hermes','copilot']);
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const iso = value => new Date(value).toISOString();
@@ -17,7 +18,8 @@ export function dayKey(value = Date.now(), timeZone = ZONE) {
   try {
     const date = new Date(value);
     if (!Number.isFinite(date.valueOf())) throw new Error('invalid date');
-    const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year:'numeric', month:'2-digit', day:'2-digit' }).formatToParts(date);
+    const formatter = timeZone === ZONE ? KST_FORMATTER : new Intl.DateTimeFormat('en-CA', {timeZone,year:'numeric',month:'2-digit',day:'2-digit'});
+    const parts = formatter.formatToParts(date);
     const part = type => parts.find(p => p.type === type)?.value;
     return part('year') + '-' + part('month') + '-' + part('day');
   } catch { throw fail('invalid_params','유효한 날짜와 시간대를 확인해 주세요.'); }
@@ -43,14 +45,17 @@ export async function fingerprint(directory) {
       git(['status','--porcelain=v1','--ignore-submodules=none','-z']),
       git(['diff','HEAD','--binary','--no-ext-diff','--no-textconv','--ignore-submodules=none','--']),
       git(['ls-files','--others','--exclude-standard','-z']),
-      git(['ls-files','--stage','-z'])
+      git(['ls-files','--stage','-v','-z'])
     ]);
     const failed = reads.find(result => result.status === 'rejected');
     if (failed) throw failed.reason;
     const [head, branch, status, diff, untracked, tracked] = reads.map(result => result.value);
-    // Git records a link's target name, not its live target contents. Never call that fresh.
-    if (tracked.stdout.split('\0').some(item => item.startsWith('120000 '))) return {available:false,reason:'추적 중인 심볼릭 링크 대상까지 검증하지 못해 신선도를 판단하지 않습니다.'};
-    if (/^[+-]Subproject commit [a-f0-9]+-dirty$/m.test(diff.stdout)) return {available:false,reason:'수정된 서브모듈의 내부 내용을 확인하지 못해 검증 신선도를 판단하지 않습니다.'};
+    const entries = tracked.stdout.split('\0').filter(Boolean);
+    // These index flags can hide edits from both status and diff.
+    if (entries.some(item => /^[a-zS] /.test(item))) return {available:false,reason:'assume-unchanged 또는 skip-worktree 파일의 내용을 Git이 생략하여 검증 신선도를 판단하지 않습니다.'};
+    // Check both the index and worktree type: a regular file can become an uncommitted link.
+    if (entries.some(item => /^\S 120000 /.test(item)) || /^(?:new file mode|new mode) 120000$/m.test(diff.stdout)) return {available:false,reason:'심볼릭 링크 대상까지 검증하지 못해 신선도를 판단하지 않습니다.'};
+    if (entries.some(item => /^\S 160000 /.test(item))) return {available:false,reason:'서브모듈 내부 파일까지 확인하지 못해 검증 신선도를 판단하지 않습니다.'};
     const files = untracked.stdout.split('\0').filter(Boolean).sort();
     if (files.length > 1000) return { available:false, reason:'미추적 파일이 1,000개를 넘어 검증 신선도를 판단하지 않습니다.' };
     const hash = createHash('sha256').update(head.stdout).update('\0').update(status.stdout).update('\0').update(diff.stdout);
@@ -79,7 +84,7 @@ export async function fingerprint(directory) {
 }
 
 export function verificationFreshness(note, current) {
-  if (!note?.verified || !note?.fingerprint?.available || !current?.available) return 'unknown';
+  if (typeof note?.verified !== 'string' || !note.verified.trim() || !note?.fingerprint?.available || !current?.available || typeof note.fingerprint.hash !== 'string' || !note.fingerprint.hash || typeof current.hash !== 'string' || !current.hash) return 'unknown';
   return note.fingerprint.hash === current.hash ? 'fresh' : 'stale';
 }
 
@@ -90,44 +95,99 @@ function redact(text) {
     .replace(/(authorization\s*:\s*bearer\s+)\S+/gi,'$1[숨김]');
 }
 
-/** Reads only the requested calendar days from the existing vault. Never writes a journal. */
-export async function readWorklogs(root, days) {
+async function mapLimited(items, concurrency, action) {
+  let cursor = 0;
+  const results = new Array(items.length);
+  const workers = Array.from({length:Math.min(concurrency,items.length)}, async()=>{
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await action(items[index],index);
+    }
+  });
+  // Drain every worker before allowing callers to dispose their resources.
+  const settled = await Promise.allSettled(workers);
+  const failure = settled.find(result=>result.status==='rejected');
+  if (failure) throw failure.reason;
+  return results;
+}
+
+/** Reads requested days only. Oversized, unsafe, or unreadable previews are reported via onWarning. */
+export async function readWorklogs(root, days, {onWarning=()=>{}}={}) {
   if (!Array.isArray(days) || days.length > 31) throw fail('invalid_params','조회할 날짜는 최대 31개 배열이어야 합니다.');
   const calendarDays = [...new Set(days)];
   calendarDays.forEach(previousDay);
-  const results = [];
+  if (!calendarDays.length) return [];
+  let resolved, projects;
   try {
-    const resolved = await fs.realpath(root);
-    const projects = (await fs.readdir(resolved, { withFileTypes:true }))
-      .filter(entry => entry.isDirectory() && /^[a-zA-Z0-9._-]+$/.test(entry.name) && !entry.name.startsWith('.'))
-      .slice(0,100);
-    for (const project of projects) for (const day of calendarDays) {
-      const candidate = path.join(resolved,project.name,day+'.md');
+    resolved = await fs.realpath(root);
+    projects = (await fs.readdir(resolved, {withFileTypes:true}))
+      .filter(entry=>entry.isDirectory() && !entry.name.startsWith('.'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') onWarning('작업 일지 폴더를 읽지 못했습니다. 경로와 읽기 권한을 확인해 주세요.');
+    return [];
+  }
+  const results = await mapLimited(projects,8,async project=>{
+    const records = [];
+    const directory = path.join(resolved,project.name);
+    try {
+      if (await fs.realpath(directory) !== directory) {
+        onWarning(project.name+': 다른 위치를 가리키는 작업 일지 폴더는 읽지 않았습니다.');
+        return records;
+      }
+    } catch {
+      onWarning(project.name+': 작업 일지 폴더를 읽지 못했습니다.');
+      return records;
+    }
+    for (const day of calendarDays) {
+      const label = project.name+'/'+day+'.md';
+      const candidate = path.join(directory,day+'.md');
       try {
         // An alias must not leak another project's journal under this project's name.
         const candidateStat = await fs.lstat(candidate);
-        if (candidateStat.isSymbolicLink()) continue;
+        if (candidateStat.isSymbolicLink() || !candidateStat.isFile()) {
+          onWarning(label+': 일반 파일이 아닌 작업 일지는 읽지 않았습니다.');
+          continue;
+        }
         const real = await fs.realpath(candidate);
-        if (!real.startsWith(resolved+path.sep)) continue;
-        const stat = await fs.lstat(real);
-        if (!stat.isFile() || stat.size > 128 * 1024) continue;
-        results.push({project:project.name,day,text:redact(await fs.readFile(real,'utf8')).slice(0,16000),sourcePath:real});
-      } catch (error) { if (error.code !== 'ENOENT') continue; }
+        if (!real.startsWith(directory+path.sep)) {
+          onWarning(label+': 프로젝트 밖 작업 일지는 읽지 않았습니다.');
+          continue;
+        }
+        if (candidateStat.size > 128*1024) {
+          onWarning(label+': 128 KiB를 넘어서 미리보기를 읽지 않았습니다. 원본 일지에서 확인해 주세요.');
+          continue;
+        }
+        const text = redact(await fs.readFile(real,'utf8'));
+        const truncated = text.length > 16000;
+        if (truncated) onWarning(label+': 긴 일지의 앞 16,000자만 표시합니다. 나머지는 원본 일지에서 확인해 주세요.');
+        records.push({project:project.name,day,text:text.slice(0,16000),sourcePath:real,truncated});
+      } catch (error) {
+        if (error.code !== 'ENOENT') onWarning(label+': 작업 일지를 읽지 못했습니다. 읽기 권한을 확인해 주세요.');
+      }
     }
-  } catch {}
-  return results.sort((a,b) => b.day.localeCompare(a.day) || a.project.localeCompare(b.project));
+    return records;
+  });
+  return results.flat().sort((a,b)=>b.day.localeCompare(a.day) || a.project.localeCompare(b.project));
 }
 
-function eventDay(event) {
+function normalizeEvent(event) {
   const value = event.at ?? event.timestamp ?? event.time;
-  if (!value) return null;
-  try { return dayKey(value); } catch { return null; }
+  if (value == null) return {...event,day:null};
+  const milliseconds = new Date(value).valueOf();
+  if (!Number.isFinite(milliseconds)) return {...event,day:null};
+  return {...event,at:iso(milliseconds),day:dayKey(milliseconds)};
 }
 
 export function createTodayService({orca,getState,now=Date.now,inspect=fingerprint,readLogs=readWorklogs}) {
   let tail = Promise.resolve();
+  const snapshots = new Map();
   const exclusive = action => {
-    const result = tail.then(action,action);
+    const invoke = async()=>{
+      snapshots.clear();
+      try { return await action(); }
+      finally { snapshots.clear(); }
+    };
+    const result = tail.then(invoke,invoke);
     tail = result.catch(()=>{});
     return result;
   };
@@ -146,57 +206,107 @@ export function createTodayService({orca,getState,now=Date.now,inspect=fingerpri
   };
   return {
     async snapshot(input={}) {
-      const stamp = now();
-      const date = input.date ?? dayKey(stamp);
+      const date = input.date ?? dayKey(now());
       const yesterdayDate = previousDay(date);
-      const data = await load();
-      const warnings = [];
-      let workspaces = [];
-      try { workspaces = await workspaceRows(); } catch { warnings.push('Orca 작업 공간을 읽지 못했습니다. 저장된 인계 기록을 표시합니다.'); }
-      const latest = new Map();
-      for (const note of [...data.notes].reverse()) if (!latest.has(note.workspaceId)) latest.set(note.workspaceId,note);
-      const notes = [];
-      for (const note of [...latest.values()].slice(0,30)) {
-        const row = workspaces.find(w => w.id === note.workspaceId);
-        const current = row && isLocal(row.hostId) ? await inspect(row.path) : {available:false,reason:'작업 공간을 확인할 수 없습니다.'};
-        notes.push({...note,currentFingerprint:current,verificationFreshness:verificationFreshness(note,current)});
-      }
-      const state = await getState();
-      const events = [...(state.runs??[]),...(state.archivedRuns??[])].flatMap(run => (run.events??[]).map(event=>({...event,runId:run.id,goal:run.goal,day:eventDay(event)})));
-      const noteEvents = data.notes.map(note=>({type:'handoff.saved',at:note.at,day:note.day,summary:note.state,next:note.next,workspaceId:note.workspaceId,projectName:note.projectName,verified:note.verified}));
-      const timeline = [...events,...noteEvents].sort((a,b)=>String(b.at??b.timestamp??'').localeCompare(String(a.at??a.timestamp??'')));
-      let root = path.join(homedir(),'projects','toris-docs','journal','dev');
-      try {
-        const configured = await orca.settings?.get('worklogRoot');
-        if (typeof configured === 'string' && configured.trim()) root = configured.trim().replace(/^~(?=[/\\]|$)/,homedir());
-      } catch {}
-      const worklogs = await readLogs(root,[date,yesterdayDate]);
-      let sessions = [];
-      if (orca.host.has?.('agent.listSessions')) {
-        try {
-          const params = {limit:80};
-          if (input.workspaceId) params.workspaceId = input.workspaceId;
-          sessions = (await orca.host.call('agent.listSessions',params)).sessions ?? [];
-        } catch { warnings.push('이전 에이전트 세션 목록을 불러오지 못했습니다. 인계 기록으로 새 세션을 시작할 수 있습니다.'); }
-      }
-      const activeDays = [...new Set([...timeline.map(e=>e.day),...worklogs.map(w=>w.day)])].filter(Boolean).sort().reverse();
-      return {date,yesterdayDate,timeZone:ZONE,notes,todayEvents:timeline.filter(e=>e.day===date),yesterdayEvents:timeline.filter(e=>e.day===yesterdayDate),lastActiveDay:activeDays.find(day=>day<date)??null,worklogs,sessions,warnings};
+      const offset = input.noteOffset ?? 0;
+      const requestedLimit = input.noteLimit;
+      if (!Number.isSafeInteger(offset) || offset < 0 || (requestedLimit !== undefined && (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100))) throw fail('invalid_params','인계 목록의 시작 위치는 0 이상, 페이지 크기는 1–100 정수여야 합니다.');
+      const key = JSON.stringify([date,input.workspaceId??null,offset,requestedLimit??null]);
+      if (snapshots.has(key)) return structuredClone(await snapshots.get(key));
+      const job = (async()=>{
+        const data = await load();
+        const warnings = [];
+        const latest = new Map();
+        for (let i=data.notes.length-1;i>=0;i--) {
+          const note = data.notes[i];
+          if (!latest.has(note.workspaceId)) latest.set(note.workspaceId,note);
+        }
+        const limit = requestedLimit ?? latest.size;
+        const selected = [...latest.values()].slice(offset,offset+limit);
+        const notesPage = {offset,limit,total:latest.size,hasMore:offset+selected.length<latest.size};
+        const notesTask = (async()=>{
+          if (!selected.length) return [];
+          let workspaces = [];
+          try { workspaces = await workspaceRows(); } catch { warnings.push('Orca 작업 공간을 읽지 못했습니다. 저장된 인계 기록을 표시합니다.'); }
+          const rows = new Map(workspaces.map(row=>[row.id,row]));
+          const comparable = note=>verificationFreshness(note,note.fingerprint)==='fresh';
+          const paths = [...new Set(selected.flatMap(note=>{
+            const row = rows.get(note.workspaceId);
+            return comparable(note) && row && isLocal(row.hostId) && typeof row.path==='string' ? [row.path] : [];
+          }))];
+          const inspections = new Map(await mapLimited(paths,2,async directory=>{
+            try { return [directory,await inspect(directory)]; }
+            catch { return [directory,{available:false,reason:'작업 공간의 현재 파일을 확인하지 못했습니다.'}]; }
+          }));
+          return selected.map(note=>{
+            const row = rows.get(note.workspaceId);
+            const current = !comparable(note)
+              ? {available:false,reason:'저장된 검증이나 비교할 파일 지문이 없어 신선도를 판단하지 않습니다.'}
+              : row && isLocal(row.hostId) ? inspections.get(row.path) ?? {available:false,reason:'작업 공간의 현재 파일을 확인하지 못했습니다.'}
+              : {available:false,reason:'로컬 작업 공간을 확인할 수 없습니다.'};
+            return {...note,currentFingerprint:current,verificationFreshness:verificationFreshness(note,current)};
+          });
+        })();
+        const logsTask = (async()=>{
+          let root = path.join(homedir(),'projects','toris-docs','journal','dev');
+          try {
+            const configured = await orca.settings?.get('worklogRoot');
+            if (typeof configured === 'string' && configured.trim()) root = configured.trim().replace(/^~(?=[/\\]|$)/,homedir());
+          } catch {}
+          try {
+            const logs = await readLogs(root,[date,yesterdayDate],{onWarning:warning=>warnings.push(warning)});
+            if (!Array.isArray(logs)) throw new Error('invalid worklogs');
+            return logs;
+          } catch {
+            warnings.push('작업 일지를 읽지 못했습니다. 저장된 인계와 앱 제작 기록은 계속 표시합니다.');
+            return [];
+          }
+        })();
+        const sessionsTask = (async()=>{
+          if (!orca.host.has?.('agent.listSessions')) return {sessions:[],truncated:false};
+          try {
+            const params = {limit:80};
+            if (input.workspaceId) params.workspaceId = input.workspaceId;
+            const result = await orca.host.call('agent.listSessions',params);
+            if (result.truncated) warnings.push('이전 에이전트 세션은 최근 80개까지만 표시합니다. 나머지 세션은 Orca에서 확인해 주세요.');
+            return {sessions:result.sessions??[],truncated:Boolean(result.truncated)};
+          } catch {
+            warnings.push('이전 에이전트 세션 목록을 불러오지 못했습니다. 인계 기록으로 새 세션을 시작할 수 있습니다.');
+            return {sessions:[],truncated:false};
+          }
+        })();
+        const reads = await Promise.allSettled([notesTask,Promise.resolve().then(()=>getState({view:'timeline'})),logsTask,sessionsTask]);
+        const failure = reads.find(result=>result.status==='rejected');
+        if (failure) throw failure.reason;
+        const [notes,state,worklogs,sessionData] = reads.map(result=>result.value);
+        const events = [...(state.runs??[]),...(state.archivedRuns??[])].flatMap(run=>(run.events??[]).map(event=>normalizeEvent({...event,runId:run.id,goal:run.goal})));
+        const noteEvents = data.notes.map(note=>normalizeEvent({type:'handoff.saved',at:note.at,summary:note.state,next:note.next,workspaceId:note.workspaceId,projectName:note.projectName,verified:note.verified}));
+        const timeline = [...events,...noteEvents].sort((a,b)=>String(b.day?b.at:'').localeCompare(String(a.day?a.at:'')));
+        const undatedEvents = timeline.filter(event=>!event.day);
+        if (undatedEvents.length) warnings.push('날짜를 확인할 수 없는 기록 '+undatedEvents.length+'건은 오늘·어제 집계에서 제외했습니다. 원본 기록은 보존했습니다.');
+        const activeDays = [...new Set([...timeline.map(event=>event.day),...worklogs.map(log=>log.day)])].filter(Boolean).sort().reverse();
+        return {date,yesterdayDate,timeZone:ZONE,notes,notesPage,todayEvents:timeline.filter(event=>event.day===date),yesterdayEvents:timeline.filter(event=>event.day===yesterdayDate),undatedEvents,lastActiveDay:activeDays.find(day=>day<date)??null,worklogs,sessions:sessionData.sessions,sessionsTruncated:sessionData.truncated,warnings:[...new Set(warnings)]};
+      })();
+      snapshots.set(key,job);
+      try { return structuredClone(await job); }
+      finally { if (snapshots.get(key)===job) snapshots.delete(key); }
     },
     save(input={}) {
       return exclusive(async()=>{
         const row = await workspace(input.workspaceId);
         const state = clean(input.state);
         const next = clean(input.next);
+        const verified = clean(input.verified);
         if (!state || !next) throw fail('invalid_params','진행한 내용과 다음 행동을 모두 적어 주세요.');
         const data = await load();
         const stamp = now();
         const note = {
           id:randomUUID(),workspaceId:row.id,projectName:row.project || row.name,
-          state,next,why:clean(input.why),hold:clean(input.hold),verified:clean(input.verified),
+          state,next,why:clean(input.why),hold:clean(input.hold),verified,
           at:iso(stamp),day:dayKey(stamp),
-          fingerprint:isLocal(row.hostId)?await inspect(row.path):{available:false,reason:'원격 작업 공간은 로컬에서 검증할 수 없습니다.'}
+          fingerprint:!verified?{available:false,reason:'저장된 검증이 없습니다.'}:isLocal(row.hostId)?await inspect(row.path):{available:false,reason:'원격 작업 공간은 로컬에서 검증할 수 없습니다.'}
         };
-        data.notes = [...data.notes,note].slice(-1000);
+        data.notes = [...data.notes,note];
         await orca.storage.set(STORE,data);
         return {...note,verificationFreshness:verificationFreshness(note,note.fingerprint)};
       });
@@ -216,9 +326,10 @@ export function createTodayService({orca,getState,now=Date.now,inspect=fingerpri
           agent = session.agent;
         }
         if (!PROVIDERS.has(agent)) throw fail('invalid_params','지원되는 Orca 에이전트를 선택해 주세요.');
-        const prior = [...(data.resumes??[])].reverse().find(item=>item.workspaceId===row.id && item.noteId===(note?.id??null) && item.sessionId===(session?.sessionId??null));
-        if (prior?.status==='uncertain') throw fail('launch_uncertain','이전 시작 요청의 결과가 불확실합니다. Orca에서 해당 작업 공간의 에이전트를 확인해 주세요. 새 인계 기록을 저장하면 별도 작업으로 시작할 수 있습니다.');
-        if (prior?.status==='launching') throw fail('launch_uncertain','이전 이어하기 시작 영수증이 남아 있습니다. 시간이 지나도 중복 실행하지 않습니다. Orca에서 에이전트를 확인하거나 새 인계 기록을 저장해 주세요.');
+        // A session remains the same operation when a newer handoff is saved.
+        const prior = [...data.resumes].reverse().find(item=>item.workspaceId===row.id && (session ? item.sessionId===session.sessionId : item.sessionId===null && item.noteId===(note?.id??null)));
+        if (prior?.status==='uncertain') throw fail('launch_uncertain','이전 시작 요청의 결과가 불확실합니다. Orca에서 해당 작업 공간의 에이전트를 확인해 주세요. 같은 세션은 새 인계 기록을 저장해도 중복 실행하지 않습니다.');
+        if (prior?.status==='launching') throw fail('launch_uncertain','이전 이어하기 시작 영수증이 남아 있습니다. 시간이 지나도 중복 실행하지 않습니다. Orca에서 해당 작업 공간의 에이전트를 확인해 주세요.');
         if (prior?.terminalId) {
           try {
             const rows = (await orca.host.call('agents.list',{workspaceId:row.id})).agents??[];
@@ -232,15 +343,16 @@ export function createTodayService({orca,getState,now=Date.now,inspect=fingerpri
             throw fail('launch_uncertain','기존 이어하기 에이전트의 상태를 확인하지 못했습니다. Orca에서 확인한 뒤 다시 시도해 주세요.');
           }
         }
+        if (prior) throw fail('launch_uncertain','이전 이어하기 영수증이 불완전합니다. 같은 작업을 중복 실행하지 않습니다. Orca에서 터미널을 확인해 주세요.');
         const intent = {id:randomUUID(),workspaceId:row.id,noteId:note?.id??null,sessionId:session?.sessionId??null,agent,status:'launching',at:iso(now()),terminalId:null};
-        data.resumes = [...(data.resumes??[]),intent].slice(-300);
+        data.resumes = [...data.resumes,intent];
         await orca.storage.set(STORE,data);
         try {
           let result;
           if (session) {
             result = await orca.host.call('agent.resume',{workspaceId:row.id,agent,sessionId:session.sessionId});
           } else {
-            const current = isLocal(row.hostId)?await inspect(row.path):null;
+            const current = isLocal(row.hostId) && verificationFreshness(note,note.fingerprint)==='fresh' ? await inspect(row.path) : null;
             const freshness = verificationFreshness(note,current);
             const prompt = [
               '이 작업 공간의 저장된 인계 기록에서 작업을 이어가 주세요.',

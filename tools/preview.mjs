@@ -1,79 +1,260 @@
 /**
  * Local UI development server. All bridge actions use synthetic in-memory state.
  * No Orca agent, Google API, credentials, or real project is touched.
+ * Import createPreviewModel() to inspect fixtures without starting a server.
  */
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { createRun, claimNode, recordLaunch, pauseRun, resumeRun, cancelRun } from '../src/engine.mjs';
 import { dayKey, previousDay } from '../src/today.mjs';
 
-if(process.argv.includes('--start')) {
-  const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'--serve'],{detached:true,stdio:['ignore','ignore','ignore','ipc']});
-  const timer=setTimeout(()=>{child.kill();console.error('Preview did not start.');process.exit(1);},8000);
-  child.once('message',message=>{clearTimeout(timer);console.log(JSON.stringify(message));child.disconnect();child.unref();});
-  child.once('error',error=>{clearTimeout(timer);console.error(error.message);process.exitCode=1;});
-} else {
-  const root=fileURLToPath(new URL('../',import.meta.url));
-  const stamp=Date.now(),date=dayKey(stamp),yesterdayDate=previousDay(date);
+const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
+const clone = value => structuredClone(value);
+const projectsSample = [
+  ['moon-habit','달빛 습관'], ['quiet-notes','고요 메모'], ['one-bite','한입 레시피'],
+  ['afternoon-walk','오후 산책'], ['green-water','초록 물주기'], ['pocket-budget','작은 가계부'],
+  ['daily-sentence','하루 문장'], ['star-reading','별빛 독서'], ['one-page','한 장 일기'],
+  ['focus-timer','집중 타이머'], ['stretch-day','오늘 스트레칭'], ['bookshelf','책장 정리'],
+  ['cloud-weather','구름 날씨'], ['mood-check','마음 체크'],
+];
+const roles = {research:'grok',brief:'codex',architecture:'codex',design:'cursor',assets:'gemini',build:'codex',test:'claude',policy:'claude',listing:'grok',internal:'codex',release:'codex'};
+const iso = stamp => new Date(stamp).toISOString();
+
+function reportSummary(report) {
+  if (!report || typeof report !== 'object') return report;
+  const {evidence,...summary} = report;
+  return {...summary,evidenceCount:Array.isArray(evidence)?evidence.length:0};
+}
+function nodeSummary(node) {
+  const {history,report,review,feedback,lastFailure,receipt,...summary} = node;
+  return {...summary,report:reportSummary(report),review:reportSummary(review),
+    ...(feedback===undefined?{}:{feedback:reportSummary(feedback)}),
+    ...(lastFailure===undefined?{}:{lastFailure:reportSummary(lastFailure)}),
+    ...(receipt?{receipt:{path:receipt.path,at:receipt.at,phase:receipt.phase,artifactCount:receipt.artifacts?.length??0}}:{})};
+}
+function runSummary(run) {
+  const {events,acceptedReports,nodes,jobs,...summary} = run;
+  const current = new Set(nodes.flatMap(node=>[node.active?.nonce,node.pendingReceipt?.nonce]).filter(Boolean));
+  return {...summary,nodes:nodes.map(nodeSummary),jobs:(jobs??[]).filter(job=>current.has(job.nonce)),
+    nodeCount:nodes.length,passedCount:nodes.filter(node=>node.status==='passed').length};
+}
+function archiveSummary(run) {
+  return {id:run.id,goal:run.goal,status:run.status,projectId:run.projectId,
+    archivedAt:run.archivedAt,createdAt:run.createdAt,updatedAt:run.updatedAt,
+    nodeCount:run.nodes.length,passedCount:run.nodes.filter(node=>node.status==='passed').length};
+}
+function compactState(state) {
+  return {version:state.version,revision:state.revision,view:'summary',
+    runs:state.runs.map(runSummary),archivedRuns:state.archivedRuns.map(archiveSummary)};
+}
+function fillPassed(node, stamp, prefix) {
+  node.status='passed';node.attempts=1;node.reviewAttempts=1;
+  node.report={outcome:'passed',summary:'미리보기 자료 · 실제 작업이나 검증 결과가 아닙니다.',
+    evidence:[{kind:'artifact',path:prefix+'/'+node.id+'/example.md'},{kind:'artifact',path:prefix+'/'+node.id+'/notes.md'}]};
+  node.review={outcome:'passed',summary:'화면 검토를 위한 독립 검토 예시입니다.',
+    evidence:[{kind:'artifact',path:prefix+'/'+node.id+'/review.md'}]};
+  node.receipt={path:prefix+'/'+node.id+'/result.json',at:iso(stamp),phase:'review',
+    artifacts:[{path:prefix+'/'+node.id+'/review.md',size:128,sha256:'preview-only'}]};
+  node.history=Array.from({length:3},(_,index)=>({at:iso(stamp-(3-index)*60000),type:'preview',summary:'샘플 단계 이력 '+(index+1)}));
+}
+
+export function createPreviewModel() {
+  const stamp=PREVIEW_STAMP,date=dayKey(stamp),yesterdayDate=previousDay(date);
+  let sequence=0,clockStep=0;
+  const tick=()=>stamp+(++clockStep)*60000;
+  const projects=projectsSample.map(([slug,label],index)=>({id:index?'preview-project-'+(index+1):'preview-project',name:slug,displayName:label,kind:'git',hostId:'local',path:'/example/'+slug}));
+  const workspaces=projects.map((project,index)=>({id:index?'preview-workspace-'+(index+1):'preview-workspace',
+    projectId:project.id,name:projectsSample[index][1],project:project.name,path:project.path,
+    hostId:'local',kind:'worktree',branch:'neon/preview-'+(index+1)}));
   let sample=createRun({id:'preview-demo',goal:'달빛 습관 · 하루 5분 루틴 앱',projectId:'preview-project',maxConcurrency:2,now:stamp-86400000});
-  const roles={research:'grok',brief:'codex',architecture:'codex',design:'cursor',assets:'gemini',build:'codex',test:'claude',policy:'claude',listing:'grok',internal:'codex',release:'codex'};
   for(const node of sample.nodes) {
     node.agent=roles[node.id];node.reviewer='claude';
-    if(['research','brief','architecture','design','assets'].includes(node.id)) {
-      node.status='passed';node.attempts=1;node.reviewAttempts=1;
-      node.report={outcome:'passed',summary:'개발 미리보기용 예시 보고서입니다.',evidence:[{kind:'artifact',path:'preview/example.md'}]};
-      node.review={outcome:'passed',summary:'실제 검증 결과가 아닌 화면 확인용 샘플입니다.',evidence:[]};
-    }
+    if(['research','brief','architecture','design','assets'].includes(node.id)) fillPassed(node,stamp-3600000,'preview/demo');
   }
   sample.workspaceId='preview-workspace';sample.workspacePath='/example/moon-habit';sample.started=true;
   sample=claimNode(sample,'build',{phase:'work',nonce:'preview-nonce',now:stamp-600000});
   sample=recordLaunch(sample,'build',{nonce:'preview-nonce',terminalId:'preview-terminal',workspaceId:'preview-workspace',now:stamp-600000});
-  sample.jobs=[{nodeId:'build',nonce:'preview-nonce',terminalId:'preview-terminal',state:'running'}];
-  const workspaces=[{id:'preview-workspace',projectId:'preview-project',name:'달빛 습관',project:'moon-habit',path:'/example/moon-habit',hostId:'local',kind:'worktree',branch:'neon/preview'}];
-  const state={version:1,runs:[sample],archivedRuns:[],projects:[{id:'preview-project',name:'moon-habit',kind:'git',hostId:'local',path:'/example/moon-habit'}],workspaces,context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview',terminals:[]},providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:stamp-600000}],warnings:[]};
-  const note={workspaceId:'preview-workspace',projectName:'moon-habit',state:'온보딩과 습관 카드 디자인을 정리했습니다.',next:'루틴 타이머를 구현하고 화면 전환을 확인합니다.',why:'설계 검토를 마치고 구현 단계로 넘어갔습니다.',hold:'알림 시간 기본값',verified:'미리보기 데이터 · 실제 테스트 결과 아님',at:new Date(stamp-86400000).toISOString(),day:yesterdayDate,verificationFreshness:'fresh'};
-  const today={date,yesterdayDate,timeZone:'Asia/Seoul',notes:[note],todayEvents:[{at:new Date(stamp-600000).toISOString(),summary:'앱 구현 단계에 Codex를 배정했습니다. (샘플)',goal:sample.goal}],yesterdayEvents:[{at:note.at,summary:'화면 설계 검토가 끝났습니다. (샘플)',goal:sample.goal}],lastActiveDay:yesterdayDate,worklogs:[],sessions:[],warnings:[]};
-  const accounts=[{id:'preview-account',name:'샘플 개발자 계정',packages:[],tracks:['production','internal'],hasCredential:false,checkedAt:new Date(stamp).toISOString(),discovery:{observedAt:new Date(stamp).toISOString(),stale:false},apps:[{packageName:'com.example.moonhabit',name:'달빛 습관 (미리보기)',status:'in_review',published:true,needsAttention:true,storeUrl:'https://play.google.com/store/apps/details?id=com.example.moonhabit',tracks:[{track:'production',observedAt:new Date(stamp).toISOString(),stale:false,releases:[{name:'0.9.0',versionCodes:['9'],state:'published'},{name:'1.0.0',versionCodes:['10'],state:'in_review'}]},{track:'internal',observedAt:new Date(stamp-86400000).toISOString(),stale:true,error:{message:'429 · 미리보기용 API 제한 상태'},releases:[{name:'1.0.1',versionCodes:['11'],state:'published'}]}]}]}];
-  const lookup=id=>{const value=state.runs.find(r=>r.id===id);if(!value)throw Error('Unknown preview run');return value;};
-  const replace=value=>{state.runs[state.runs.findIndex(r=>r.id===value.id)]=value;return value;};
-  const rpc=async(name,input)=>{
-    if(name==='state.get')return state;
-    if(name==='today.snapshot')return today;
+  sample.jobs=sample.nodes.filter(node=>node.status==='passed').map(node=>({nodeId:node.id,nonce:'preview-finished-'+node.id,terminalId:'preview-finished-'+node.id,state:'completed'}));
+  sample.jobs.push({nodeId:'build',nonce:'preview-nonce',terminalId:'preview-terminal',state:'running',agent:'codex'});
+
+  const archivedRuns=Array.from({length:3},(_,index)=>{
+    const run=createRun({id:'preview-archive-'+(index+1),goal:projectsSample[index+1][1]+' · 이전 작업 샘플',
+      projectId:projects[index+1].id,now:stamp-(index+2)*86400000});
+    run.workspaceId=workspaces[index+1].id;run.workspacePath=workspaces[index+1].path;
+    run.status=index===1?'cancelled':'completed';run.started=true;
+    run.updatedAt=iso(stamp-(index+1)*3600000);run.archivedAt=run.updatedAt;
+    const passed=index===1?6:run.nodes.length;
+    for(const [position,node] of run.nodes.entries()) {
+      node.agent=roles[node.id];node.reviewer='claude';
+      if(position<passed)fillPassed(node,stamp-(index+1)*3600000,'preview/archive-'+(index+1));
+    }
+    run.jobs=run.nodes.filter(node=>node.status==='passed').map(node=>({nodeId:node.id,nonce:'preview-archive-'+index+'-'+node.id,state:'completed'}));
+    return run;
+  });
+  const state={version:1,revision:1,runs:[sample],archivedRuns,projects,workspaces,
+    context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
+    providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
+    agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:stamp-600000}],warnings:[]};
+  const notes=workspaces.map((workspace,index)=>({
+    id:'preview-note-'+(index+1),workspaceId:workspace.id,projectName:workspace.project,
+    state:workspace.name+'의 '+['화면 구조와 입력 상태를 정리했습니다.','테스트 범위와 다음 수정 항목을 정리했습니다.','MVP 범위와 보류할 기능을 정했습니다.'][index%3],
+    next:['주요 화면을 연결하고 전환 상태를 확인합니다.','오류 상황을 재현하고 필요한 테스트를 추가합니다.','핵심 기능을 구현하고 독립 검토를 요청합니다.'][index%3],
+    why:'미리보기용 인계 기록입니다.',hold:['알림 시간 기본값','오프라인 저장 정책','첫 화면 안내 문구'][index%3],
+    verified:index%3===2?'':'미리보기 데이터 · 실제 테스트 결과 아님',
+    at:iso(stamp-86400000-index*1200000),day:yesterdayDate,verificationFreshness:['fresh','stale','unknown'][index%3],
+  }));
+  const allRuns=[sample,...archivedRuns];
+  const eventTitles=['제품 목표와 완료 기준을 정리했습니다.','화면 설계 검토를 마쳤습니다.','구현 작업에 담당자를 배정했습니다.','테스트 결과와 남은 일을 정리했습니다.','다음 단계의 준비 범위를 확인했습니다.'];
+  const todayEvents=Array.from({length:20},(_,index)=>{
+    const run=allRuns[index%allRuns.length];
+    return {id:'preview-today-event-'+(index+1),at:iso(stamp-index*900000),day:date,type:'runtime',
+      summary:eventTitles[index%eventTitles.length]+' (샘플)',goal:run.goal,runId:run.id,nodeId:['brief','design','build','test','internal'][index%5]};
+  });
+  const yesterdayEvents=Array.from({length:8},(_,index)=>{
+    const run=allRuns[index%allRuns.length];
+    return {id:'preview-yesterday-event-'+(index+1),at:iso(stamp-86400000-index*1800000),day:yesterdayDate,type:'runtime',
+      summary:eventTitles[(index+1)%eventTitles.length]+' (샘플)',goal:run.goal,runId:run.id};
+  });
+  for(const run of allRuns)run.events=[...yesterdayEvents,...todayEvents].filter(event=>event.runId===run.id).sort((a,b)=>a.at.localeCompare(b.at));
+  const today={date,yesterdayDate,timeZone:'Asia/Seoul',notes,todayEvents,yesterdayEvents,undatedEvents:[],lastActiveDay:yesterdayDate,
+    worklogs:[{project:'moon-habit',day:yesterdayDate,sourcePath:'/example/journal/moon-habit/'+yesterdayDate+'.md',
+      text:'# 미리보기 일지\n\n이 문서는 실제 파일에서 읽은 기록이 아닙니다.\n화면 설계와 다음 구현 범위를 보여 주기 위한 고정 샘플입니다.'}],
+    sessions:[{sessionId:'preview-session-1',workspaceId:'preview-workspace',agent:'codex',title:'루틴 타이머 설계 · 샘플',updatedAt:iso(stamp-86400000),messageCount:12},
+      {sessionId:'preview-session-2',workspaceId:'preview-workspace-2',agent:'claude',title:'메모 편집 흐름 검토 · 샘플',updatedAt:iso(stamp-90000000),messageCount:8}],
+    sessionsTruncated:false,warnings:[]};
+  const accounts=[{id:'preview-account',name:'샘플 개발자 계정',packages:[],tracks:['production','internal'],hasCredential:false,
+    checkedAt:iso(stamp),discovery:{observedAt:iso(stamp),stale:false},apps:[{packageName:'com.example.moonhabit',name:'달빛 습관 (미리보기)',
+      status:'in_review',published:true,needsAttention:true,storeUrl:'https://play.google.com/store/apps/details?id=com.example.moonhabit',
+      tracks:[{track:'production',observedAt:iso(stamp),stale:false,releases:[{name:'0.9.0',versionCodes:['9'],state:'published'},{name:'1.0.0',versionCodes:['10'],state:'in_review'}]},
+        {track:'internal',observedAt:iso(stamp-86400000),stale:true,error:{message:'429 · 미리보기용 API 제한 상태'},releases:[{name:'1.0.1',versionCodes:['11'],state:'published'}]}]}]}];
+
+  const lookup=(id,archived=false)=>{
+    const value=state.runs.find(run=>run.id===id)||(archived?state.archivedRuns.find(run=>run.id===id):null);
+    if(!value)throw Error('미리보기 실행을 찾을 수 없습니다.');
+    return value;
+  };
+  const changed=value=>{state.revision++;return value;};
+  const replace=value=>{state.runs[state.runs.findIndex(run=>run.id===value.id)]=value;return changed(value);};
+  const snapshot=input=>{
+    const view=input.view??'full';
+    if(view==='full')return state;
+    if(view!=='summary')throw Error('지원되지 않는 미리보기 조회 형식입니다.');
+    return {...state,...compactState(state)};
+  };
+  const todaySnapshot=input=>{
+    const requestedDate=input.date??date,previous=previousDay(requestedDate);
+    const offset=input.noteOffset??0,limit=input.noteLimit??today.notes.length;
+    if(!Number.isSafeInteger(offset)||offset<0||
+      (input.noteLimit!==undefined&&(!Number.isSafeInteger(limit)||limit<1||limit>100)))throw Error('인계 목록의 시작 위치는 0 이상, 페이지 크기는 1–100 정수여야 합니다.');
+    const selected=today.notes.slice(offset,offset+limit),events=[...today.todayEvents,...today.yesterdayEvents];
+    return {...today,date:requestedDate,yesterdayDate:previous,notes:selected,
+      notesPage:{offset,limit,total:today.notes.length,hasMore:offset+selected.length<today.notes.length},
+      todayEvents:events.filter(event=>event.day===requestedDate),yesterdayEvents:events.filter(event=>event.day===previous),
+      worklogs:today.worklogs.filter(log=>[requestedDate,previous].includes(log.day)),
+      lastActiveDay:[...new Set(events.map(event=>event.day))].sort().reverse().find(day=>day<requestedDate)??null,
+      sessions:input.workspaceId?today.sessions.filter(session=>session.workspaceId===input.workspaceId):today.sessions};
+  };
+  const dispatch=async(name,input)=>{
+    if(name==='state.get')return snapshot(input);
+    if(name==='runs.get')return lookup(input.runId,true);
+    if(name==='today.snapshot')return todaySnapshot(input);
     if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts};
-    if(name==='runs.create') {const run=createRun({...input,id:randomUUID()});run.jobs=[];state.runs.unshift(run);return run;}
-    if(name==='runs.pause')return replace(pauseRun(lookup(input.runId)));
-    if(name==='runs.resume')return replace(resumeRun(lookup(input.runId)));
-    if(name==='runs.cancel')return replace(cancelRun(lookup(input.runId)));
-    if(name==='runs.start'){const run=lookup(input.runId);run.workspaceId='preview-workspace';run.workspacePath='/example/moon-habit';return run;}
+    if(name==='runs.create') {
+      const run=createRun({...input,id:'preview-created-'+(++sequence),now:tick()});
+      run.jobs=[];state.runs.unshift(run);return changed(run);
+    }
+    if(name==='runs.pause')return replace(pauseRun(lookup(input.runId),{now:tick()}));
+    if(name==='runs.resume')return replace(resumeRun(lookup(input.runId),{now:tick()}));
+    if(name==='runs.cancel')return replace(cancelRun(lookup(input.runId),{now:tick()}));
+    if(name==='runs.start'){
+      const run=lookup(input.runId),workspace=workspaces.find(row=>row.projectId===run.projectId)??workspaces[0];
+      run.workspaceId=workspace.id;run.workspacePath=workspace.path;
+      run.started=true;run.updatedAt=iso(tick());return changed(run);
+    }
     if(name==='runs.refresh')return lookup(input.runId);
-    if(name==='runs.updateAssignments'){const run=lookup(input.runId);for(const [id,value] of Object.entries(input.assignments))Object.assign(run.nodes.find(n=>n.id===id),value);return run;}
-    if(name==='today.save'){const value={...input,projectName:'moon-habit',at:new Date().toISOString(),day:date,verificationFreshness:'unknown'};today.notes.unshift(value);return value;}
-    if(name==='play.check')return accounts.find(a=>a.id===input.accountId);
+    if(name==='runs.updateAssignments'){
+      const run=lookup(input.runId);
+      for(const [id,value]of Object.entries(input.assignments??{})){
+        const node=run.nodes.find(entry=>entry.id===id);
+        if(node)Object.assign(node,value);
+      }
+      run.updatedAt=iso(tick());return changed(run);
+    }
+    if(name==='runs.archive'){
+      const run=lookup(input.runId);
+      if(!['cancelled','completed'].includes(run.status))throw Error('완료하거나 취소한 미리보기 실행만 보관할 수 있습니다.');
+      const archivedRun={...run,archivedAt:iso(tick())};
+      state.runs=state.runs.filter(entry=>entry.id!==run.id);state.archivedRuns.push(archivedRun);
+      return changed({archived:true,runId:run.id,archivedRun});
+    }
+    if(name==='today.save'){
+      const workspace=workspaces.find(row=>row.id===input.workspaceId);
+      if(!workspace||!String(input.state??'').trim()||!String(input.next??'').trim())throw Error('작업 공간, 진행 내용과 다음 행동을 입력하세요.');
+      const at=iso(tick()),value={id:'preview-note-saved-'+(++sequence),workspaceId:workspace.id,projectName:workspace.project,
+        state:String(input.state).slice(0,4000),next:String(input.next).slice(0,4000),why:String(input.why??'').slice(0,4000),
+        hold:String(input.hold??'').slice(0,4000),verified:String(input.verified??'').slice(0,4000),at,day:date,verificationFreshness:'unknown'};
+      today.notes=[value,...today.notes.filter(note=>note.workspaceId!==workspace.id)];
+      today.todayEvents.unshift({id:'preview-handoff-'+sequence,at,day:date,type:'handoff.saved',summary:value.state,next:value.next,projectName:value.projectName,workspaceId:workspace.id});
+      return value;
+    }
+    if(name==='play.check')return accounts.find(account=>account.id===input.accountId);
     if(name.startsWith('play.account.'))throw Error('미리보기에서는 실제 계정과 키를 저장하지 않습니다.');
     return {preview:true};
   };
-  const banner='<div style="background:#312642;color:#e4d5ff;font:11px system-ui;padding:7px 14px;text-align:center" role="note">UI 개발 미리보기 · 샘플 데이터 · 실제 에이전트와 Play API는 실행하지 않습니다.</div>';
-  const bridge="window.orca={plugin:{request:async(name,input)=>{const r=await fetch('/rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,input})});const body=await r.json();if(!r.ok)throw Error(body.error);return body;},on:()=>({dispose(){}})},shell:{openExternal:async()=>({opened:false})}};";
+  return {rpc:async(name,input={})=>clone(await dispatch(name,input)),
+    compact:()=>clone(compactState(state)),revision:()=>state.revision};
+}
+
+const banner='<div style="background:#312642;color:#e4d5ff;font:11px system-ui;padding:7px 14px;text-align:center" role="note">UI 개발 미리보기 · 샘플 데이터 · 실제 에이전트와 Play API는 실행하지 않습니다.</div>';
+const bridge=`(()=>{
+  const listeners=new Map();let eventRevision=0;
+  const notify=async()=>{
+    const response=await fetch('/__state');if(!response.ok)return;
+    const state=await response.json();if(state.revision<=eventRevision)return;
+    eventRevision=state.revision;
+    for(const listener of listeners.get('state.changed')??[])queueMicrotask(()=>listener(structuredClone(state)));
+  };
+  window.orca={plugin:{
+    request:async(name,input)=>{
+      const response=await fetch('/rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,input})});
+      const body=await response.json();if(!response.ok)throw Error(body.error);
+      if(response.headers.get('X-Preview-State-Changed')==='1')void notify().catch(()=>{});
+      return body;
+    },
+    on:(name,listener)=>{
+      if(!listeners.has(name))listeners.set(name,new Set());
+      listeners.get(name).add(listener);return {dispose(){listeners.get(name)?.delete(listener);}};
+    }
+  },shell:{openExternal:async()=>({opened:false})}};
+})();`;
+
+function servePreview() {
+  const root=fileURLToPath(new URL('../',import.meta.url)),model=createPreviewModel();
   const server=http.createServer(async(req,res)=>{
     try {
       const pathname=new URL(req.url,'http://localhost').pathname;
+      res.setHeader('Cache-Control','no-store');
       if(req.method==='POST'&&pathname==='/__stop'){res.end('stopped');server.close();return;}
+      if(req.method==='GET'&&pathname==='/__state'){
+        res.setHeader('Content-Type','application/json');res.end(JSON.stringify(model.compact()));return;
+      }
       if(req.method==='POST'&&pathname==='/rpc'){
         let body='';for await(const chunk of req){body+=chunk;if(body.length>100000)throw Error('Request too large');}
-        const input=JSON.parse(body),result=await rpc(input.name,input.input??{});
-        res.setHeader('Content-Type','application/json');res.end(JSON.stringify(result));return;
+        const input=JSON.parse(body),before=model.revision(),result=await model.rpc(input.name,input.input??{});
+        res.setHeader('Content-Type','application/json');
+        res.setHeader('X-Preview-State-Changed',model.revision()>before?'1':'0');
+        res.end(JSON.stringify(result));return;
       }
-      if(req.method!=='GET') {res.writeHead(405);res.end();return;}
-      const files={'/':'panel/index.html','/studio.css':'panel/studio.css','/graph.css':'panel/graph.css','/studio.mjs':'panel/studio.mjs'};
+      if(req.method!=='GET'){res.writeHead(405);res.end();return;}
+      const files={'/':'panel/index.html','/studio.css':'panel/studio.css','/graph.css':'panel/graph.css',
+        '/refinement.css':'panel/refinement.css','/studio.mjs':'panel/studio.mjs'};
       if(!files[pathname]){res.writeHead(404);res.end('Not found');return;}
       let content=await fs.readFile(path.join(root,files[pathname]),'utf8');
       if(pathname==='/')content=content.replace('<body>','<body>'+banner+'<script>'+bridge+'</script>');
-      res.setHeader('Content-Type',pathname.endsWith('.css')?'text/css':pathname.endsWith('.mjs')?'text/javascript':'text/html');
-      res.setHeader('Cache-Control','no-store');res.end(content);
+      res.setHeader('Content-Type',pathname.endsWith('.css')?'text/css':pathname.endsWith('.mjs')?'text/javascript':'text/html');res.end(content);
     }catch(error){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:error.message}));}
   });
   server.listen(0,'127.0.0.1',()=>{
@@ -82,4 +263,14 @@ if(process.argv.includes('--start')) {
   });
   // This development preview is short-lived; no background service is installed.
   setTimeout(()=>server.close(),30*60*1000).unref();
+}
+
+// Importing the fixture model must never start a server or spawn a process.
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+  if(process.argv.includes('--start')){
+    const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'--serve'],{detached:true,stdio:['ignore','ignore','ignore','ipc']});
+    const timer=setTimeout(()=>{child.kill();console.error('Preview did not start.');process.exit(1);},8000);
+    child.once('message',message=>{clearTimeout(timer);console.log(JSON.stringify(message));child.disconnect();child.unref();});
+    child.once('error',error=>{clearTimeout(timer);console.error(error.message);process.exitCode=1;});
+  }else servePreview();
 }

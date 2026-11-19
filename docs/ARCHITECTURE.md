@@ -15,6 +15,37 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 
 패널은 `window.orca.plugin.request(name, input)`로 워커에 요청합니다. 워커는 `orca.panels.handle`에 등록한 핸들러를 실행합니다. 별도 HTTP 서버나 클라우드 백엔드는 없습니다.
 
+## 상태 조회와 화면 갱신
+
+목록에 필요한 데이터와 전체 검증 기록을 구분해 전달합니다. **응답에서 생략한 근거·이력은 저장소에서 삭제하지 않습니다.** HTML 패널은 평소 요약을 읽고, 사용자가 기록 상세를 펼칠 때 해당 실행의 전체 내용을 조회합니다.
+
+| 조회 | 반환 범위 | 용도 |
+|---|---|---|
+| `state.get({view:"summary"})` | 활성 실행·단계 요약, 현재 배정 작업, 보관 실행 요약, 호스트 목록 | 그래프·실행 목록의 일반 갱신 |
+| `runs.get({runId})` | 활성 또는 보관 실행 하나의 전체 노드·이벤트·근거·배정 이력 | 기록 상세를 열 때 필요한 조회 |
+| `state.get({view:"full"})` 또는 `state.get()` | 모든 활성·보관 실행 원본과 호스트 목록 | 기존 호출 호환, 전체 상태 확인 |
+| `state.get({view:"timeline"})` | 각 활성·보관 실행의 `id`, `goal`, `projectId`, `updatedAt`, 전체 `events`와 호스트 목록 | 날짜별 이력 조회 |
+| 워커 내부 `runtime.getState({view:"timeline"})` | 위 실행 타임라인만 | Today에서 호스트 목록 조회 없이 사용 |
+
+`detail`이라는 `state.get` view는 없습니다. 실행 하나의 상세 요청 이름은 `runs.get`이며, 응답은 `{run: ...}`로 감싼 형태가 아닌 실행 객체입니다.
+
+summary에서는 노드의 `history`, 보고서의 `evidence`, 실행의 `events`·`acceptedReports`를 전송하지 않습니다. 대신 근거 개수·통과 단계 수와 현재 `active`/`pendingReceipt` nonce에 해당하는 배정 작업을 제공합니다. 결과 영수증에는 `path`, `at`, `phase`, `artifactCount`가 남습니다. 전체 근거는 `runs.get`과 full 응답으로 확인합니다.
+
+저장할 때 증가하는 `revision`을 포함한 summary를 `state.changed`로 알립니다. 관련 없는 에이전트 이벤트나 의미 없는 동일 상태 반복으로 전체 기록을 다시 저장하지 않습니다. 실행 시작 요청이 대기 중이어도 상태·상세 조회는 외부 실행 완료를 기다리지 않습니다.
+
+### 표시용 호스트 정보 캐시
+
+동시에 들어오는 같은 호스트 목록 조회는 진행 중인 요청을 공유합니다. 완료된 표시용 결과는 프로젝트 5초, 작업 공간 1.5초, 현재 문맥·에이전트 목록 250ms 동안 재사용합니다. 명시적인 새로고침은 다음처럼 요청합니다.
+
+```js
+await window.orca.plugin.request("state.get", {
+  view: "summary",
+  forceHost: true
+});
+```
+
+`forceHost`는 완료된 표시용 캐시를 건너뜁니다. 이미 같은 호스트 조회가 진행 중이면 그 요청을 공유합니다. 권한·작업 공간 검증, 실제 실행, 재시도와 복구 확인은 이 표시 캐시를 사용하지 않습니다. 호스트 목록 새로고침 자체가 작업을 통과시키거나 결과 파일을 수입하지는 않으며, 기존 배정과 완료 파일 대조는 `runs.refresh`의 역할입니다.
+
 ## 결정 1: 그래프 상태와 외부 실행을 분리한다
 
 상태 엔진은 새 JSON 상태를 반환하는 함수로 작성했습니다. 네트워크·파일·에이전트 실행 없이 의존성, 실패 전이, 중복 보고, 승인 상태를 재현할 수 있습니다. 실제 에이전트가 느리거나 중단되더라도 상태 전이의 정확성을 따로 검증할 수 있기 때문입니다.
@@ -94,7 +125,17 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 | 재개 | 저장 상태를 대조한 뒤 다음 배정 허용 |
 | 단계 재시도 | 실패·중단된 단계에 한정. 이전 배정의 불명확한 상태를 먼저 확인 |
 | 취소 | 취소 의도를 먼저 저장하고 해당 실행이 소유한 활성 터미널의 종료를 요청 |
-| 터미널 종료 실패 | 취소 자체와 별도로 실패 목록을 남김. 종료됐다고 가정하지 않음 |
+| 터미널 종료 실패 | 취소 자체와 별도로 `stopFailures`를 남김. `{closed:false}`도 실패로 처리 |
+
+취소·완료한 실행에는 뒤늦게 도착한 완료 이벤트나 수동 새로고침으로 보고서를 다시 적용하지 않습니다. 이미 관측한 실패 outcome은 후속 이벤트에 outcome이 없다는 이유로 지우지 않으며, 배정 시작 전이나 마지막 관측보다 오래된 상태 이벤트는 적용하지 않습니다.
+
+### 오래된 복구 요청 방지
+
+`nodes.retry`와 `nodes.deliverPrompt`에는 `expectedNonce`를 함께 보낼 수 있습니다. 값은 **사용자가 직접 확인한 단계**의 `active.nonce` 또는 `pendingReceipt.nonce`입니다. 워커는 외부 동작 전에 현재 배정과 비교하고, 바뀌었다면 `stale_assignment`로 거부합니다. 오래된 화면의 확인이 새 배정의 종료·재시도·지시 전달에 사용되지 않도록 하기 위한 조건입니다.
+
+기존 호출과의 호환을 위해 생략한 요청도 받지만, 패널의 복구 동작은 확인한 nonce를 전달합니다. 오류 후 현재 nonce만 다시 읽어 자동 재전송하지 말고, 현재 단계와 터미널을 사용자가 다시 확인해야 합니다.
+
+단계 재시도는 `awaiting-report`를 포함한 이전 소유 터미널의 현재 활동 여부도 확인합니다. 활동 중이면 `stopPrevious:true`를 명시해야 하며, 호스트가 실제 종료를 확인하지 않으면 이전 배정을 대체하거나 새 작업을 시작하지 않습니다.
 
 ### 첫 지시 전달 복구
 
@@ -104,13 +145,16 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 await window.orca.plugin.request("nodes.deliverPrompt", {
   runId,
   nodeId,
+  expectedNonce: confirmedNode.pendingReceipt.nonce,
   acknowledgeUnsent: true
 });
 ```
 
+예시의 `confirmedNode`는 사용자가 빈 터미널과 함께 확인한 상세 응답의 단계입니다. 요청을 보내기 직전에 새 배정의 nonce로 자동 교체하지 않습니다.
+
 복구는 차단된 단계에 `pendingReceipt`가 있고, 이 실행이 소유한 기존 터미널을 확인할 수 있으며, 배정 상태가 `awaiting-report`일 때만 가능합니다. 기존 세션 ID와 완료 보고 파일이 없어야 하고, 현재 터미널의 에이전트가 배정된 공급자와 일치하며 `done` 또는 `waiting` 상태인지 확인합니다. 검토 배정은 저장된 검토 소스 지문이 현재 소스와 일치해야 합니다.
 
-Orca의 `terminal.sendText`는 활성 작업 공간에서만 허용되므로, 먼저 공식 `terminal.focus`로 이 실행이 소유한 터미널을 열고 `focused === true`를 확인합니다. 포커스가 실패하면 지시를 보내거나 한 번의 전달 의도를 기록하지 않습니다.
+Orca의 `terminal.sendText`는 활성 작업 공간에서만 허용되므로, 먼저 공식 `terminal.focus`로 이 실행이 소유한 터미널을 열고 `focused === true`를 확인합니다. 포커스가 실패하면 지시를 보내거나 한 번의 전달 의도를 기록하지 않습니다. 네이티브 포커스 확인 뒤에는 해당 작업 공간과 터미널이 현재 문맥에 반영됐는지도 제한 시간 안에 확인합니다.
 
 포커스 확인 후 전달 전에 `job.promptRecovery`에 의도를 저장해 같은 `nonce`에서는 한 번만 시도합니다. 기존 시도 번호와 `nonce`를 유지하며 새 에이전트를 생성하지 않습니다. 응답이 불명확하면 자동 재전송을 막습니다. 이 복구는 기존 일시정지를 해제하지 않으므로 실행 재개는 사용자가 별도로 선택합니다.
 
@@ -169,7 +213,7 @@ Orca의 `terminal.sendText`는 활성 작업 공간에서만 허용되므로, �
 
 실행 검토에는 Git HEAD, 실제 binary diff, 미추적 일반 파일의 내용을 반영한 SHA-256 지문을 사용합니다. 동일한 줄 수를 유지한 수정도 감지합니다.
 
-검증 범위를 안전하게 확정할 수 없는 저장소는 통과시키지 않습니다. 예를 들어 초기 커밋이 없거나, 지원하지 않는 심볼릭 링크·서브모듈이 있거나, 미추적 파일이 5,000개 또는 합계 128 MiB 한도를 넘으면 검증 기준을 만들 수 없습니다. 빌드 출력은 적절히 `.gitignore`에 넣고 실제 소스·에셋은 프로젝트 정책에 맞게 추적하세요.
+검증 범위를 안전하게 확정할 수 없는 저장소는 통과시키지 않습니다. 예를 들어 초기 커밋이 없거나, 지원하지 않는 심볼릭 링크·서브모듈이 있거나, `assume-unchanged`·`skip-worktree`가 변경을 숨기거나, 미추적 파일이 5,000개 또는 합계 128 MiB 한도를 넘으면 검증 기준을 만들 수 없습니다. 추적된 일반 파일을 아직 커밋하지 않은 심볼릭 링크로 바꾼 경우도 검사합니다. 빌드 출력은 적절히 `.gitignore`에 넣고 실제 소스·에셋은 프로젝트 정책에 맞게 추적하세요.
 
 이 지문은 Git이 보는 소스 범위에 대한 것입니다. 무시된 빌드 출력이나 외부 서비스의 상태까지 보증하지 않습니다.
 
@@ -221,7 +265,7 @@ await window.orca.plugin.request("runs.approve", {
 | 결과 JSON·검증 파일 | `~/.toris-neon/runs/<run>/<node>/<attempt-phase-nonce>/` |
 | 기존 개발 일지 | 기본 `~/projects/toris-docs/journal/dev/<project>/YYYY-MM-DD.md`, 읽기 전용 |
 
-실행 상태와 인계 메모는 소스 저장소에 넣지 않습니다. 호스트 간 자동 동기화는 제공하지 않습니다.
+실행 상태와 인계 메모는 소스 저장소에 넣지 않습니다. 호스트 간 자동 동기화는 제공하지 않습니다. 화면용 summary와 페이지 크기는 보존 한도가 아닙니다. 인계·이어하기 영수증은 개수만으로 잘라내지 않으며, 실행 보관 한도를 넘으면 기존 이력을 삭제하는 대신 요청을 거부합니다. 저장 실패를 저장 성공으로 표시하지 않습니다. 읽을 수 없거나 제한 때문에 생략한 미리보기는 경고로 알립니다.
 
 ## 패널 요청 API
 
@@ -229,15 +273,16 @@ await window.orca.plugin.request("runs.approve", {
 
 | 요청 | 주요 입력 | 결과·동작 |
 |---|---|---|
-| `state.get` | 없음 | 실행·프로젝트·작업 공간·에이전트·경고 |
+| `state.get` | view?: summary/full/timeline, forceHost? | 선택한 실행 응답 범위 + 프로젝트·작업 공간·에이전트·경고. 기본 full |
+| `runs.get` | runId | 활성·보관 실행 하나의 전체 상세 |
 | `runs.create` | goal, projectId, assignments, isolate, workspaceId, 제한 설정 | 실행 계획 저장. 아직 실행하지 않음 |
 | `runs.start` | runId | 작업 공간 확보 후 배정 시작 |
 | `runs.pause` / `runs.resume` | runId | 새 배정 정지 / 검증 후 재개 |
 | `runs.refresh` | runId | 기존 터미널·완료 파일 대조 |
 | `runs.approve` | runId, nodeId, note, submission? | 준비 또는 특정 대상 제출 승인 |
 | `runs.updateAssignments` | runId, assignments | 변경 가능한 단계의 작업자·검토자 교체 |
-| `nodes.retry` | runId, nodeId, acknowledgeUncertain?, stopPrevious? | 명시적 재시도 |
-| `nodes.deliverPrompt` | runId, nodeId, acknowledgeUnsent: true | 시작되지 않은 빈 기존 터미널에 같은 배정 지시를 한 번 전달 |
+| `nodes.retry` | runId, nodeId, expectedNonce?, acknowledgeUncertain?, stopPrevious? | 현재 배정 확인 후 명시적 재시도 |
+| `nodes.deliverPrompt` | runId, nodeId, expectedNonce?, acknowledgeUnsent: true | 확인한 배정의 빈 기존 터미널에 같은 지시를 한 번 전달 |
 | `runs.cancel` | runId | 취소 및 소유한 터미널 종료 요청 |
 | `runs.attachWorkspace` | runId, workspaceId | 생성 결과가 불명확한 실행에 검증한 기존 공간 연결. 일시정지 유지 |
 | `runs.archive` | runId | 완료·취소 실행을 이력·결과 참조를 유지하며 보관 |
@@ -246,7 +291,7 @@ await window.orca.plugin.request("runs.approve", {
 | `play.list` / `play.check` | 없음 / accountId, force? | 보호 상태·캐시 / 읽기 전용 조회 |
 | `play.account.save` | name, credential input, packages?, tracks?, id? | 보호된 계정 저장·수정 |
 | `play.account.remove` | accountId | 계정 및 보호된 키 제거 |
-| `today.snapshot` | date?, workspaceId? | 날짜별 기록·인계·기존 세션 |
+| `today.snapshot` | date?, workspaceId?, noteOffset?, noteLimit? | 날짜별 기록·인계 페이지·notesPage·기존 세션·경고 |
 | `today.save` | workspaceId, state, next, why?, hold?, verified? | 인계 메모 추가 |
 | `today.resume` | workspaceId, agent?, sessionId? | 새 인계 세션 또는 확인된 기존 세션 시작 |
 
@@ -258,6 +303,6 @@ Manifest는 `trusted-worker`를 선언합니다. Node 워커는 사용자 권한
 
 ## 검증 전략
 
-순수 엔진 테스트는 DAG·카운터·승인·오래된 결과·반복 보고를 다룹니다. 런타임 테스트는 모의 Orca 호스트와 임시 검증 파일로 실제 배정 순서, 중복 실행 방지, 소스 변경 감지, 실패 복구를 확인합니다. Play 테스트는 실제 RSA 서명과 주입된 HTTP 응답을 사용합니다. Today 테스트는 한국 시간 날짜 경계, 내용 변경, 기록 범위, 세션 재개를 확인합니다.
+순수 엔진 테스트는 DAG·카운터·승인·오래된 결과·반복 보고를 다룹니다. 런타임 테스트는 모의 Orca 호스트와 임시 Git 저장소·검증 파일로 배정 순서, 오래된 이벤트·복구 요청, 종료 확인, 중복 실행 방지, 소스 변경 감지와 조회 응답의 원본 보존을 확인합니다. Play 테스트는 실제 RSA 서명과 주입된 HTTP 응답을 사용합니다. Today 테스트는 한국 시간 날짜 경계, 같은 크기의 내용 변경, 인계 페이지·저장 중 조회 경합·보관 범위·세션 재개를 확인합니다.
 
 실제 모델이 완성한 앱, 실제 기기 테스트, Google 계정 권한, 실제 스토어 제출 성공은 이 테스트 묶음의 결과로 주장하지 않습니다.

@@ -1,8 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRuntime, buildNodePrompt } from '../src/runtime.mjs';
+import { createRuntime, buildNodePrompt, sourceFingerprint } from '../src/runtime.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createRun } from '../src/engine.mjs';
 
 const NOW = Date.parse('2026-11-19T05:00:00Z');
+const exec = promisify(execFile);
+async function gitFixture(t) {
+  const directory = await fs.mkdtemp(path.join(tmpdir(), 'neon-runtime-test-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const git = args => exec('git', [
+    '-c', 'core.hooksPath=' + path.join(directory, 'no-hooks'),
+    '-c', 'commit.gpgsign=false', '-c', 'user.name=NEON Test',
+    '-c', 'user.email=neon-test@example.invalid', '-C', directory, ...args
+  ], { encoding: 'utf8', timeout: 15000, windowsHide: true });
+  await git(['init', '--initial-branch=main']);
+  await fs.writeFile(path.join(directory, 'app.txt'), 'alpha\n');
+  await git(['add', 'app.txt']);
+  await git(['commit', '-m', 'fixture']);
+  return { directory, git };
+}
 function assertJsonValue(value, location = '$') {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
   if (typeof value === 'number') return assert.ok(Number.isFinite(value), location + ': finite number required');
@@ -13,6 +34,7 @@ function harness(options = {}) {
   const store = options.store || new Map();
   const receipts = new Map();
   const calls = [];
+  const posts = [];
   const events = new Map();
   const agents = [];
   const workspaces = [];
@@ -21,12 +43,14 @@ function harness(options = {}) {
   let focusedTerminalId = null;
   let source = 'source-v1';
   let writes = 0;
+  let writeCount = 0;
   let maxWrites = 0;
   const orca = {
     storage: {
       get: async (key) => structuredClone(store.get(key) ?? null),
       set: async (key, value) => {
         assertJsonValue(value);
+        writeCount++;
         writes++;
         maxWrites = Math.max(maxWrites, writes);
         await Promise.resolve();
@@ -34,7 +58,7 @@ function harness(options = {}) {
         writes--;
       }
     },
-    panels: { post(_name, value) { assertJsonValue(value); } },
+    panels: { post(name, value) { assertJsonValue(value); posts.push({ name, value: structuredClone(value) }); } },
     events: { on: (name, callback) => {
       events.set(name, callback);
       return { dispose: () => events.delete(name) };
@@ -80,7 +104,7 @@ function harness(options = {}) {
     }
   };
   const runtime = createRuntime({
-    orca, now: () => NOW, id: () => 'id-' + (++sequence), sleep: options.sleep || (async () => {}),
+    orca, now: options.now || (() => NOW), id: () => 'id-' + (++sequence), sleep: options.sleep || (async () => {}),
     receiptRoot: '/private/neon/runs',
     fingerprint: async () => source,
     ensureDirectory: async () => {},
@@ -120,7 +144,7 @@ function harness(options = {}) {
     await runtime.handlers['runs.start']({ runId: getRun().id });
     await runtime.drain();
   };
-  return { runtime, orca, store, calls, events, receipts, agents, workspaces, getRun, currentJob, report, done, create, start, source: (value) => { source = value; }, maxWrites: () => maxWrites };
+  return { runtime, orca, store, calls, posts, events, receipts, agents, workspaces, getRun, currentJob, report, done, create, start, source: (value) => { source = value; }, maxWrites: () => maxWrites, writeCount: () => writeCount };
 }
 const launchCalls = (h) => h.calls.filter((call) => call.name === 'agent.launch');
 
@@ -752,6 +776,307 @@ test('a sending intent recovered after a worker restart becomes uncertain instea
   assert.equal(sendCalls(h).length, 0);
   assert.equal(launchCalls(h).length, 1);
   restarted.dispose();
+});
+
+test('audit: unrelated and duplicate agent events do not rewrite persisted runs', async () => {
+  const h = harness();
+  await h.create(); await h.start();
+  const beforeUnrelated = h.writeCount();
+  await h.events.get('agent.status.changed')({ terminalId: 'foreign', state: 'working', receivedAt: NOW + 10 });
+  await h.runtime.drain();
+  assert.equal(h.writeCount(), beforeUnrelated);
+  const event = { terminalId: 't1', state: 'working', receivedAt: NOW + 20 };
+  await h.events.get('agent.status.changed')(event);
+  await h.runtime.drain();
+  const beforeDuplicate = h.writeCount();
+  await h.events.get('agent.status.changed')(event);
+  await h.runtime.drain();
+  assert.equal(h.writeCount(), beforeDuplicate);
+});
+
+test('audit: an older done event cannot interrupt a newer working state', async () => {
+  const h = harness();
+  await h.create(); await h.start();
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'working', receivedAt: NOW + 200 });
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'done', receivedAt: NOW + 100 });
+  await h.runtime.drain();
+  assert.equal(h.getRun().nodes[0].status, 'running');
+  assert.equal(h.getRun().jobs[0].agentState, 'working');
+});
+
+test('audit: a known failed outcome cannot be erased by an outcome-less completion', async () => {
+  const h = harness();
+  await h.create(); await h.start();
+  h.agents[0].state = 'done';
+  const job = h.currentJob();
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'done', receivedAt: NOW + 10, mainAgent: { outcome: 'failure' } });
+  h.report(job);
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'done', receivedAt: NOW + 20 });
+  await h.runtime.drain();
+  assert.equal(h.getRun().nodes[0].status, 'blocked');
+  assert.equal(h.getRun().jobs[0].agentOutcome, 'failure');
+  assert.equal(launchCalls(h).length, 1);
+});
+
+test('audit: retry refuses an awaiting-report terminal that became active again', async () => {
+  const h = harness();
+  await h.create(); await h.start();
+  await h.runtime.handlers['runs.pause']({ runId: h.getRun().id });
+  await h.done();
+  h.agents[0].state = 'working';
+  const before = h.runtime.getState();
+  await assert.rejects(h.runtime.handlers['nodes.retry']({ runId: h.getRun().id, nodeId: 'build' }), /실행 중/);
+  assert.deepEqual(h.runtime.getState(), before);
+});
+
+test('audit: retry requires a confirmed terminal close before superseding the old attempt', async () => {
+  const h = harness({ host: async (name) => name === 'terminal.close' ? { closed: false } : undefined });
+  await h.create(); await h.start();
+  await h.runtime.handlers['runs.pause']({ runId: h.getRun().id });
+  await h.done();
+  h.agents[0].state = 'working';
+  await h.runtime.handlers['runs.refresh']({ runId: h.getRun().id });
+  const before = h.runtime.getState();
+  await assert.rejects(h.runtime.handlers['nodes.retry']({ runId: h.getRun().id, nodeId: 'build', stopPrevious: true }), /종료/);
+  assert.deepEqual(h.runtime.getState(), before);
+  assert.equal(launchCalls(h).length, 1);
+});
+
+test('audit: cancelled runs cannot accept late receipts through manual refresh', async () => {
+  const h = harness({ host: async (name) => {
+    if (name === 'terminal.close') throw new Error('host could not stop terminal');
+  } });
+  await h.create(); await h.start();
+  const job = h.currentJob();
+  await h.done();
+  await h.runtime.handlers['runs.cancel']({ runId: h.getRun().id });
+  h.report(job);
+  const before = h.runtime.getState();
+  await h.runtime.handlers['runs.refresh']({ runId: h.getRun().id });
+  await h.runtime.drain();
+  assert.deepEqual(h.runtime.getState(), before);
+});
+
+test('audit: cancellation records an unconfirmed close as a stop failure', async () => {
+  const h = harness({ host: async (name) => name === 'terminal.close' ? { closed: false } : undefined });
+  await h.create(); await h.start();
+  await h.runtime.handlers['runs.cancel']({ runId: h.getRun().id });
+  assert.equal(h.getRun().stopFailures.length, 1);
+  await assert.rejects(h.runtime.handlers['runs.archive']({ runId: h.getRun().id }));
+});
+
+test('stale recovery confirmations cannot apply to a different pending assignment', async () => {
+  for (const method of ['nodes.retry', 'nodes.deliverPrompt']) {
+    const h = harness();
+    await makeUnsentPrompt(h);
+    const runId = h.getRun().id;
+    const nonce = h.currentJob().nonce;
+    const before = h.runtime.getState();
+    const calls = h.calls.length;
+    const writes = h.writeCount();
+    await assert.rejects(h.runtime.handlers[method]({
+      runId, nodeId: 'build', expectedNonce: nonce + '-stale',
+      acknowledgeUnsent: true, acknowledgeUncertain: true, stopPrevious: true
+    }), error => error.code === 'stale_assignment');
+    assert.deepEqual(h.runtime.getState(), before);
+    assert.equal(h.calls.length, calls, 'stale confirmation must not inspect or mutate a host terminal');
+    assert.equal(h.writeCount(), writes);
+  }
+});
+
+test('matching expectedNonce permits the existing once-only recovery and retry paths', async () => {
+  const recover = harness();
+  await makeUnsentPrompt(recover);
+  const recoveryJob = recover.currentJob();
+  await recover.runtime.handlers['nodes.deliverPrompt']({
+    runId: recover.getRun().id, nodeId: 'build',
+    expectedNonce: recoveryJob.nonce, acknowledgeUnsent: true
+  });
+  assert.equal(recover.currentJob().nonce, recoveryJob.nonce);
+  assert.equal(recover.getRun().jobs[0].promptRecovery.state, 'sent');
+
+  const retry = harness();
+  await makeUnsentPrompt(retry);
+  const prior = retry.currentJob();
+  await retry.runtime.handlers['nodes.retry']({
+    runId: retry.getRun().id, nodeId: 'build', expectedNonce: prior.nonce, stopPrevious: true
+  });
+  assert.equal(retry.getRun().jobs[0].state, 'superseded');
+  assert.equal(retry.getRun().nodes[0].status, 'pending');
+});
+
+test('source fingerprint rejects hidden tracked changes before independent review can pass', async t => {
+  const { directory, git } = await gitFixture(t);
+  const original = await sourceFingerprint(directory);
+  await fs.writeFile(path.join(directory, 'app.txt'), 'bravo\n');
+  assert.notEqual(await sourceFingerprint(directory), original);
+  for (const flag of ['assume-unchanged', 'skip-worktree']) {
+    await git(['update-index', '--' + flag, 'app.txt']);
+    await assert.rejects(sourceFingerprint(directory), error => error.code === 'not_permitted' && /assume-unchanged/.test(error.message));
+    await git(['update-index', '--no-' + flag, 'app.txt']);
+  }
+  await fs.writeFile(path.join(directory, 'app.txt'), 'alpha\n');
+  assert.equal(await sourceFingerprint(directory), original);
+});
+
+test('source fingerprint rejects a tracked regular file replaced by a symlink', { skip: process.platform === 'win32' }, async t => {
+  const { directory, git } = await gitFixture(t);
+  await sourceFingerprint(directory);
+  await fs.writeFile(path.join(directory, 'target.txt'), 'external value\n');
+  await fs.unlink(path.join(directory, 'app.txt'));
+  await fs.symlink(path.join(directory, 'target.txt'), path.join(directory, 'app.txt'));
+  await assert.rejects(sourceFingerprint(directory), error => error.code === 'not_permitted' && /심볼릭/.test(error.message));
+  await git(['add', 'app.txt']);
+  await assert.rejects(sourceFingerprint(directory), error => error.code === 'not_permitted' && /심볼릭/.test(error.message));
+});
+
+test('summary transport preserves current ownership while full and detail reads retain archived evidence', async () => {
+  const record = createRun({ id: 'large-run', goal: '실제 검증 이력', projectId: 'p1', now: NOW,
+    nodes: [{ id: 'inspect', title: '검증', deps: [], write: false }] });
+  record.status = 'completed';
+  record.nodes[0].status = 'passed';
+  const evidence = Array.from({ length: 32 }, (_, i) => ({ kind: 'note', text: String(i) + '검증 자료'.repeat(250) }));
+  record.nodes[0].report = { outcome: 'passed', summary: '구현 완료', evidence };
+  record.nodes[0].review = { outcome: 'passed', summary: '독립 검증 완료', evidence };
+  record.nodes[0].history = [structuredClone(record.nodes[0].report), structuredClone(record.nodes[0].review)];
+  record.nodes[0].receipt = { path: '/private/result.json', at: new Date(NOW).toISOString(), phase: 'review',
+    artifacts: [{ path: '/private/proof.md', sha256: 'hash', size: 120 }] };
+  record.events = Array.from({ length: 80 }, (_, i) => ({
+    id: 'event-' + i, at: new Date(NOW).toISOString(), type: 'runtime',
+    summary: '검증 이벤트 ' + i, workspaceId: 'w1'
+  }));
+  record.jobs = [{ nonce: 'old', state: 'complete', terminalId: 'old-terminal' }];
+  const archived = Array.from({ length: 12 }, (_, i) => ({
+    ...structuredClone(record), id: 'archive-' + i, archivedAt: new Date(NOW).toISOString()
+  }));
+  const active = structuredClone(record);
+  active.status = 'blocked';
+  active.nodes[0].status = 'blocked';
+  active.nodes[0].pendingReceipt = { nonce: 'current', terminalId: 'current-terminal' };
+  active.jobs.push({ nonce: 'current', state: 'awaiting-report', terminalId: 'current-terminal' });
+  const store = new Map([['toris-neon.runtime.v1', { version: 1, runs: [active], archivedRuns: archived }]]);
+  const h = harness({ store });
+  await h.runtime.initialize();
+  const full = await h.runtime.handlers['state.get']();
+  const summary = await h.runtime.handlers['state.get']({ view: 'summary' });
+  assert.deepEqual(full.archivedRuns[0].nodes[0].report.evidence, evidence);
+  assert.deepEqual(await h.runtime.handlers['runs.get']({ runId: archived[0].id }), archived[0]);
+  assert.equal(summary.runs[0].nodes[0].pendingReceipt.terminalId, 'current-terminal');
+  assert.deepEqual(summary.runs[0].jobs.map(job => job.nonce), ['current']);
+  assert.equal(summary.runs[0].nodes[0].report.evidence, undefined);
+  assert.equal(summary.runs[0].nodes[0].report.evidenceCount, 32);
+  assert.equal(summary.runs[0].nodes[0].history, undefined);
+  assert.equal(summary.runs[0].nodes[0].receipt.artifactCount, 1);
+  assert.equal(summary.archivedRuns[0].nodes, undefined);
+  assert.equal(summary.archivedRuns[0].events, undefined);
+  assert.equal(summary.archivedRuns[0].nodeCount, 1);
+  assert.equal(summary.archivedRuns[0].passedCount, 1);
+  assert.equal(summary.archivedRuns[0].createdAt, archived[0].createdAt);
+  assert.equal(summary.archivedRuns[0].archivedAt, archived[0].archivedAt);
+  const fullBytes = Buffer.byteLength(JSON.stringify(full));
+  const summaryBytes = Buffer.byteLength(JSON.stringify(summary));
+  assert.ok(summaryBytes < fullBytes / 20, 'summary should omit bulk history and evidence: ' + summaryBytes + '/' + fullBytes);
+  const timeline = h.runtime.getState({ view: 'timeline' });
+  assert.deepEqual(timeline.archivedRuns[0].events, archived[0].events);
+  assert.equal(timeline.runs[0].events[0].workspaceId, 'w1');
+  assert.equal(timeline.runs[0].nodes, undefined);
+  assert.equal(timeline.runs[0].projectId, 'p1');
+  assert.deepEqual(h.posts.at(-1).value, h.runtime.getState({ view: 'summary' }));
+  assert.deepEqual(store.get('toris-neon.runtime.v1').archivedRuns, archived, 'storage retains every archived report');
+  await assert.rejects(h.runtime.handlers['runs.get']({ runId: 'missing' }), /찾을 수/);
+});
+
+test('state revisions are durable and monotonic; status bar skips unchanged counts', async () => {
+  const h = harness();
+  await h.create();
+  const before = h.runtime.getState().revision;
+  assert.ok(before >= 2);
+  const statusCalls = h.calls.filter(call => call.name === 'statusBar.update').length;
+  await h.runtime.handlers['runs.updateAssignments']({ runId: h.getRun().id, assignments: { build: { agent: 'claude' } } });
+  assert.equal(h.runtime.getState().revision, before + 1);
+  assert.equal(h.calls.filter(call => call.name === 'statusBar.update').length, statusCalls);
+  const revisions = h.posts.map(post => post.value.revision);
+  assert.ok(revisions.every((revision, i) => i === 0 || revision > revisions[i - 1]));
+  assert.equal(h.store.get('toris-neon.runtime.v1').revision, revisions.at(-1));
+  h.runtime.dispose();
+  const restarted = harness({ store: h.store });
+  await restarted.runtime.initialize();
+  assert.equal(restarted.runtime.getState().revision, revisions.at(-1) + 1);
+});
+
+test('catalog reads coalesce in flight, expire quickly and honor explicit refresh', async () => {
+  let clock = NOW;
+  let resolveProject;
+  const projectGate = new Promise(resolve => { resolveProject = resolve; });
+  const h = harness({ now: () => clock, host: async (name) => {
+    if (name === 'project.list') {
+      await projectGate;
+      return { projects: [{ id: 'p1', name: 'App' }] };
+    }
+  } });
+  await h.runtime.initialize();
+  const one = h.runtime.handlers['state.get']({ view: 'summary' });
+  const two = h.runtime.handlers['state.get']({ view: 'summary' });
+  await Promise.resolve(); await Promise.resolve();
+  const count = name => h.calls.filter(call => call.name === name).length;
+  for (const name of ['project.list', 'workspace.list', 'workspace.readContext', 'agents.list']) assert.equal(count(name), 1);
+  resolveProject();
+  await Promise.all([one, two]);
+  await h.runtime.handlers['state.get']();
+  for (const name of ['project.list', 'workspace.list', 'workspace.readContext', 'agents.list']) assert.equal(count(name), 1);
+  clock += 300;
+  await h.runtime.handlers['state.get']({ view: 'summary' });
+  assert.equal(count('project.list'), 1);
+  assert.equal(count('workspace.list'), 1);
+  assert.equal(count('workspace.readContext'), 2);
+  assert.equal(count('agents.list'), 2);
+  await h.runtime.handlers['state.get']({ forceHost: true });
+  assert.equal(count('project.list'), 2);
+  assert.equal(count('workspace.list'), 2);
+  assert.equal(count('workspace.readContext'), 3);
+  assert.equal(count('agents.list'), 3);
+  await h.events.get('workspace.changed')({});
+  await h.runtime.handlers['state.get']();
+  assert.equal(count('project.list'), 3);
+  assert.equal(count('workspace.list'), 3);
+});
+
+test('catalog errors are retried and do not poison cached successful sections', async () => {
+  let failure = true;
+  const h = harness({ host: async (name) => {
+    if (name === 'project.list' && failure) throw new Error('temporarily unavailable');
+  } });
+  await h.runtime.initialize();
+  const first = await h.runtime.handlers['state.get']();
+  assert.deepEqual(first.projects, []);
+  assert.match(first.warnings.join(' '), /temporarily unavailable/);
+  failure = false;
+  const second = await h.runtime.handlers['state.get']();
+  assert.equal(second.projects[0].id, 'p1');
+  assert.deepEqual(second.warnings, []);
+  assert.equal(h.calls.filter(call => call.name === 'project.list').length, 2);
+  assert.equal(h.calls.filter(call => call.name === 'workspace.list').length, 1);
+});
+
+test('read-only state and detail remain available while a host launch is pending', async () => {
+  let entered;
+  let release;
+  const launching = new Promise(resolve => { entered = resolve; });
+  const pending = new Promise(resolve => { release = resolve; });
+  const h = harness({ host: async (name) => {
+    if (name === 'agent.launch') { entered(); await pending; }
+  } });
+  await h.create();
+  const start = h.start();
+  await launching;
+  const result = await h.runtime.handlers['state.get']({ view: 'summary' });
+  assert.equal(result.runs[0].jobs[0].state, 'launching');
+  const detail = await h.runtime.handlers['runs.get']({ runId: h.getRun().id });
+  assert.equal(detail.jobs[0].state, 'launching');
+  assert.equal(h.store.get('toris-neon.runtime.v1').runs[0].jobs[0].nonce, detail.jobs[0].nonce);
+  release();
+  await start;
+  assert.equal(launchCalls(h).length, 1);
 });
 
 test('the task prompt contains nonce-scoped receipt, prior feedback and local instructions', () => {

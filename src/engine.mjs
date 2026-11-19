@@ -433,7 +433,7 @@ export function blockNode(run, nodeId, { nonce, reason, now } = {}) {
   const node = nodeIn(next, nodeId);
   if (nonce && node.active?.nonce !== nonce) fail('stale_report', '현재 실행과 다른 중단 요청입니다.');
   if (node.status === 'passed') fail('already_passed', '검증 완료된 단계는 명시적으로 다시 실행해야 합니다.');
-  node.blockedPhase = node.active?.phase ?? (node.status === 'review' ? 'review' : 'work');
+  node.blockedPhase = node.active?.phase ?? (node.status === 'blocked' ? node.blockedPhase : undefined) ?? (node.status === 'review' ? 'review' : 'work');
   node.active = null;
   node.status = 'blocked';
   node.failureReason = requiredText(reason, '중단 사유', 4000);

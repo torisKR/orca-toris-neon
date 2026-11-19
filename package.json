@@ -1,6 +1,6 @@
 {
   "name": "orca-toris-neon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "앱 제작 그래프, 멀티 에이전트 수정 루프, Play Store 점검과 오늘 이어하기.",

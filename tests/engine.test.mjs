@@ -215,6 +215,20 @@ test('blocked reviews resume independent review without rerunning accepted work'
   assert.equal(nextActions(run)[0].phase, 'review');
 });
 
+test('audit: repeated blocking preserves the review phase and retries review only', () => {
+  let run = make({ nodes: graph(['a']) });
+  run = claimNode(run, 'a', { nonce: nonce(), now: NOW });
+  run = applyReport(run, 'a', result(run, 'a'), { now: NOW });
+  run = claimNode(run, 'a', { phase: 'review', nonce: nonce(), now: NOW });
+  run = blockNode(run, 'a', { reason: 'Missing review receipt', now: NOW });
+  run = blockNode(run, 'a', { reason: 'Still missing review receipt', now: NOW });
+  assert.equal(run.nodes[0].blockedPhase, 'review');
+  run = retryNode(run, 'a', { now: NOW });
+  assert.equal(run.nodes[0].status, 'review');
+  assert.equal(run.nodes[0].attempts, 1);
+  assert.equal(nextActions(run)[0].phase, 'review');
+});
+
 test('cancellation preserves terminal identity for audit and never resumes', () => {
   let run = make({ nodes: graph(['a']) });
   run = claimNode(run, 'a', { nonce: nonce(), now: NOW });

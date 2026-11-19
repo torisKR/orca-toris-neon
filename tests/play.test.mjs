@@ -48,6 +48,22 @@ function harness(handle, extra = {}) {
   };
 }
 
+function faultableStorage() {
+  const data = new Map();
+  let rejectedKey = null;
+  return {
+    data,
+    failNext: key => { rejectedKey = key; },
+    adapter: {
+      get: async key => clone(data.get(key)),
+      set: async (key, value) => {
+        if (rejectedKey === key) { rejectedKey = null; throw new Error("private-storage-details"); }
+        data.set(key, clone(value));
+      },
+    },
+  };
+}
+
 test("credentials only enter protected secrets; public views and storage contain no key, email, path, or token", async () => {
   const h = harness();
   const account = await h.account();
@@ -195,6 +211,7 @@ test("429 respects cooldown even with force and retains last-known releases", as
   assert.equal(limited.error.code, "rate_limited");
   assert.equal(limited.apps[0].tracks[0].stale, true);
   const count = h.calls.length;
+  await h.service.saveAccount({ id: account.id, name: "Renamed while cooling down" });
   await h.service.check({ accountId: account.id, force: true });
   assert.equal(h.calls.length, count);
   h.tick(120001); fail = false;
@@ -332,4 +349,193 @@ test("status gives review/rejection priority while retaining published flag; new
   assert.equal(summarizeApp([track("internal", [r("published", 2)])]).status, "testing");
   assert.equal(summarizeApp([track("production", [])]).status, "no_release");
   assert.equal(summarizeApp([track("production", [r("in_review", 4)])]).status, "in_review");
+});
+
+test("a check waits behind an earlier account edit or removal instead of making it busy", async () => {
+  const h = harness();
+  const account = await h.account({ tracks: ["production"] });
+  const saved = h.service.saveAccount({ id: account.id, name: "Renamed first" });
+  const checking = h.service.check({ accountId: account.id });
+  const [updated, checked] = await Promise.all([saved, checking]);
+  assert.equal(updated.name, "Renamed first");
+  assert.equal(checked.name, "Renamed first");
+
+  const removing = h.service.removeAccount({ accountId: account.id });
+  const afterRemoval = h.service.check({ accountId: account.id }).then(() => null, error => error);
+  const [removed, error] = await Promise.all([removing, afterRemoval]);
+  assert.deepEqual(removed, { removed: account.id });
+  assert.equal(error.code, "not_found");
+  assert.equal(h.keyring.size, 0);
+});
+
+test("an active check blocks account edits and removal until its observations are saved", async () => {
+  let releaseRequest, markStarted;
+  const gate = new Promise(resolve => { releaseRequest = resolve; });
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const h = harness(async url => {
+    if (url === PLAY_TOKEN_URL) {
+      markStarted();
+      await gate;
+      return response({ access_token: "token", expires_in: 3600 });
+    }
+    if (url.includes("apps:search")) return response({ apps: [{ packageName: "com.example.app" }] });
+    return response({ releases: [release()] });
+  });
+  const account = await h.account({ tracks: ["production"] });
+  const checking = h.service.check({ accountId: account.id });
+  await started;
+  try {
+    await assert.rejects(h.service.saveAccount({ id: account.id, name: "Too early" }), error => error.code === "busy");
+    await assert.rejects(h.service.removeAccount({ accountId: account.id }), error => error.code === "busy");
+    assert.equal(h.keyring.size, 1);
+  } finally { releaseRequest(); }
+  const checked = await checking;
+  assert.equal(checked.name, "Toris");
+  assert.equal(checked.error, null);
+});
+
+test("changing a package allowlist immediately hides cached apps outside the selection", async () => {
+  const h = harness(url => {
+    if (url === PLAY_TOKEN_URL) return response({ access_token: "token", expires_in: 3600 });
+    if (url.includes("apps:search")) return response({ apps: ["one", "two"].map(name => ({ packageName: "com.example." + name })) });
+    return response({ releases: [release()] });
+  });
+  const account = await h.account({ tracks: ["production"] });
+  assert.equal((await h.service.check({ accountId: account.id })).apps.length, 2);
+  const edited = await h.service.saveAccount({ id: account.id, packages: ["com.example.one"] });
+  assert.deepEqual(edited.apps.map(app => app.packageName), ["com.example.one"]);
+  assert.equal(edited.apps[0].tracks[0].stale, true);
+  const listed = (await h.service.list()).accounts[0];
+  assert.deepEqual(listed.apps.map(app => app.packageName), ["com.example.one"]);
+});
+
+test("cache reuse requires every selected observation to remain fresh at the exact TTL boundary", async () => {
+  const h = harness();
+  const account = await h.account({ tracks: ["production", "internal"] });
+  await h.service.check({ accountId: account.id });
+  const cached = h.data.get("toris-neon.play.cache.v1." + account.id);
+  cached.apps[0].tracks[0].observedAt = new Date(Date.parse(cached.checkedAt) - 3600000).toISOString();
+  const listed = (await h.service.list()).accounts[0];
+  assert.equal(listed.apps[0].tracks[0].stale, true);
+  assert.equal(listed.apps[0].tracks[1].stale, false);
+  const count = h.calls.length;
+  const refreshed = await h.service.check({ accountId: account.id });
+  assert.ok(h.calls.length > count);
+  assert.equal(refreshed.apps[0].tracks.every(track => !track.stale), true);
+});
+
+test("invalid or future observation timestamps never count as fresh cache entries", async () => {
+  const h = harness();
+  const account = await h.account({ tracks: ["production"] });
+  await h.service.check({ accountId: account.id });
+  const cached = h.data.get("toris-neon.play.cache.v1." + account.id);
+  cached.apps[0].tracks[0].observedAt = "not-a-date";
+  cached.discovery.observedAt = "2099-01-01T00:00:00.000Z";
+  cached.checkedAt = "2099-01-01T00:00:00.000Z";
+  const listed = (await h.service.list()).accounts[0];
+  assert.equal(listed.apps[0].tracks[0].stale, true);
+  assert.equal(listed.discovery.stale, true);
+  const count = h.calls.length;
+  const refreshed = await h.service.check({ accountId: account.id });
+  assert.ok(h.calls.length > count);
+  assert.equal(refreshed.apps[0].tracks[0].stale, false);
+});
+
+test("discovery authentication failure stops release requests and discards the rejected token", async () => {
+  let rejected = false;
+  const h = harness(url => {
+    if (url === PLAY_TOKEN_URL) return response({ access_token: "token", expires_in: 3600 });
+    if (url.includes("apps:search")) return rejected ? response({ error: privateKey }, 401) : response({ apps: [{ packageName: "com.example.app" }] });
+    return response({ releases: [release()] });
+  });
+  const account = await h.account({ tracks: ["production"] });
+  const first = await h.service.check({ accountId: account.id });
+  rejected = true;
+  const count = h.calls.length;
+  const failed = await h.service.check({ accountId: account.id, force: true });
+  assert.equal(h.calls.length - count, 1);
+  assert.equal(failed.error.code, "authentication");
+  assert.equal(failed.apps[0].tracks[0].stale, true);
+  assert.equal(failed.apps[0].tracks[0].observedAt, first.apps[0].tracks[0].observedAt);
+  assert.equal(JSON.stringify(failed).includes("PRIVATE KEY"), false);
+  rejected = false;
+  await h.service.check({ accountId: account.id, force: true });
+  assert.equal(h.calls.filter(call => call.url === PLAY_TOKEN_URL).length, 2);
+});
+
+test("a rejected bearer stops unsent release checks after at most three in-flight requests", async () => {
+  const h = harness(url => {
+    if (url === PLAY_TOKEN_URL) return response({ access_token: "token", expires_in: 3600 });
+    if (url.includes("apps:search")) return response({ apps: ["one", "two", "three"].map(name => ({ packageName: "com.example." + name })) });
+    return response({ error: "secret-provider-body" }, 401);
+  });
+  const account = await h.account();
+  const checked = await h.service.check({ accountId: account.id });
+  assert.ok(h.calls.filter(call => call.url.includes("/releases")).length <= 3);
+  assert.equal(checked.error.code, "authentication");
+  assert.equal(checked.apps.every(app => app.tracks.every(track => track.stale && track.error.code === "authentication")), true);
+  assert.equal(JSON.stringify(checked).includes("secret-provider-body"), false);
+});
+
+test("cache invalidation failure leaves account metadata and credential unchanged", async () => {
+  const store = faultableStorage();
+  const h = harness(null, { storage: store.adapter });
+  const account = await h.account({ tracks: ["production"] });
+  const first = await h.service.check({ accountId: account.id });
+  const previousKey = [...h.keyring.values()][0];
+  store.failNext("toris-neon.play.cache.v1." + account.id);
+  const replacement = JSON.stringify({ ...JSON.parse(credential), client_email: "replacement@example.iam.gserviceaccount.com" });
+  await assert.rejects(h.service.saveAccount({ id: account.id, name: "Changed", serviceAccountJson: replacement }),
+    error => error.code === "storage" && !error.message.includes("private-storage-details"));
+  assert.equal([...h.keyring.values()][0] === previousKey, true, "the previous credential must be retained");
+  const unchanged = (await h.service.list()).accounts[0];
+  assert.equal(unchanged.name, account.name);
+  assert.equal(unchanged.checkedAt, first.checkedAt);
+});
+
+test("failed account metadata persistence restores the previous credential and leaves observations stale", async () => {
+  const store = faultableStorage();
+  const h = harness(null, { storage: store.adapter });
+  const account = await h.account({ tracks: ["production"] });
+  await h.service.check({ accountId: account.id });
+  const previousKey = [...h.keyring.values()][0];
+  store.failNext(PLAY_STORAGE_KEY);
+  const replacement = JSON.stringify({ ...JSON.parse(credential), client_email: "replacement@example.iam.gserviceaccount.com" });
+  await assert.rejects(h.service.saveAccount({ id: account.id, name: "Changed", serviceAccountJson: replacement }), error => error.code === "storage");
+  assert.equal([...h.keyring.values()][0] === previousKey, true, "the previous credential must be restored");
+  const unchanged = (await h.service.list()).accounts[0];
+  assert.equal(unchanged.name, account.name);
+  assert.equal(unchanged.checkedAt, null);
+  assert.equal(unchanged.apps[0].tracks[0].stale, true);
+});
+
+test("failed account removal persistence restores the protected credential", async () => {
+  const store = faultableStorage();
+  const h = harness(null, { storage: store.adapter });
+  const account = await h.account({ tracks: ["production"] });
+  const previousKey = [...h.keyring.values()][0];
+  store.failNext(PLAY_STORAGE_KEY);
+  await assert.rejects(h.service.removeAccount({ accountId: account.id }), error => error.code === "storage");
+  assert.equal([...h.keyring.values()][0] === previousKey, true, "the removed credential must be restored");
+  assert.equal((await h.service.list()).accounts[0].id, account.id);
+  const checked = await h.service.check({ accountId: account.id });
+  assert.equal(checked.error, null);
+});
+
+test("simultaneous rate limits retain the longest Retry-After delay", async () => {
+  let limited = true;
+  const h = harness(url => {
+    if (url === PLAY_TOKEN_URL) return response({ access_token: "token", expires_in: 3600 });
+    if (url.includes("apps:search")) return response({ apps: [{ packageName: "com.example.app" }] });
+    if (limited) return response({}, 429, { "retry-after": url.includes("/production/") ? "180" : "60" });
+    return response({ releases: [release()] });
+  });
+  const account = await h.account({ tracks: ["production", "internal", "beta"] });
+  await h.service.check({ accountId: account.id });
+  const count = h.calls.length;
+  h.tick(60001);
+  await h.service.check({ accountId: account.id, force: true });
+  assert.equal(h.calls.length, count);
+  h.tick(120000); limited = false;
+  assert.equal((await h.service.check({ accountId: account.id, force: true })).error, null);
 });
