@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { reverifyPrompt } from './reverify.mjs';
 
 const exec = promisify(execFile);
 const STORE = 'neon.today.v1';
@@ -224,6 +225,12 @@ export function createTodayService({orca,getState,now=Date.now,inspect=fingerpri
         const limit = requestedLimit ?? latest.size;
         const selected = [...latest.values()].slice(offset,offset+limit);
         const notesPage = {offset,limit,total:latest.size,hasMore:offset+selected.length<latest.size};
+        // Each handoff's start receipt to show: one that still blocks (uncertain or never confirmed) outranks newer ones.
+        const launches = new Map();
+        for (const item of data.resumes.filter(item=>item.noteId&&!item.sessionId)) {
+          if (['uncertain','launching'].includes(launches.get(item.noteId)?.status) && !['uncertain','launching'].includes(item.status)) continue;
+          launches.set(item.noteId,{mode:item.mode??'next',status:item.status,at:item.at});
+        }
         const notesTask = (async()=>{
           if (!selected.length) return [];
           let workspaces = [];
@@ -244,7 +251,7 @@ export function createTodayService({orca,getState,now=Date.now,inspect=fingerpri
               ? {available:false,reason:'저장된 검증이나 비교할 파일 지문이 없어 신선도를 판단하지 않습니다.'}
               : row && isLocal(row.hostId) ? inspections.get(row.path) ?? {available:false,reason:'작업 공간의 현재 파일을 확인하지 못했습니다.'}
               : {available:false,reason:'로컬 작업 공간을 확인할 수 없습니다.'};
-            return {...note,currentFingerprint:current,verificationFreshness:verificationFreshness(note,current)};
+            return {...note,launch:launches.get(note.id)??null,currentFingerprint:current,verificationFreshness:verificationFreshness(note,current)};
           });
         })();
         const logsTask = (async()=>{
@@ -316,7 +323,18 @@ export function createTodayService({orca,getState,now=Date.now,inspect=fingerpri
         const row = await workspace(input.workspaceId);
         const data = await load();
         const note = [...data.notes].reverse().find(n=>n.workspaceId===row.id);
+        // 'next' continues the handoff; 'reverify' re-runs its stale verification on what changed (src/reverify.mjs).
+        const mode = input.mode ?? 'next';
+        if (!['next','reverify'].includes(mode)) throw fail('invalid_params','이어하기 방식은 next 또는 reverify여야 합니다.');
         if (!note?.next && !input.sessionId) throw fail('invalid_params','다음 행동을 먼저 저장하거나 이전 세션을 선택해 주세요.');
+        let current = null;
+        if (mode === 'reverify') {
+          if (input.sessionId) throw fail('invalid_params','재검증은 저장된 인계 기록에서만 시작합니다.');
+          current = isLocal(row.hostId) && verificationFreshness(note,note.fingerprint)==='fresh' ? await inspect(row.path) : null;
+          const freshness = verificationFreshness(note,current);
+          if (freshness === 'fresh') throw fail('invalid_params','저장된 검증이 현재 코드와 같습니다. 다시 검증할 변경이 없습니다.');
+          if (freshness !== 'stale') throw fail('invalid_params','검증 신선도를 판단할 수 없어 재검증 범위를 정하지 못했습니다. 현재 상태를 확인하고 새 인계 메모를 저장해 주세요.');
+        }
         let agent = input.agent || 'codex';
         let session = null;
         if (input.sessionId) {
@@ -327,30 +345,42 @@ export function createTodayService({orca,getState,now=Date.now,inspect=fingerpri
         }
         if (!PROVIDERS.has(agent)) throw fail('invalid_params','지원되는 Orca 에이전트를 선택해 주세요.');
         // A session remains the same operation when a newer handoff is saved.
-        const prior = [...data.resumes].reverse().find(item=>item.workspaceId===row.id && (session ? item.sessionId===session.sessionId : item.sessionId===null && item.noteId===(note?.id??null)));
+        // A re-verification reuses its agent while that agent lives, even after the files it writes change the
+        // hash; once it is done the same code is not re-verified again, and changed code may be.
+        const prior = [...data.resumes].reverse().find(item=>item.workspaceId===row.id && (session ? item.sessionId===session.sessionId
+          : item.sessionId===null && item.noteId===(note?.id??null) && (item.mode??'next')===mode));
         if (prior?.status==='uncertain') throw fail('launch_uncertain','이전 시작 요청의 결과가 불확실합니다. Orca에서 해당 작업 공간의 에이전트를 확인해 주세요. 같은 세션은 새 인계 기록을 저장해도 중복 실행하지 않습니다.');
         if (prior?.status==='launching') throw fail('launch_uncertain','이전 이어하기 시작 영수증이 남아 있습니다. 시간이 지나도 중복 실행하지 않습니다. Orca에서 해당 작업 공간의 에이전트를 확인해 주세요.');
+        let finished = false;
         if (prior?.terminalId) {
+          let state;
           try {
-            const rows = (await orca.host.call('agents.list',{workspaceId:row.id})).agents??[];
-            const existing = rows.find(a=>a.terminalId===prior.terminalId);
-            if (existing) return {...prior,reused:true,agentState:existing.state};
-            // Agent status can arrive after a newly created terminal appears.
-            const terminals = (await orca.host.call('terminal.list',{workspaceId:row.id})).terminals??[];
-            if (terminals.some(t=>t.id===prior.terminalId)) return {...prior,reused:true,agentState:'starting'};
-            throw fail('launch_uncertain','이전 이어하기 터미널을 확인하지 못했습니다. 같은 인계 내용을 자동으로 다시 실행하지 않습니다. 새 인계 기록을 저장해 주세요.');
+            const agentRow = ((await orca.host.call('agents.list',{workspaceId:row.id})).agents??[]).find(a=>a.terminalId===prior.terminalId);
+            if (agentRow) state = agentRow.state;
+            else { // agent status can arrive after a newly created terminal appears
+              const terminals = (await orca.host.call('terminal.list',{workspaceId:row.id})).terminals??[];
+              state = terminals.some(t=>t.id===prior.terminalId) ? 'starting' : null;
+            }
           } catch {
             throw fail('launch_uncertain','기존 이어하기 에이전트의 상태를 확인하지 못했습니다. Orca에서 확인한 뒤 다시 시도해 주세요.');
           }
+          if (mode !== 'reverify' || (state && state !== 'done')) {
+            if (state) return {...prior,reused:true,agentState:state};
+            throw fail('launch_uncertain','이전 이어하기 터미널을 확인하지 못했습니다. 같은 인계 내용을 자동으로 다시 실행하지 않습니다. 새 인계 기록을 저장해 주세요.');
+          }
+          if (prior.hash===current.hash) return {...prior,reused:true,agentState:'done'};
+          finished = true; // the earlier re-verification ended on other code: this code gets its own
         }
-        if (prior) throw fail('launch_uncertain','이전 이어하기 영수증이 불완전합니다. 같은 작업을 중복 실행하지 않습니다. Orca에서 터미널을 확인해 주세요.');
-        const intent = {id:randomUUID(),workspaceId:row.id,noteId:note?.id??null,sessionId:session?.sessionId??null,agent,status:'launching',at:iso(now()),terminalId:null};
+        if (prior && !finished) throw fail('launch_uncertain','이전 이어하기 영수증이 불완전합니다. 같은 작업을 중복 실행하지 않습니다. Orca에서 터미널을 확인해 주세요.');
+        const intent = {id:randomUUID(),workspaceId:row.id,noteId:note?.id??null,sessionId:session?.sessionId??null,agent,mode,...(mode==='reverify'?{hash:current.hash}:{}),status:'launching',at:iso(now()),terminalId:null};
         data.resumes = [...data.resumes,intent];
         await orca.storage.set(STORE,data);
         try {
           let result;
           if (session) {
             result = await orca.host.call('agent.resume',{workspaceId:row.id,agent,sessionId:session.sessionId});
+          } else if (mode === 'reverify') {
+            result = await orca.host.call('agent.launch',{workspaceId:row.id,agent,prompt:reverifyPrompt(note,current)});
           } else {
             const current = isLocal(row.hostId) && verificationFreshness(note,note.fingerprint)==='fresh' ? await inspect(row.path) : null;
             const freshness = verificationFreshness(note,current);

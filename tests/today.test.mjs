@@ -526,3 +526,77 @@ test('simultaneous resume requests launch once and incomplete prior receipts sta
   await assert.rejects(broken.service.resume({workspaceId:row.id}),throwsCode('launch_uncertain'));
   assert.equal(broken.called('agent.launch').length,0);
 });
+
+// Plan 5.2: a stale verification is re-verified on what changed since, once per code state.
+const stale = {available:true,hash:'two',head:'head-2',branch:'main',dirty:true};
+test('re-verifying a stale handoff launches one verification-only agent scoped to the changes since the recorded head', async () => {
+  // Arrange
+  const h = host();
+  await saveNote(h);
+  h.setCurrent(stale);
+  // Act
+  const first = await h.service.resume({workspaceId:row.id,agent:'claude',mode:'reverify'});
+  const again = await h.service.resume({workspaceId:row.id,agent:'claude',mode:'reverify'});
+  // Assert
+  assert.equal(first.status,'started');
+  assert.equal(first.mode,'reverify');
+  assert.equal(again.reused,true);
+  assert.equal(h.called('agent.launch').length,1,'pressing re-verify again reuses the running agent');
+  const prompt = h.called('agent.launch')[0].input.prompt;
+  assert.match(prompt,/git diff head\.\.HEAD/);
+  assert.match(prompt,/영향을 주는 검증만/);
+  assert.match(prompt,/새 기능 작업은 하지 마세요/);
+  assert.match(prompt,/node --test: 5 passed/);
+  assert.equal(h.stored().notes[0].verified,'node --test: 5 passed','the stored handoff is not changed by a re-verification');
+});
+
+test('re-verify refuses a fresh or undecidable handoff and is separate from continuing its next step', async () => {
+  const h = host();
+  await saveNote(h);
+  await assert.rejects(h.service.resume({workspaceId:row.id,mode:'reverify'}),/다시 검증할 변경이 없습니다/);
+  h.setCurrent({available:false,reason:'x'});
+  await assert.rejects(h.service.resume({workspaceId:row.id,mode:'reverify'}),/판단할 수 없어/);
+  await assert.rejects(h.service.resume({workspaceId:row.id,mode:'deploy'}),throwsCode('invalid_params'));
+  h.setCurrent(stale);
+  await h.service.resume({workspaceId:row.id,mode:'reverify'});
+  h.setTerminals([]);
+  const next = await h.service.resume({workspaceId:row.id});
+  assert.equal(next.status,'started','continuing the handoff is its own operation');
+  assert.match(h.called('agent.launch')[1].input.prompt,/다음 행동을 수행/);
+});
+
+test('after the code changes again a new re-verification may start; an uncertain one never repeats and shows on the note', async () => {
+  const h = host();
+  await saveNote(h);
+  h.setCurrent(stale);
+  await h.service.resume({workspaceId:row.id,mode:'reverify'});
+  h.setCurrent({...stale,hash:'three'});
+  const running = await h.service.resume({workspaceId:row.id,mode:'reverify'});
+  assert.equal(running.reused,true,'files the running re-verify wrote do not start a second agent');
+  h.setAgents([{terminalId:'terminal-1',state:'done'}]);
+  h.setCurrent(stale);
+  const done = await h.service.resume({workspaceId:row.id,mode:'reverify'});
+  assert.deepEqual({reused:done.reused,agentState:done.agentState},{reused:true,agentState:'done'},'the same code is not re-verified twice');
+  h.setCurrent({...stale,hash:'three'});
+  await h.service.resume({workspaceId:row.id,mode:'reverify'});
+  assert.equal(h.called('agent.launch').length,2,'a finished re-verify on older code lets the changed code be re-verified');
+  const failing = host({handlers:{'agent.launch':async()=>{throw new Error('host lost');}}});
+  await saveNote(failing);
+  failing.setCurrent(stale);
+  await assert.rejects(failing.service.resume({workspaceId:row.id,mode:'reverify'}),throwsCode('launch_uncertain'));
+  await assert.rejects(failing.service.resume({workspaceId:row.id,mode:'reverify'}),throwsCode('launch_uncertain'));
+  assert.equal(failing.called('agent.launch').length,1);
+  const snapshot = await failing.service.snapshot();
+  assert.deepEqual({mode:snapshot.notes[0].launch.mode,status:snapshot.notes[0].launch.status},{mode:'reverify',status:'uncertain'});
+});
+
+test('a note shows the start that still blocks: an uncertain continue outranks a newer re-verify', async () => {
+  const failing = host({handlers:{'agent.launch':async()=>{throw new Error('host lost');}}});
+  await saveNote(failing);
+  await assert.rejects(failing.service.resume({workspaceId:row.id}),throwsCode('launch_uncertain'));
+  const data = failing.stored();
+  data.resumes.push({id:'r2',workspaceId:row.id,noteId:data.notes[0].id,sessionId:null,agent:'codex',mode:'reverify',hash:'two',status:'started',at:new Date(NOW+1000).toISOString(),terminalId:'t2'});
+  const h = host({stored:data});
+  const snapshot = await h.service.snapshot();
+  assert.deepEqual({mode:snapshot.notes[0].launch.mode,status:snapshot.notes[0].launch.status},{mode:'next',status:'uncertain'});
+});

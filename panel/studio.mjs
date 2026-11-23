@@ -5,10 +5,12 @@ import { collabStrip, relay, inspector, attachCard, people, assignmentForm, team
 import { runResult, artifactId } from './result.mjs';
 import { runTokens } from './tokens.mjs';
 import { preflightBlock, preflightSummary } from './preflight.mjs';
+import { todayRunCard, noteAction } from './todayactions.mjs';
+import { playLinkBlock, linkKey } from './playlinks.mjs';
 const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
 const bridge = window.orca;
-const ui = {tab:'today',state:null,today:null,play:null,runId:null,nodeId:null,agentRole:null,accountId:null,newRun:false,newAccount:false,error:null,busy:false,drafts:{},day:'yesterday',feedLimit:8,sessionLimit:12,archiveId:null,notesBusy:false,pendingUpdate:false,artifacts:new Map(),cancelling:new Set()};
+const ui = {tab:'today',state:null,today:null,play:null,runId:null,nodeId:null,agentRole:null,accountId:null,newRun:false,newAccount:false,error:null,busy:false,drafts:{},day:'yesterday',feedLimit:8,sessionLimit:12,archiveId:null,notesBusy:false,pendingUpdate:false,artifacts:new Map(),cancelling:new Set(),internal:new Map()};
 const playFilters = {query:'',status:'all'};
 let submissionAccounts = [];
 const details = new Map();
@@ -231,13 +233,11 @@ function renderToday() {
     const incomplete=runs.filter(r=>!['completed','cancelled'].includes(r.status));
     html+='<div class="section-heading"><div><h2>이어서 할 일</h2><p>가장 최근에 남긴 다음 행동부터 시작하세요.</p></div>'+button('+ 새 앱','new-run','','small')+'</div>';
     if(!incomplete.length&&!data.notes.length)html+=empty('아직 저장된 이어하기가 없습니다','앱 제작을 시작하거나 현재 프로젝트의 인계 메모를 남겨 주세요.',button('첫 앱 흐름 만들기','new-run','','primary'));
-    for(const item of incomplete.slice(0,ui.runLimit??4)) {
-      const node=item.nodes?.find(n=>['running','review','blocked','failed','awaiting-approval'].includes(n.status))??item.nodes?.find(n=>n.status!=='passed');
-      const done=item.nodes?.filter(n=>n.status==='passed').length??0,total=item.nodes?.length??0;
-      html+='<article class="card accent"><div class="card-head"><div class="grow"><div class="card-title goal-title" title="'+e(goalTitle(item.goal))+'">'+e(goalTitle(item.goal))+'</div><div class="card-subtitle">'+e(node?'다음 지점 · '+title(node):'전체 흐름을 확인해 주세요')+'</div></div>'+badge(item.status)+'</div><div class="progress" aria-label="'+done+'/'+total+'단계 완료"><span style="width:'+(total?done/total*100:0)+'%"></span></div><div class="progress-label"><span>'+done+' / '+total+'단계 검토 완료</span><span>'+e(localDate(item.updatedAt))+'</span></div>'+(node?.failureReason?'<div class="callout warning">'+e(node.failureReason)+'</div>':'')+'<div class="actions">'+button('흐름 열기 →','open-run','data-run="'+e(item.id)+'"','primary')+(item.status==='paused'?button('작업 재개','resume-run','data-run="'+e(item.id)+'"'):'')+'</div></article>';
-    }
+    for(const item of incomplete.slice(0,ui.runLimit??4))html+=todayRunCard(item); // its one next action (panel/todayactions.mjs)
     if(incomplete.length>(ui.runLimit??4))html+=button('진행 중인 흐름 더 보기 · '+incomplete.length+'개','more-runs','','full');
-    html+='<div class="note-grid">'+data.notes.map(note=>'<article class="card note-card"><div class="card-head"><div class="grow"><div class="card-title">'+e(note.projectName)+'</div><div class="card-subtitle">'+e(localDate(note.at))+'</div></div>'+badge(note.verificationFreshness)+'</div><div class="next-step"><span class="note-label">다음 행동</span><p>'+e(note.next||'인계 내용을 확인해 주세요.')+'</p></div><div class="actions"><select class="field note-agent" aria-label="'+e(note.projectName)+' 이어하기 에이전트" data-note-agent="'+e(note.workspaceId)+'">'+providerOptions('codex')+'</select>'+button('오늘 이어하기 →','resume-note','data-workspace="'+e(note.workspaceId)+'"','primary')+button('작업 공간','open-workspace','data-workspace="'+e(note.workspaceId)+'"','small')+'</div><details class="note-context" data-disclosure="note:'+e(note.workspaceId)+'"><summary>진행 내용과 검증 근거</summary><div class="note-line"><span class="note-label">진행한 일</span>'+e(note.state)+'</div>'+(note.why?'<div class="note-line"><span class="note-label">멈춘 이유</span>'+e(note.why)+'</div>':'')+(note.hold?'<div class="note-line"><span class="note-label">보류한 결정</span>'+e(note.hold)+'</div>':'')+(note.verified?'<div class="evidence">'+e(note.verified)+'</div>':'<p class="hint">저장된 검증 근거가 없습니다.</p>')+'</details></article>').join('')+'</div>';
+    const finished=runs.filter(r=>r.status==='completed').sort((a,b)=>String(b.updatedAt??'').localeCompare(String(a.updatedAt??''))).slice(0,3);
+    if(finished.length)html+='<h3 class="section-meta">완료된 결과 · 이어서 개선</h3>'+finished.map(todayRunCard).join('');
+    html+='<div class="note-grid">'+data.notes.map(note=>'<article class="card note-card"><div class="card-head"><div class="grow"><div class="card-title">'+e(note.projectName)+'</div><div class="card-subtitle">'+e(localDate(note.at))+'</div></div>'+badge(note.verificationFreshness)+'</div><div class="next-step"><span class="note-label">다음 행동</span><p>'+e(note.next||'인계 내용을 확인해 주세요.')+'</p></div>'+noteAction(note,providerOptions('codex')).html+'<details class="note-context" data-disclosure="note:'+e(note.workspaceId)+'"><summary>진행 내용과 검증 근거</summary><div class="note-line"><span class="note-label">진행한 일</span>'+e(note.state)+'</div>'+(note.why?'<div class="note-line"><span class="note-label">멈춘 이유</span>'+e(note.why)+'</div>':'')+(note.hold?'<div class="note-line"><span class="note-label">보류한 결정</span>'+e(note.hold)+'</div>':'')+(note.verified?'<div class="evidence">'+e(note.verified)+'</div>':'<p class="hint">저장된 검증 근거가 없습니다.</p>')+'</details></article>').join('')+'</div>';
     if(data.notesPage?.hasMore)html+='<div class="pagination">'+button(ui.notesBusy?'불러오는 중…':'인계 메모 더 보기','more-notes',ui.notesBusy?'disabled':'','full')+'<span class="hint">'+data.notes.length+' / '+data.notesPage.total+'개 표시</span></div>';
     const day=ui.day==='today'?data.date:data.yesterdayDate,events=ui.day==='today'?data.todayEvents:data.yesterdayEvents,logs=(data.worklogs??[]).filter(w=>w.day===day);
     html+='<section class="section daily-section"><div class="section-heading"><h2>작업 기록</h2><div class="segmented" role="group" aria-label="기록 날짜">'+[['yesterday','어제'],['today','오늘']].map(([id,label])=>button(label,'select-day','data-day="'+id+'" aria-pressed="'+(ui.day===id)+'"','small'+(ui.day===id?' active':''))).join('')+'</div></div><p class="section-meta">'+e(day)+' · 실행 기록 '+(events?.length??0)+'개 · 작업 일지 '+logs.length+'개</p>'+renderEvents(events,logs.length?'아래 작업 일지에서 진행한 내용을 확인하세요.':'이 날짜에 저장된 실행 기록이 없습니다.','day:'+day)+logs.slice(0,ui.feedLimit).map(renderWorklog).join('')+(logs.length>ui.feedLimit?button('작업 일지 더 보기 · '+(logs.length-ui.feedLimit)+'개','more-feed','','full'):'')+'</section>';
@@ -408,7 +408,8 @@ function newRunForm() {
   const type=draft('new-run','flowType','new-app'),improve=type==='improve',diagnose=type==='diagnose',existing=improve||diagnose;
   const head='<section class="card accent"><div class="section-heading"><div><p class="eyebrow">'+({improve:'IMPROVE AN APP',diagnose:'DIAGNOSE',resume:'RESUME'}[type]??'NEW APP FLOW')+'</p><h2>'+({improve:'어떤 앱을 개선할까요?',diagnose:'어떤 앱을 진단할까요?',resume:'어떤 흐름을 이어갈까요?'}[type]??'어떤 앱을 만들까요?')+'</h2></div>'+button('닫기','close-new','','small')+'</div>'+flowTypeSwitch(type);
   if(type==='resume')return head+resumeList(ui.state?.runs)+'</section>';
-  return head+'<form id="new-run"><input type="hidden" name="flowType" value="'+e(type)+'">'+parentNotice()+'<label class="label" for="app-goal">'+(diagnose?'진단 메모 (선택)':improve?'개선 목표와 완료 기준':'앱 목표와 완료 기준')+'</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" '+(diagnose?'':'required ')+'maxlength="6000" placeholder="'+(diagnose?'예: 최근 리뷰에 앱이 느리다는 말이 많아요. 그쪽을 먼저 봐 주세요.':improve?'예: 물주기 앱의 홈 화면을 새 디자인으로 바꾸고, 알림 시간 설정과 광고 제거 결제를 추가하고 싶어요. 기존 사용자 기록은 그대로 유지해야 해요.':'예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.')+'">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">'+(existing?'이미 출시한 앱의 저장소를 고르세요. 커밋이 있어야 하며, 시작 시 별도 브랜치와 작업 공간에서 개선합니다.':'프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.')+'</p>'+(improve?improveFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):diagnose?diagnoseFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):'')+'<div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent">'+providerOptions(draft('new-run','agent','codex'))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer">'+providerOptions(draft('new-run','reviewer','codex'))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
+  ui.drafts['new-run.requestId']??='form-'+(globalThis.crypto?.randomUUID?.()??Date.now().toString(36)+Math.random().toString(36).slice(2));
+  return head+'<form id="new-run"><input type="hidden" name="flowType" value="'+e(type)+'"><input type="hidden" name="requestId" value="'+e(ui.drafts['new-run.requestId'])+'">'+parentNotice()+'<label class="label" for="app-goal">'+(diagnose?'진단 메모 (선택)':improve?'개선 목표와 완료 기준':'앱 목표와 완료 기준')+'</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" '+(diagnose?'':'required ')+'maxlength="6000" placeholder="'+(diagnose?'예: 최근 리뷰에 앱이 느리다는 말이 많아요. 그쪽을 먼저 봐 주세요.':improve?'예: 물주기 앱의 홈 화면을 새 디자인으로 바꾸고, 알림 시간 설정과 광고 제거 결제를 추가하고 싶어요. 기존 사용자 기록은 그대로 유지해야 해요.':'예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.')+'">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">'+(existing?'이미 출시한 앱의 저장소를 고르세요. 커밋이 있어야 하며, 시작 시 별도 브랜치와 작업 공간에서 개선합니다.':'프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.')+'</p>'+(improve?improveFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):diagnose?diagnoseFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):'')+'<div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent">'+providerOptions(draft('new-run','agent','codex'))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer">'+providerOptions(draft('new-run','reviewer','codex'))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
 }
 function selectedPlayAccount() {
   const accounts=ui.play?.accounts??[];
@@ -440,7 +441,8 @@ function filteredPlayApps(apps) {
 function playResultCount(shown,total) {
   return shown===total?'전체 '+total+'개':total+'개 중 '+shown+'개';
 }
-function playAppList(matches,accountId) {
+function playAppList(matches,account) {
+  const accountId=account.id;
   if(!matches.length)return empty('검색 결과가 없습니다','검색어 또는 상태 필터를 바꿔 보세요.',button('검색 및 필터 초기화','reset-play-filters','','small'));
   const label=status=>'<span class="badge '+status+'">'+playStatus[status].label+'</span>';
   return '<ul class="play-list" aria-label="Play Store 앱">'+matches.map(({item,status,check})=>`<li>
@@ -455,6 +457,7 @@ function playAppList(matches,accountId) {
       </summary>
       <div class="play-app-tracks">${(item.tracks??[]).map(playTrack).join('')}
         <div class="actions">${button('스토어 페이지 ↗','external','data-url="'+e(item.storeUrl)+'"','small')}</div>
+        ${playLinkBlock({account,app:item,links:ui.play?.links,projects:ui.state?.projects,internal:ui.internal.get(linkKey(accountId,item.packageName))})}
       </div>
     </details></li>`).join('')+'</ul>';
 }
@@ -475,7 +478,7 @@ function updatePlayResults() {
   const account=selectedPlayAccount();
   const apps=account?.apps??[],matches=filteredPlayApps(apps);
   rememberDisclosures(results);
-  results.innerHTML=playAppList(matches,account.id);
+  results.innerHTML=playAppList(matches,account);
   restoreDisclosures(results);
   const count=app.querySelector('#play-result-count');
   const nextCount=playResultCount(matches.length,apps.length);
@@ -504,6 +507,7 @@ function renderPlay() {
         <div class="actions">${button('계정 설정','edit-account',accountData,'small')}${button('연결 해제','remove-account',accountData,'small danger')}</div>
       </details>
       ${account.error?`<div class="callout error">${e(account.error.message??account.error)}</div>`:''}
+      ${ui.play?.linksError?`<div class="callout warning">프로젝트 연결 · ${e(ui.play.linksError)}</div>`:''}
       ${account.discovery?.error?`<div class="callout warning">앱 자동 조회 · ${e(account.discovery.error.message??account.discovery.error)}</div>`:''}
     </section>
     ${apps.length?`<section class="play-catalog" aria-labelledby="play-app-list-title">
@@ -518,7 +522,7 @@ function renderPlay() {
           <select class="field" id="play-status-filter">${options(playFiltersForSelect,playFilters.status)}</select>
         </div>
       </div>
-      <div id="play-results">${playAppList(matches,account.id)}</div>
+      <div id="play-results">${playAppList(matches,account)}</div>
     </section>`:empty('아직 점검 결과가 없습니다','지금 점검을 눌러 앱 목록과 트랙별 릴리스 상태를 읽어오세요.')}`;
 }
 function releaseState(value) {
@@ -620,7 +624,7 @@ app.addEventListener('click',async event=>{
   if(action==='resume-existing'){const item=(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(item?.status==='paused')await request('runs.resume',{runId:item.id});leaveView();ui.runId=target.dataset.run;ui.newRun=false;render();await loadSelectedDetail();return;}
   if(action==='pick-candidate'){const created=await request('runs.create',{fromDiagnosis:{runId:target.dataset.run,index:Number(target.dataset.index)}});leaveView();ui.runId=created.id;ui.nodeId=null;toast('후보로 개선 흐름을 만들었습니다. 같은 후보를 다시 고르면 이 흐름이 열립니다.');render();await loadSelectedDetail();return;}
   if(action==='load-artifact'){await loadArtifact(target.dataset.run,target.dataset.path);return;}
-  if(action==='improve-result'){const item=run()?.id===target.dataset.run?run():(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(!item)return;leaveView();Object.assign(ui.drafts,{'new-run.flowType':'improve','new-run.projectId':item.projectId,'new-run.parentRunId':item.id});ui.newRun=true;render();document.querySelector('#app-goal')?.focus?.();if(!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
+  if(action==='improve-result'){const item=run()?.id===target.dataset.run?run():(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(!item)return;leaveView();Object.assign(ui.drafts,{'new-run.flowType':'improve','new-run.projectId':item.projectId,'new-run.parentRunId':item.id});ui.newRun=true;ui.tab='studio';render();document.querySelector('#app-goal')?.focus?.();if(!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
   if(action==='flow-type'){ui.drafts['new-run.flowType']=target.dataset.type;render();if(['improve','diagnose'].includes(target.dataset.type)&&!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
   if(action==='close-new'){leaveView();ui.newRun=false;render();loadSelectedDetail();return;}
   if(action==='new-account'){leaveView();clearDraft('account');ui.newAccount=true;ui.tab='play';render();return;}
@@ -675,6 +679,20 @@ app.addEventListener('click',async event=>{
       const picker=[...app.querySelectorAll('[data-note-agent]')].find(p=>p.dataset.noteAgent===target.dataset.workspace);
       const result=await request('today.resume',{workspaceId:target.dataset.workspace,agent:picker?.value??'codex'});
       toast(result.reused?(result.agentState==='done'?'이 인계의 작업은 이미 종료됐습니다. 새 인계 메모를 저장하면 새 작업을 시작할 수 있습니다.':'기존 이어하기 에이전트를 사용합니다.'):'저장한 맥락으로 이어하기를 시작했습니다.');
+    } else if(action==='reverify-note') {
+      const picker=[...app.querySelectorAll('[data-note-agent]')].find(p=>p.dataset.noteAgent===target.dataset.workspace);
+      const result=await request('today.resume',{workspaceId:target.dataset.workspace,agent:picker?.value??'codex',mode:'reverify'});
+      toast(result.reused?(result.agentState==='done'?'이 코드 상태는 이미 재검증했습니다. 코드가 바뀌면 다시 재검증할 수 있습니다.':'진행 중인 재검증 에이전트를 사용합니다.'):'바뀐 범위의 재검증을 시작했습니다. 새로 실행한 검증만 통과로 보고합니다.');
+    } else if(['play-action','play-internal','play-unlink'].includes(action)) {
+      const key=linkKey(target.dataset.account,target.dataset.package),input={accountId:target.dataset.account,packageName:target.dataset.package};
+      if(action==='play-unlink'){await request('play.link.remove',input);toast('Play 앱과 프로젝트의 연결을 해제했습니다.');}
+      else if(action==='play-internal'){toast('internal 트랙을 다시 읽고 있습니다.');const result=await request('play.internalCheck',input);ui.internal.set(key,result);toast(result.text);}
+      else {
+        const reason=[...app.querySelectorAll('[data-play-reason]')].find(field=>field.dataset.playReason===key)?.value;
+        const created=await request('play.action.start',{...input,action:target.dataset.kind,agent:'codex',reviewer:'claude',...(reason?.trim()?{rejectionReason:reason}:{})});
+        leaveView();ui.runId=created.id;ui.tab='studio';ui.newRun=false;ui.nodeId=null;
+        toast('실행 계획을 만들었습니다. 실행 전 점검을 확인하고 시작하세요. 같은 작업을 다시 누르면 이 실행이 열립니다.');
+      }
     } else if(action==='resume-session') {
       await request('today.resume',{workspaceId:target.dataset.workspace,agent:target.dataset.agent,sessionId:target.dataset.session});
       toast('이전 세션을 이어갑니다.');
@@ -727,6 +745,8 @@ app.addEventListener('submit',async event=>{
     } else if(form.id==='attach-workspace') {
       await request('runs.attachWorkspace',{runId:form.dataset.run,workspaceId:values.workspaceId});
       toast('작업 공간을 연결했습니다. 배정을 확인한 뒤 재개해 주세요.');
+    } else if(form.dataset?.form==='play-link') {
+      await request('play.link.save',{accountId:form.dataset.account,packageName:form.dataset.package,projectId:values.projectId});clearDraft(form.id);toast('Play 앱을 프로젝트에 연결했습니다.');
     } else if(form.id==='handoff') {
       await request('today.save',values);clearDraft('handoff');toast('다음에 이어갈 맥락을 저장했습니다.');
     } else if(form.id==='account') {

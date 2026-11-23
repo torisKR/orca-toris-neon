@@ -86,6 +86,7 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     why:'미리보기용 인계 기록입니다.',hold:['알림 시간 기본값','오프라인 저장 정책','첫 화면 안내 문구'][index%3],
     verified:index%3===2?'':'미리보기 데이터 · 실제 테스트 결과 아님',
     at:iso(stamp-86400000-index*1200000),day:yesterdayDate,verificationFreshness:['fresh','stale','unknown'][index%3],
+    launch:index===3?{mode:'next',status:'uncertain',at:iso(stamp-80000000)}:null, // one start whose result Orca never confirmed
   }));
   const allRuns=[sample,...archivedRuns];
   const eventTitles=['제품 목표와 완료 기준을 정리했습니다.','화면 설계 검토를 마쳤습니다.','구현 작업에 담당자를 배정했습니다.','테스트 결과와 남은 일을 정리했습니다.','다음 단계의 준비 범위를 확인했습니다.'];
@@ -106,11 +107,16 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     sessions:[{sessionId:'preview-session-1',workspaceId:'preview-workspace',agent:'codex',title:'루틴 타이머 설계 · 샘플',updatedAt:iso(stamp-86400000),messageCount:12},
       {sessionId:'preview-session-2',workspaceId:'preview-workspace-2',agent:'claude',title:'메모 편집 흐름 검토 · 샘플',updatedAt:iso(stamp-90000000),messageCount:8}],
     sessionsTruncated:false,warnings:[]};
-  const accounts=[{id:'preview-account',name:'샘플 개발자 계정',developerId:'1000000000000000000',packages:['com.example.moonhabit'],tracks:['production','internal'],hasCredential:false,
+  const accounts=[{id:'preview-account',name:'샘플 개발자 계정',developerId:'1000000000000000000',packages:['com.example.moonhabit','com.example.quietnotes'],tracks:['production','internal'],hasCredential:false,
     checkedAt:iso(stamp),discovery:{observedAt:iso(stamp),stale:false},apps:[{packageName:'com.example.moonhabit',name:'달빛 습관 (미리보기)',
       status:'in_review',published:true,needsAttention:true,storeUrl:'https://play.google.com/store/apps/details?id=com.example.moonhabit',
       tracks:[{track:'production',observedAt:iso(stamp),stale:false,releases:[{name:'0.9.0',versionCodes:['9'],state:'published'},{name:'1.0.0',versionCodes:['10'],state:'in_review'}]},
-        {track:'internal',observedAt:iso(stamp-86400000),stale:true,error:{message:'429 · 미리보기용 API 제한 상태'},releases:[{name:'1.0.1',versionCodes:['11'],state:'published'}]}]}]}];
+        {track:'internal',observedAt:iso(stamp-86400000),stale:true,error:{message:'429 · 미리보기용 API 제한 상태'},releases:[{name:'1.0.1',versionCodes:['11'],state:'published'}]}]},
+      {packageName:'com.example.quietnotes',name:'고요 메모 (미리보기)',status:'rejected',published:false,needsAttention:true,storeUrl:'https://play.google.com/store/apps/details?id=com.example.quietnotes',
+        tracks:[{track:'production',observedAt:iso(stamp),stale:false,releases:[{name:'2.0.0',versionCodes:['20'],state:'not_approved'}]},{track:'internal',observedAt:iso(stamp),stale:false,releases:[{name:'2.0.0',versionCodes:['20'],state:'published'}]}]}]}];
+  // Play app ↔ project links (src/playlinks.mjs); the rejected app shows the reason field.
+  let links=[{accountId:'preview-account',developerId:'1000000000000000000',accountName:'샘플 개발자 계정',packageName:'com.example.moonhabit',projectId:'preview-project',projectName:'moon-habit',linkedAt:iso(stamp),problem:null},
+    {accountId:'preview-account',developerId:'1000000000000000000',accountName:'샘플 개발자 계정',packageName:'com.example.quietnotes',projectId:'preview-project-2',projectName:'quiet-notes',linkedAt:iso(stamp),problem:null}];
 
   const lookup=(id,archived=false)=>{
     const value=state.runs.find(run=>run.id===id)||(archived?state.archivedRuns.find(run=>run.id===id):null);
@@ -182,7 +188,17 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     if(name==='state.get')return snapshot(input);
     if(name==='runs.get')return lookup(input.runId,true);
     if(name==='today.snapshot')return todaySnapshot(input);
-    if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts};
+    if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts,links};
+    if(name==='play.link.save'){const project=projects.find(row=>row.id===input.projectId);if(!project)throw Error('프로젝트를 선택하세요.');
+      links=[...links.filter(row=>!(row.accountId===input.accountId&&row.packageName===input.packageName)),{...input,developerId:'1000000000000000000',accountName:'샘플 개발자 계정',projectName:project.name,linkedAt:iso(tick()),problem:null}];return links.at(-1);}
+    if(name==='play.link.remove'){links=links.filter(row=>!(row.accountId===input.accountId&&row.packageName===input.packageName));return {removed:true};}
+    if(name==='play.internalCheck')return {...input,state:'no_build',observed:[11],observedAt:iso(stamp-86400000),stale:true,text:'미리보기 · Neon 실행에 기록된 내부 테스트 빌드가 없습니다. internal 트랙 관측값만 표시합니다.'};
+    if(name==='play.action.start'){
+      const app=accounts[0].apps.find(row=>row.packageName===input.packageName);
+      if(app?.status==='rejected'&&!['policy'].includes(input.action)&&!String(input.rejectionReason??'').trim())throw Error('승인되지 않은 릴리스가 있습니다. 실제 반려 사유 없이 자동으로 고치지 않습니다.');
+      const link=links.find(row=>row.packageName===input.packageName);
+      return dispatch('runs.create',{template:'improve',kind:input.action,projectId:link.projectId,goal:'미리보기 · '+input.action+' · '+input.packageName});
+    }
     if(name==='play.submissionAccounts')return accounts.map(({id,name,developerId})=>({id,name,developerId}));
     if(name==='artifacts.read')return previewArtifact(input.path);
     // Synthetic preflight facts (no host probe): a Flutter app missing the Android SDK, debug-signed, no Play account.

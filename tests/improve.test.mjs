@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRun, templateGraph, IMPROVE_STAGE_IDS } from '../src/engine.mjs';
+import { createRun, templateGraph, IMPROVE_STAGE_IDS, IMPROVE_KINDS } from '../src/engine.mjs';
 import { KIND_LABELS, KIND_DONE, UPDATE_RULE, IMPROVE_BRIEFS, improvementContext, prepareImprovement, billingSkillInstruction } from '../src/improve.mjs';
 import { proposedProducts, catalogNotice, productCatalogApproval } from '../src/catalog.mjs';
 import { buildNodePrompt } from '../src/prompt.mjs';
@@ -14,6 +14,17 @@ function improveRun(kind = 'feature', options = { design: true, payments: true }
 }
 const node = (run, id) => run.nodes.find((item) => item.id === id);
 const job = (id, phase = 'work') => ({ runId: 'r1', nodeId: id, nonce: 'n-' + id, phase, attempt: 1, agent: 'claude', receiptDirectory: '/r/' + id, receiptPath: '/r/' + id + '/result.json' });
+
+test('every improvement kind has a label and its own done criteria; store listing and policy checks change no source', () => {
+  for (const kind of Object.keys(IMPROVE_KINDS)) {
+    assert.ok(KIND_LABELS[kind], kind + ' label');
+    assert.ok(KIND_DONE[kind]?.length > 20, kind + ' done criteria');
+  }
+  assert.match(KIND_DONE.listing, /실제 앱/);
+  assert.match(KIND_DONE.listing, /시안/);
+  assert.match(KIND_DONE.policy, /바꾸지/);
+  assert.match(improvementContext(improveRun('policy', { design: false, payments: false })), /정책·권한 점검/);
+});
 
 test('every stage of the improvement template has an update brief', () => {
   for (const id of IMPROVE_STAGE_IDS) assert.ok(IMPROVE_BRIEFS[id]?.length > 40, id);
@@ -66,6 +77,15 @@ function deps({ projects = [{ id: 'p1', name: 'water_garden', hostId: 'local', p
     },
   };
 }
+
+test('a linked app whose release was rejected gets no fix run without the pasted reason; a policy check or diagnosis may run', async () => {
+  const rejected = deps({ app: { ...playLink, status: 'rejected' } });
+  const input = { projectId: 'p1', kind: 'bugfix', playLink: { accountId: 'acc-1', packageName: 'com.example.water' } };
+  await assert.rejects(prepareImprovement(input, rejected), /반려 사유/);
+  assert.equal((await prepareImprovement({ ...input, rejectionReason: 'Policy: 권한 고지 누락' }, rejected)).kind, 'bugfix');
+  assert.equal((await prepareImprovement({ ...input, kind: 'policy' }, rejected)).kind, 'policy');
+  assert.equal((await prepareImprovement(input, rejected, { diagnose: true })).kind, null);
+});
 
 test('an improvement needs an existing local repository with commits, a known kind and, if linked, a known Play package', async () => {
   const ok = await prepareImprovement({ projectId: 'p1', kind: 'feature', options: { payments: true }, playLink: { accountId: 'acc-1', packageName: 'com.example.water' } }, deps());

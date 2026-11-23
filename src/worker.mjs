@@ -6,6 +6,8 @@ import { createTodayService } from './today.mjs';
 import { createEccAdvisor } from './ecc.mjs';
 import { createVisualAdvisor, createLaunchOverrides } from './visual.mjs';
 import { createPreflight, preflightHandlers } from './preflight.mjs';
+import { createPlayLinks } from './playlinks.mjs';
+import { playLinkHandlers } from './playactions.mjs';
 
 let activeRuntime;
 const subscriptions = [];
@@ -46,10 +48,13 @@ export default async function activate(orca) {
     call: (method, params) => orca.host.call(method, params),
     submissionAccounts: () => play.listSubmissionAccounts()
   });
+  // Play Store tab: a Play app linked to a project, and what it can start (src/playlinks.mjs, src/playactions.mjs).
+  const links = createPlayLinks({ storage: orca.storage, listAccounts: () => play.list(), call: (method, params) => orca.host.call(method, params) });
+  const allRuns = () => { const state = runtime.getState(); return [...state.runs, ...state.archivedRuns]; };
   const handlers = {
     ...runtime.handlers,
     ...preflightHandlers({ preflight, start: runtime.handlers['runs.start'], log: (line) => orca.log?.(line) }),
-    'play.list': () => play.list(),
+    ...playLinkHandlers({ play, links, getRuns: allRuns, createRun: runtime.handlers['runs.create'] }),
     'play.submissionAccounts': () => play.listSubmissionAccounts(),
     'play.account.save': (input) => play.saveAccount(input),
     'play.account.remove': (input) => play.removeAccount(input),

@@ -52,6 +52,8 @@ export const IMPROVE_KINDS = Object.freeze({
   performance: ['identity', 'measure', 'build', 'test'],
   maintenance: ['identity', 'plan', 'build', 'test'],
   release: ['identity', 'test', 'policy', 'listing', 'internal', 'release'],
+  listing: ['identity', 'listing'], // Play Store tab: store description and screenshots, applied in Play Console by a person
+  policy: ['identity', 'policy'], // Play Store tab: policy and permission check, changes nothing
 });
 const OPTION_OF = { 'design?': 'design', 'assets?': 'design', 'monetization?': 'payments', 'catalog?': 'payments' };
 const PLAY_STAGES = new Set(['monetization', 'policy', 'listing', 'catalog', 'internal', 'release']); // a web project never gets these
@@ -75,6 +77,7 @@ export function templateGraph(template = 'new-app', { kind, design = false, paym
   if (!Object.hasOwn(IMPROVE_KINDS, kind)) fail('invalid_input', '개선 종류를 고르세요: ' + Object.keys(IMPROVE_KINDS).join(', '));
   if (kind !== 'feature' && (design || payments)) fail('invalid_input', '디자인·결제 옵션은 기능 추가에서만 고를 수 있습니다.');
   if (web && payments) fail('invalid_input', '웹 프로젝트에는 Play 결제 연동·상품 등록 단계를 만들지 않습니다.');
+  if (web && (kind === 'listing' || kind === 'policy')) fail('invalid_input', '웹 프로젝트에는 Play 스토어 자료·정책 점검 흐름을 만들지 않습니다.');
   const options = { design: Boolean(design), payments: Boolean(payments) };
   const ids = IMPROVE_KINDS[kind].filter(id => !OPTION_OF[id] || options[OPTION_OF[id]]).map(id => id.replace('?', '')).filter(id => !web || !PLAY_STAGES.has(id));
   return linear(ids, KIND_TITLES[kind]);

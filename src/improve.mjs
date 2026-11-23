@@ -6,7 +6,7 @@ import { templateGraph } from './engine.mjs';
 import { fileIo } from './ecc.mjs';
 import { projectPlatform, WEB_RELEASE_DONE, WEB_NOTE } from './kinds.mjs';
 
-export const KIND_LABELS = Object.freeze({ bugfix: '오류 수정', feature: '기능 추가', design: '디자인·에셋 개선', performance: '성능 최적화', maintenance: '유지보수', release: '출시 업데이트' });
+export const KIND_LABELS = Object.freeze({ bugfix: '오류 수정', feature: '기능 추가', design: '디자인·에셋 개선', performance: '성능 최적화', maintenance: '유지보수', release: '출시 업데이트', listing: '스토어 설명·스크린샷 개선', policy: '정책·권한 점검' });
 /** What "done" means for each kind; every brief of the run carries it. */
 export const KIND_DONE = Object.freeze({
   bugfix: '같은 증상이 수정 전에는 실패하고 수정 후에는 통과함을 근거와 함께 보여야 완료입니다.',
@@ -15,6 +15,8 @@ export const KIND_DONE = Object.freeze({
   performance: '측정 시나리오·환경·표본 수를 적고, 같은 조건에서 잰 실제 전후 수치가 있어야 완료입니다. 개선율은 두 측정이 모두 있을 때만 계산합니다.',
   maintenance: '이 변경에 해당하는 검증을 실제로 실행해야 완료입니다.',
   release: '마지막 검증 이후 바뀐 것만 다시 검증하고, 소스·빌드·계정·패키지·트랙·버전이 서로 연결돼야 하며, 실제 제출은 사람이 승인합니다.',
+  listing: '스토어 설명과 릴리스 노트는 현재 앱에 실제로 있는 기능만 말하고, 스크린샷은 기기·화면 크기·언어·데이터를 적은 실제 앱 캡처여야 완료입니다. 시안은 시안으로 표시하고, Play Console 반영은 사람이 합니다.',
+  policy: '현재 소스의 권한 선언, targetSdk, 데이터 보안 양식, 결제·광고 정책 해당 여부를 공식 근거와 확인 날짜로 점검하면 완료입니다. 소스와 스토어 설정은 바꾸지 말고, 필요한 조치는 목록으로 남기세요.',
 });
 export const UPDATE_RULE = '이것은 이미 출시된 기존 앱입니다. 동작하는 기능과 사용자 데이터를 보존하고, 개선 기획이 정한 범위만 바꾸세요. 패키지명, 서명 키, 이미 판매한 구매·구독, 저장된 사용자 데이터 형식은 바꾸거나 무효화하지 마세요.';
 const PACKAGE = /^[A-Za-z]\w*(?:\.[A-Za-z]\w*)+$/;
@@ -108,6 +110,11 @@ export async function prepareImprovement(input, { call, inspectRepository, readP
     if (!readPlayApp) throw invalid('Play 계정 정보를 읽을 수 없습니다.');
     try { playLink = await readPlayApp({ accountId, packageName }); }
     catch (error) { throw invalid(String(error?.message ?? error)); }
+  }
+  // Plan 5.3: a rejected release gets no fix without the reason Play Console gave; checking it (policy, diagnosis) may run.
+  const reason = typeof input.rejectionReason === 'string' ? input.rejectionReason.trim() : '';
+  if (playLink?.status === 'rejected' && kind && kind !== 'policy' && !reason) {
+    throw invalid('연결한 Play 앱의 최근 릴리스가 승인되지 않았습니다. 실제 반려 사유 없이 고치지 않습니다. Play Store 탭에서 Play Console의 반려 사유를 붙여 넣고 시작하세요.');
   }
   return { kind, options, improvement: { kind, options, projectName: project.name ?? null, playLink, platform } };
 }

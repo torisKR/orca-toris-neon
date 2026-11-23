@@ -396,7 +396,7 @@ test('templates are a validated choice: new-app is the default graph, unknown te
   assert.throws(() => templateGraph('improve', {}), thrown('invalid_input'));
   assert.throws(() => templateGraph('improve', { kind: 'rewrite' }), thrown('invalid_input'));
   assert.throws(() => templateGraph('improve', { kind: 'bugfix', payments: true }), thrown('invalid_input'), 'payments is a feature option only');
-  assert.deepEqual(Object.keys(IMPROVE_KINDS), ['bugfix', 'feature', 'design', 'performance', 'maintenance', 'release']);
+  assert.deepEqual(Object.keys(IMPROVE_KINDS), ['bugfix', 'feature', 'design', 'performance', 'maintenance', 'release', 'listing', 'policy']);
 });
 
 test('each improvement kind has its own short graph, always starting from identity and reusing build and test', () => {
@@ -407,6 +407,8 @@ test('each improvement kind has its own short graph, always starting from identi
     performance: ['identity', 'measure', 'build', 'test'],
     maintenance: ['identity', 'plan', 'build', 'test'],
     release: ['identity', 'test', 'policy', 'listing', 'internal', 'release'],
+    listing: ['identity', 'listing'],
+    policy: ['identity', 'policy'],
   };
   for (const [kind, stages] of Object.entries(expected)) {
     const nodes = templateGraph('improve', { kind });
@@ -418,6 +420,10 @@ test('each improvement kind has its own short graph, always starting from identi
     ['identity', 'plan', 'design', 'assets', 'build', 'monetization', 'test', 'catalog']);
   assert.equal(templateGraph('improve', { kind: 'bugfix' }).find(node => node.id === 'build').title, '오류 수정');
   assert.deepEqual(ids(templateGraph('diagnose')), ['identity', 'diagnose']);
+  assert.ok([...templateGraph('improve', { kind: 'listing' }), ...templateGraph('improve', { kind: 'policy' })].every(node => !node.requiresApproval),
+    'the store-listing and policy checks submit nothing, so they wait on no approval');
+  assert.throws(() => templateGraph('improve', { kind: 'policy', web: true }), thrown('invalid_input'), 'a web project has no Play policy or listing to check');
+  assert.throws(() => templateGraph('improve', { kind: 'listing', web: true }), thrown('invalid_input'));
   for (const id of [...ids(templateGraph('improve', { kind: 'feature', design: true, payments: true })), 'reproduce', 'measure', 'diagnose', 'policy']) assert.ok(IMPROVE_STAGE_IDS.includes(id), id);
 });
 

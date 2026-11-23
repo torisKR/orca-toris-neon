@@ -17,6 +17,8 @@ export const KINDS = [
   ['performance', '성능 최적화', '같은 조건에서 전후 수치를 잽니다'],
   ['maintenance', '유지보수', '의존성·구조 정리 등, 해당하는 검증을 실행합니다'],
   ['release', '출시 업데이트', '바뀐 부분을 다시 검증하고 출시 자료를 준비합니다. 제출은 직접 승인합니다'],
+  ['listing', '스토어 설명·스크린샷 개선', '실제 앱 기준으로 설명과 스크린샷을 고칩니다. Play Console 반영은 직접 합니다'],
+  ['policy', '정책·권한 점검', '권한·targetSdk·데이터 보안·결제 정책을 점검만 합니다'],
 ];
 export const KIND_NAMES = Object.fromEntries(KINDS.map(([id, label]) => [id, label]));
 const TYPES = [['new-app', '새 앱 만들기', '아이디어에서 출시까지'], ['improve', '기존 앱 개선하기', '출시한 앱을 종류별로 개선'],
@@ -68,6 +70,7 @@ export function newRunPayload(values) {
   if (template !== 'diagnose' || values.goal?.trim()) data.goal = values.goal;
   if (values.baseBranch?.trim()) data.baseBranch = values.baseBranch.trim();
   if (values.parentRunId) data.parentRunId = values.parentRunId;
+  if (values.requestId) data.requestId = values.requestId; // one per opened form: a resubmit returns the run it made
   if (template === 'improve') {
     if (!KIND_NAMES[values.kind]) throw new Error('개선 종류를 고르세요.');
     data.kind = values.kind;

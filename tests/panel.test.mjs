@@ -1028,3 +1028,48 @@ test('a finished run card does not run a preflight',async()=>{
   assert.equal(h.requests('runs.preflight').length,0);
   assert.doesNotMatch(h.app.innerHTML,/실행 전 점검/);
 });
+
+// Plan 5.2–5.3: Today and Play Store actions reuse what exists instead of making a second run.
+test('a stale handoff offers re-verify, which asks the worker for a scoped re-verification of that workspace',async()=>{
+  const today={...emptyToday,notes:[{id:'n1',workspaceId:'workspace-1',projectName:'Water',state:'진행',next:'다음',verified:'flutter test',verificationFreshness:'stale',launch:null,at:NOW}]};
+  const h=await harness({responses:{'today.snapshot':()=>copy(today)}});await h.flushFrames();
+  assert.equal(renderedAction(h.app.innerHTML,'reverify-note').workspace,'workspace-1');
+  await h.click({action:'reverify-note',workspace:'workspace-1'});
+  assert.deepEqual(h.requests('today.resume')[0].input,{workspaceId:'workspace-1',agent:'codex',mode:'reverify'});
+  assert.equal(h.requests('runs.create').length,0);
+});
+
+test('a finished result on Today opens the improve form with one request id that a resubmit reuses',async()=>{
+  const state=baseState();state.runs=[{...workflow(),id:'done-1',status:'completed',projectId:'project-1'}];
+  const h=await harness({state});await h.flushFrames();
+  assert.equal(renderedAction(h.app.innerHTML,'improve-result').run,'done-1');
+  await h.click({action:'improve-result',run:'done-1'});
+  const requestId=h.app.innerHTML.match(/name="requestId" value="([^"]+)"/)?.[1];
+  assert.ok(requestId,'the improve form carries a request id');
+  const values={flowType:'improve',kind:'bugfix',goal:'오류 수정',projectId:'project-1',parentRunId:'done-1',agent:'codex',reviewer:'codex',maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'1',requestId};
+  await h.submit(h.form('new-run',values));
+  assert.equal(h.requests('runs.create')[0].input.requestId,requestId);
+  assert.equal(h.requests('runs.create')[0].input.parentRunId,'done-1');
+  await h.click({action:'new-run'});
+  assert.notEqual(h.app.innerHTML.match(/name="requestId" value="([^"]+)"/)?.[1],requestId,'a new form after a created run gets a new id');
+});
+
+test('a Play app is linked by an explicit account, package and project, and its actions plan a run by that link',async()=>{
+  const app={packageName:'com.example.water',name:'Water',status:'published',storeUrl:'https://play.google.com/store/apps/details?id=com.example.water',tracks:[{track:'internal',observedAt:NOW,releases:[{versionCodes:[42],state:'published'}]}]};
+  const account={id:'acc-a',name:'Studio A',developerId:'1234567890123456789',packages:['com.example.water'],tracks:['internal'],apps:[app]};
+  const link={accountId:'acc-a',developerId:account.developerId,accountName:'Studio A',packageName:'com.example.water',projectId:'project-1',projectName:'App',problem:null};
+  let links=[];
+  const h=await harness({responses:{'play.list':()=>({accounts:[copy(account)],protection:{status:'os-keyring'},links:copy(links)}),'play.action.start':()=>({id:'planned-1'})}});
+  await h.click({action:'tab',tab:'play'});
+  assert.match(h.app.innerHTML,/data-form="play-link"/);
+  await h.submit(h.form('play-link-acc-a-com-example-water',{projectId:'project-1'},{form:'play-link',account:'acc-a',package:'com.example.water'}));
+  assert.deepEqual(h.requests('play.link.save')[0].input,{accountId:'acc-a',packageName:'com.example.water',projectId:'project-1'});
+  links=[link];
+  await h.click({action:'tab',tab:'play'});
+  assert.equal(renderedAction(h.app.innerHTML,'play-action').kind,'release');
+  await h.click({action:'play-action',kind:'release',account:'acc-a',package:'com.example.water'});
+  assert.deepEqual(h.requests('play.action.start')[0].input,{accountId:'acc-a',packageName:'com.example.water',action:'release',agent:'codex',reviewer:'claude'});
+  assert.equal(h.requests('runs.start').length,0,'the action plans a run; the person starts it');
+  await h.click({action:'play-internal',account:'acc-a',package:'com.example.water'});
+  assert.deepEqual(h.requests('play.internalCheck')[0].input,{accountId:'acc-a',packageName:'com.example.water'});
+});

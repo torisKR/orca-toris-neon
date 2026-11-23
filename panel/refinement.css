@@ -128,6 +128,11 @@ body{background:radial-gradient(ellipse at 80% 0,color-mix(in srgb,var(--neon) 4
 .play-app-tracks{padding:0 10px 10px}
 .play-app-tracks .actions{margin-top:7px}
 .track .play-track-error,.badge.lookup_error{color:var(--red)}
+/* Play app linked to a project (panel/playlinks.mjs) */
+.play-link-block{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.play-link-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;margin:6px 0 0;font-size:11px}
+.play-link-facts dt{color:var(--muted)}
+.play-link-facts dd{margin:0;overflow-wrap:anywhere}
 .badge.not_sent_for_review,.badge.approved_not_published{color:var(--amber)}
 .agent-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
 .agent-card{padding:15px}
