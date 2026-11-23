@@ -64,6 +64,26 @@ function faultableStorage() {
   };
 }
 
+test("submission verifies the selected developer's explicit package with a GET for the exact track", async () => {
+  const h = harness();
+  const legacy = await h.account();
+  const developerId = "1000000000000000000";
+  const account = await h.account({ developerId, packages: ["com.example.app"] });
+  const target = { accountId: account.id, developerId, packageName: "com.example.app", track: "internal" };
+  assert.deepEqual(await h.service.listSubmissionAccounts(), [{ id: account.id, name: "Toris", developerId }]);
+  await assert.rejects(h.service.submissionAccount({ ...target, accountId: legacy.id }), /계정이 변경됐습니다/);
+  await assert.rejects(h.service.submissionAccount({ ...target, packageName: "com.other.app" }), /등록되어 있지 않습니다/);
+  await assert.rejects(h.account({ developerId }), /이미 연결되어 있습니다/);
+  await h.service.submissionAccount(target);
+  assert.equal(h.calls.length, 0);
+  assert.deepEqual(await h.service.submissionAccount(target, { verifyAccess: true }), { accountId: account.id, accountName: "Toris", developerId });
+  assert.deepEqual(h.calls.map(call => call.method), ["POST", "GET"]);
+  assert.match(h.calls[1].url, /com\.example\.app\/tracks\/internal\/releases$/);
+  await h.service.saveAccount({ id: account.id, packages: [] });
+  await assert.rejects(h.service.submissionAccount(target, { verifyAccess: true }), /등록되어 있지 않습니다/);
+  assert.equal(h.calls.length, 2);
+});
+
 test("credentials only enter protected secrets; public views and storage contain no key, email, path, or token", async () => {
   const h = harness();
   const account = await h.account();

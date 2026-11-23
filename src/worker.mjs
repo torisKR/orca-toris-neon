@@ -1,6 +1,8 @@
 import { createRuntime } from './runtime.mjs';
 import { createPlayService } from './play.mjs';
 import { createTodayService } from './today.mjs';
+import { createEccAdvisor } from './ecc.mjs';
+import { createVisualAdvisor, createLaunchOverrides } from './visual.mjs';
 
 let activeRuntime;
 const subscriptions = [];
@@ -14,9 +16,6 @@ const inputObject = (input) => {
 
 /** Native Orca worker. All external actions stay behind Orca's granted host APIs. */
 export default async function activate(orca) {
-  const runtime = createRuntime({ orca });
-  activeRuntime = runtime;
-  await runtime.initialize();
   const secrets = {
     get: async (key) => (await orca.host.call('secrets.get', { key })).value,
     set: (key, value) => orca.host.call('secrets.set', { key, value }),
@@ -24,10 +23,21 @@ export default async function activate(orca) {
     protection: () => orca.host.call('secrets.protection', {})
   };
   const play = createPlayService({ storage: orca.storage, secrets });
+  const launchOverrides = createLaunchOverrides({ log: (line) => orca.log?.('Toris Neon ' + line) });
+  // Runs only when orca-plugin.json lists the hook; otherwise launches record "not applied".
+  try { subscriptions.push(orca.hooks?.on?.('agent.launch.before', (event, next) => launchOverrides.handle(event, next))); }
+  catch (error) { orca.log?.('Toris Neon: agent.launch.before hook unavailable: ' + String(error?.message ?? error)); }
+  const runtime = createRuntime({
+    orca, resolvePlayAccount: play.submissionAccount, eccAdvisor: createEccAdvisor(),
+    visualAdvisor: createVisualAdvisor(), launchOverrides
+  });
+  activeRuntime = runtime;
+  await runtime.initialize();
   const today = createTodayService({ orca, getState: runtime.getState });
   const handlers = {
     ...runtime.handlers,
     'play.list': () => play.list(),
+    'play.submissionAccounts': () => play.listSubmissionAccounts(),
     'play.account.save': (input) => play.saveAccount(input),
     'play.account.remove': (input) => play.removeAccount(input),
     'play.check': (input) => play.check(input),

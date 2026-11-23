@@ -2,6 +2,8 @@
 
 Play Store 화면은 계정이 접근할 수 있는 앱과 트랙의 **출시 수명 주기**를 읽습니다. “현재 심사 중인가”, “승인됐지만 아직 게시 전인가”, “어느 버전이 테스트 트랙에 있는가”를 한곳에서 확인하기 위한 기능입니다.
 
+앱 목록은 거부, 심사 제출 전, 승인 후 게시 대기처럼 조치할 항목을 먼저 표시합니다. 조회 오류와 재확인 표시는 해당 앱의 마지막 관측 상태와 함께 남습니다. 선택한 계정 안에서 앱 이름·패키지명을 검색하고 상태를 필터링할 수 있습니다. 앱 행을 펼치면 트랙별 버전과 관측 시각이 표시됩니다.
+
 구현: [src/play.mjs](../src/play.mjs) · 테스트: [tests/play.test.mjs](../tests/play.test.mjs)
 
 ## 계정 준비
@@ -9,7 +11,7 @@ Play Store 화면은 계정이 접근할 수 있는 앱과 트랙의 **출시 �
 1. Google Cloud 프로젝트에서 **Google Play Android Developer API**와 **Google Play Developer Reporting API**를 활성화합니다.
 2. 서비스 계정을 준비하고 해당 계정에 필요한 Play Console 앱의 조회 권한을 부여합니다. 모든 앱을 볼 필요가 없다면 필요한 앱만 지정합니다.
 3. 서비스 계정 JSON을 Play Store 계정 설정에 한 번 입력합니다. 또는 명시적으로 선택한 로컬 JSON 파일 경로를 사용할 수 있습니다.
-4. 계정 이름, 조회할 패키지와 트랙을 설정한 뒤 저장합니다.
+4. 계정 이름, 조회할 패키지와 트랙을 설정한 뒤 저장합니다. Auto App 제출에도 사용할 계정은 Play Console 홈의 19자리 개발자 계정 ID와 그 계정의 패키지 목록을 입력합니다.
 5. 계정을 선택해 점검을 실행합니다.
 
 설정 절차와 권한의 공식 기준은 [Reporting API 시작하기](https://developers.google.com/play/developer/reporting/overview)를 참고하세요. 서비스 계정의 앱 접근 범위는 Play Console에서 관리합니다. OAuth scope가 있다는 것만으로 모든 앱을 볼 수 있는 것은 아닙니다.
@@ -18,7 +20,7 @@ Play Store 화면은 계정이 접근할 수 있는 앱과 트랙의 **출시 �
 
 | 데이터 | 저장 방식 |
 |---|---|
-| 계정 이름·ID·선택한 패키지·트랙 | Orca plugin storage |
+| 계정 이름·플러그인 계정 ID·Play 개발자 계정 ID·선택한 패키지·트랙 | Orca plugin storage |
 | 서비스 계정 이메일·RSA 개인키 | Orca 전용 secrets, `os-keyring` 보호 확인 후 저장 |
 | OAuth access token | 프로세스 메모리, 만료 전까지만 재사용 |
 | 조회 결과·원래 관측 시각·조회 오류 | 계정별 캐시 |
@@ -31,6 +33,8 @@ JSON은 `service_account` 타입, Google 서비스 계정 이메일, 유효한 R
 서비스 계정 파일의 `token_uri`는 사용하지 않습니다. 인증 엔드포인트와 JWT audience는 **`https://oauth2.googleapis.com/token`**으로 고정합니다. 자격 증명을 다른 호스트로 보내는 리다이렉트도 따르지 않습니다.
 
 Play Check에 저장한 키는 Auto App의 실제 출시 작업자에게 전달하지 않습니다. 실제 제출은 그 앱 저장소에 이미 설정된 도구·권한을 별도로 사용합니다.
+
+같은 서비스 계정이 여러 개발자 계정에 접근할 수 있으면 앱 자동 검색 결과가 합쳐집니다. 각 Play Console 홈에서 소유 패키지를 확인해 해당 연결에 넣으세요. 출시 대상 패키지가 아직 Play API에 등록되지 않았다면 Console에서 먼저 앱과 첫 번들을 준비합니다. 패키지와 트랙을 조회할 수 있게 되면 Auto App에서 그 대상으로 제출을 승인할 수 있습니다.
 
 ## 패키지와 트랙
 
@@ -143,6 +147,7 @@ HTTP 401로 토큰이 거부되면 해당 토큰을 메모리에서 제거하고
 ```js
 await window.orca.plugin.request("play.account.save", {
   name: "개인 앱",
+  developerId: "1000000000000000000",
   serviceAccountJson: selectedJsonText,
   packages: ["com.example.app"],
   tracks: ["production", "internal"]
@@ -155,6 +160,7 @@ await window.orca.plugin.request("play.account.save", {
 
 ```js
 await window.orca.plugin.request("play.list", {});
+await window.orca.plugin.request("play.submissionAccounts", {});
 await window.orca.plugin.request("play.check", { accountId, force: true });
 await window.orca.plugin.request("play.account.remove", { accountId });
 ```

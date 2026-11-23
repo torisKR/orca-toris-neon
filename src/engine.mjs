@@ -19,6 +19,22 @@ export const DEFAULT_GRAPH = [
   { id: 'release', title: '출시 제출', deps: ['internal'], write: true, requiresApproval: true },
 ];
 
+// A pinned ECC agent ends up inside an agent prompt: a namespaced slug only.
+export const ECC_AGENT_PATTERN = /^ecc:[a-z][a-z0-9-]{1,63}$/;
+
+/**
+ * A stage's ECC choice: undefined is automatic (the default; src/ecc.mjs picks agents and skills
+ * for the situation), 'none' turns ECC off, an `ecc:` agent is pinned first. '', 'auto' and null
+ * all mean automatic.
+ */
+const eccField = value => value === undefined ? {} : { eccAgent: value };
+export function normalizeEccAgent(value) {
+  if (value === undefined || value === null || value === '' || value === 'auto') return undefined;
+  if (value === 'none') return 'none';
+  if (typeof value !== 'string' || !ECC_AGENT_PATTERN.test(value)) fail('invalid_input', 'ECC 서브에이전트 이름이 올바르지 않습니다.');
+  return value;
+}
+
 const STOPPED = new Set(['paused', 'cancelled', 'completed']);
 const OUTCOMES = new Set(['passed', 'failed', 'blocked']);
 const PHASES = new Set(['work', 'review']);
@@ -190,6 +206,7 @@ export function createRun(options = {}) {
         role: spec.role ?? spec.id,
         agent: requiredText(assignment.agent ?? spec.agent ?? agent, '담당 에이전트', 80),
         reviewer: requiredText(assignment.reviewer ?? spec.reviewer ?? reviewer, '검토 에이전트', 80),
+        ...eccField(normalizeEccAgent([assignment.eccAgent, spec.eccAgent].find(value => value !== undefined))),
         write: Boolean(spec.write),
         requiresApproval: Boolean(spec.requiresApproval) || spec.id === 'internal' || spec.id === 'release',
         status: 'pending',
@@ -287,6 +304,35 @@ export function recordLaunch(run, nodeId, { nonce, terminalId, workspaceId, sess
   return settle(next);
 }
 
+const COMMAND_ROLES = new Set(['check', 'history']);
+/**
+ * A failed command never supports a pass. A command succeeds when it exits with its expected code:
+ * 0, or `expectedExitCode` when a non-zero exit is the point (diff showing a difference, a listing
+ * proving a file is absent). A failure may stay as history (an earlier try that was redone):
+ * explicitly with role 'history', or without a role when another command in the report succeeded.
+ * A failed 'check', or a pass whose only commands failed, is refused, naming the entry so the
+ * agent can correct its report. Marks lenient history entries on the fresh normalized entries.
+ */
+const commandSucceeded = (item) => item.exitCode === (item.expectedExitCode ?? 0);
+function classifyFailedCommands(evidence) {
+  const succeeded = evidence.some(item => item.kind === 'command' && commandSucceeded(item));
+  evidence.forEach((item, index) => {
+    if (item.kind !== 'command' || commandSucceeded(item) || item.role === 'history') return;
+    if (item.role === 'check' || !succeeded) {
+      fail('contradictory_evidence', '실패한 명령을 통과 근거로 사용할 수 없습니다: evidence[' + index + '] (' + item.command.slice(0, 120) + ')의 exitCode가 ' +
+        item.exitCode + '입니다. 이 종료 코드가 기대한 결과라면 "expectedExitCode": ' + item.exitCode + '를 적고, 실패 후 다시 실행한 기록이면 "role": "history"로 적으세요.');
+    }
+    item.role = 'history';
+  });
+}
+const exitCodeOf = (value) => typeof value === 'string' && /^-?\d{1,5}$/.test(value.trim()) ? Number(value) : value;
+const MAX_FOLLOW_UPS = 12;
+function followUpsOf(report) {
+  if (report.followUps === undefined) return undefined;
+  if (!Array.isArray(report.followUps) || report.followUps.length > MAX_FOLLOW_UPS) fail('invalid_report', 'followUps는 최대 ' + MAX_FOLLOW_UPS + '개의 문자열 배열이어야 합니다.');
+  return report.followUps.map(item => requiredText(item, '후속 과제', 1000));
+}
+
 function normalizeReport(run, nodeId, report) {
   if (!report || typeof report !== 'object' || report.runId !== run.id || report.nodeId !== nodeId) {
     fail('invalid_report', '작업 결과의 실행 ID 또는 단계 ID가 다릅니다.');
@@ -299,19 +345,29 @@ function normalizeReport(run, nodeId, report) {
     if (!item || typeof item !== 'object') fail('invalid_evidence', '결과 근거 형식이 잘못되었습니다.');
     if (item.kind === 'command') {
       const command = requiredText(item.command, '실행한 명령', 4000);
-      if (!Number.isInteger(item.exitCode)) fail('invalid_evidence', '명령 종료 코드가 필요합니다.');
-      if (report.outcome === 'passed' && item.exitCode !== 0) fail('contradictory_evidence', '실패한 명령을 통과 근거로 사용할 수 없습니다.');
-      return { ...copy(item), kind: 'command', command, exitCode: item.exitCode };
+      // Agents write exit codes as numbers or numeric strings; compare them as numbers.
+      const exitCode = exitCodeOf(item.exitCode);
+      if (!Number.isInteger(exitCode)) fail('invalid_evidence', '명령 종료 코드가 필요합니다.');
+      const expected = exitCodeOf(item.expectedExitCode);
+      if (expected !== undefined && !Number.isInteger(expected)) fail('invalid_evidence', 'expectedExitCode는 정수여야 합니다.');
+      if (item.role !== undefined && !COMMAND_ROLES.has(item.role)) fail('invalid_evidence', '명령 role은 check 또는 history여야 합니다.');
+      return { ...copy(item), kind: 'command', command, exitCode, ...(expected === undefined ? {} : { expectedExitCode: expected }) };
     }
     if (item.kind === 'artifact') return { ...copy(item), kind: 'artifact', path: requiredText(item.path, '산출물 경로', 4000) };
-    if (item.kind === 'note') return { ...copy(item), kind: 'note', text: requiredText(item.text, '확인 근거', 12000) };
+    if (item.kind === 'note') {
+      // Agents sometimes write the note under `note`; keep it as the canonical `text`.
+      const { note, ...rest } = copy(item);
+      return { ...rest, kind: 'note', text: requiredText(item.text ?? note, '확인 근거', 12000) };
+    }
     fail('invalid_evidence', 'command, artifact, note 근거만 지원합니다.');
   });
   if (report.outcome === 'passed' && evidence.length === 0) fail('missing_evidence', '근거 없이 작업이나 검토를 통과시킬 수 없습니다.');
+  if (report.outcome === 'passed') classifyFailedCommands(evidence);
   return {
     ...copy(report), runId: run.id, nodeId, nonce: report.nonce,
     phase: report.phase, outcome: report.outcome, summary, evidence,
     ...(report.next ? { next: requiredText(report.next, '다음 행동', 4000) } : {}),
+    ...(report.followUps === undefined ? {} : { followUps: followUpsOf(report) }),
   };
 }
 
@@ -438,6 +494,27 @@ export function blockNode(run, nodeId, { nonce, reason, now } = {}) {
   node.status = 'blocked';
   node.failureReason = requiredText(reason, '중단 사유', 4000);
   event(next, 'task.blocked', node.failureReason, instant(now), nodeId);
+  return settle(next);
+}
+
+/**
+ * Undo a claim whose agent provably never started work (its prompt did not arrive and its
+ * terminal is closed): the attempt is refunded and the stage is dispatchable again.
+ */
+export function releaseClaim(run, nodeId, { nonce, reason, now } = {}) {
+  const next = copy(run);
+  const node = nodeIn(next, nodeId);
+  if (!node.active || node.active.nonce !== nonce) fail('stale_report', '현재 실행과 다른 재배정 요청입니다.');
+  const { phase } = node.active;
+  if (phase === 'work') {
+    node.attempts = Math.max(0, node.attempts - 1);
+    node.status = 'pending';
+  } else {
+    node.reviewAttempts = Math.max(0, node.reviewAttempts - 1);
+    node.status = 'review';
+  }
+  node.active = null;
+  event(next, 'task.redispatch', requiredText(reason, '재배정 사유'), instant(now), nodeId, { phase, nonce });
   return settle(next);
 }
 

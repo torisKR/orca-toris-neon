@@ -6,8 +6,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs/promises';
+import { createPreviewModel } from '../tools/preview.mjs';
 
-const source = await fs.readFile(new URL('../panel/studio.mjs',import.meta.url),'utf8');
+// The panel loads as an ES module; vm scripts cannot import, so inline each relative
+// module as a scope that returns its exports (each module is inlined where it is imported).
+async function bundle(file) {
+  let out=await fs.readFile(new URL('../panel/'+file,import.meta.url),'utf8');
+  for(const [statement,names,dependency] of [...out.matchAll(/^import \{([^}]+)\} from '\.\/([\w-]+\.mjs)';$/gm)]) {
+    out=out.replace(statement,'const {'+names+'}=(()=>{'+await bundle(dependency)+'})();');
+  }
+  const exported=[...out.matchAll(/^export (?:const|function|async function) (\w+)/gm)].map(([,name])=>name);
+  return out.replace(/^export /gm,'')+(exported.length?'\nreturn {'+exported.join(',')+'};':'');
+}
+const source = await bundle('studio.mjs');
 const copy = value => JSON.parse(JSON.stringify(value));
 function deferred() {
   let resolve,reject;
@@ -74,6 +85,7 @@ async function harness({state=baseState(),responses={}}={}) {
         }
         if (name==='today.snapshot') return copy(emptyToday);
         if (name==='play.list') return {accounts:[],protection:{status:'os-keyring'}};
+        if (name==='play.submissionAccounts') return [];
         if (name==='runs.create') return {id:'created-run'};
         return {};
       },
@@ -124,6 +136,7 @@ async function harness({state=baseState(),responses={}}={}) {
     },
     submit:async form=>listeners.get('submit')({target:form,preventDefault(){}}),
     input:async(target,form)=>listeners.get('input')({target:{...target,closest:()=>form}}),
+    change:async target=>listeners.get('change')({target}),
     requests:name=>calls.filter(call=>call.name===name),
   };
 }
@@ -164,22 +177,34 @@ test('preparation-only approval never carries an actual store submission scope',
   });
 });
 
-test('explicit submission sends exactly the chosen package, track, version and approval note',async()=>{
-  const h=await harness();
+const registeredPlay = {id:'play-dev',developerId:'1000000000000000000',name:'Test Play'};
+const selectedPlay = registeredPlay.id+':'+registeredPlay.developerId;
+
+test('explicit submission sends the chosen developer, package, track, version and approval note',async()=>{
+  const state=baseState();
+  const run=workflow();
+  run.nodes=[{...run.nodes[1],id:'internal',deps:[],status:'awaiting-approval'}];
+  state.runs=[run];
+  const otherPlay={id:'other-play',developerId:'2000000000000000000',name:'Other Play'};
+  const h=await harness({state,responses:{'play.submissionAccounts':()=>[otherPlay,registeredPlay]}});
+  await h.click({action:'tab',tab:'studio'});
+  assert.match(h.app.innerHTML,/Other Play · 2000000000000000000/);
+  assert.match(h.app.innerHTML,/Test Play · 1000000000000000000/);
   await h.submit(h.form('approval',{
     note:'검증한 버전 42를 내부 테스트로 제출합니다.',actualSubmission:true,
-    packageName:' com.example.app ',track:' internal ',versionCode:'42',
+    playAccount:selectedPlay,packageName:' com.example.app ',track:' internal ',versionCode:'42',
   },{run:'run-1',node:'internal'}));
   assert.deepEqual(h.requests('runs.approve')[0].input,{
     runId:'run-1',nodeId:'internal',note:'검증한 버전 42를 내부 테스트로 제출합니다.',
-    submission:{packageName:'com.example.app',track:'internal',versionCode:42},
+    submission:{accountId:registeredPlay.id,developerId:registeredPlay.developerId,packageName:'com.example.app',track:'internal',versionCode:42},
   });
 });
 
 test('an incomplete submission approval is rejected before the worker is called',async()=>{
-  const h=await harness();
+  const h=await harness({responses:{'play.submissionAccounts':()=>[registeredPlay]}});
+  await h.click({action:'tab',tab:'studio'});
   await h.submit(h.form('approval',{
-    note:'내부 테스트 제출 요청',actualSubmission:true,packageName:'',track:'internal',versionCode:'0',
+    note:'내부 테스트 제출 요청',actualSubmission:true,playAccount:selectedPlay,packageName:'',track:'internal',versionCode:'0',
   },{run:'run-1',node:'internal'}));
   assert.equal(h.requests('runs.approve').length,0);
   assert.match(h.toast.textContent,/패키지|버전/);
@@ -231,6 +256,60 @@ test('read-only Play check is forced only by the explicit check button',async()=
   assert.equal(h.requests('play.account.save').length,0);
 });
 
+const playRows = html => [...html.matchAll(/data-disclosure="play-app:[^:]+:([^"]+)"/g)].map(match=>match[1]);
+const catalogApp = (packageName,name,status,tracks=[]) => ({packageName,name,status,tracks,storeUrl:'https://play.google.com/store/apps/details?id='+packageName});
+const catalogAccount = (id,apps) => ({id,name:id,tracks:['production'],apps});
+const playTrack = extra => ({track:'production',observedAt:NOW,releases:[],...extra});
+
+test('Play app rows put action and lookup issues above routine states and keep track details expandable',async()=>{
+  const accounts=[catalogAccount('first',[
+    catalogApp('com.example.published','Published','published'),
+    catalogApp('com.example.review','Review','in_review'),
+    catalogApp('com.example.stale','Stale','published',[playTrack({stale:true})]),
+    catalogApp('com.example.draft','Draft','draft'),
+    catalogApp('com.example.error','Error','published',[playTrack({stale:true,error:{message:'Permission problem'}})]),
+    catalogApp('com.example.approved','Approved','in_review',[playTrack({releases:[{name:'Ready to publish',versionCodes:[42],state:'approved_not_published'}]})]),
+    catalogApp('com.example.pending','Pending','draft',[playTrack({releases:[{name:'Needs review',versionCodes:[41],state:'not_sent_for_review'}]})]),
+    catalogApp('com.example.rejected','Rejected','rejected'),
+  ])];
+  const h=await harness({responses:{'play.list':()=>({accounts})}});
+  await h.click({action:'tab',tab:'play'});
+  assert.deepEqual(playRows(h.app.innerHTML),['rejected','pending','approved','error','draft','stale','review','published'].map(id=>'com.example.'+id));
+  assert.match(h.app.innerHTML,/<details class="play-app"[^>]*>[\s\S]*?<summary class="play-app-row">/);
+  assert.match(h.app.innerHTML,/Ready to publish[\s\S]*?v42/);
+  assert.match(h.app.innerHTML,/Permission problem/);
+});
+
+test('Play search and status filter intersect in the selected account without requesting data',async()=>{
+  const accounts=[catalogAccount('first',[
+    catalogApp('com.example.moon','달빛 습관','rejected'),
+    catalogApp('com.example.sun','햇빛 습관','in_review'),
+    catalogApp('com.example.night','달빛 일기','published'),
+  ]),catalogAccount('second',[catalogApp('com.example.other','달빛 게임','rejected')])];
+  const h=await harness({responses:{'play.list':()=>({accounts})}});
+  await h.click({action:'tab',tab:'play'});
+  const search={id:'play-search',value:'달빛 EXAMPLE',focus(){}},filter={id:'play-status-filter',value:'action'};
+  const count={textContent:''},results={innerHTML:'',querySelectorAll:()=>[]};
+  h.app.querySelector=selector=>({'#play-search':search,'#play-status-filter':filter,'#play-result-count':count,'#play-results':results})[selector]??null;
+  const before=h.calls.length;
+  const renders=h.renders();
+  await h.input(search);
+  assert.deepEqual(playRows(results.innerHTML),['com.example.moon','com.example.night']);
+  await h.change(filter);
+  assert.deepEqual(playRows(results.innerHTML),['com.example.moon']);
+  assert.equal(count.textContent,'3개 중 1개');
+  assert.equal(h.renders(),renders,'updating results leaves the search control in place');
+  await h.click({action:'select-account',account:'second'});
+  assert.deepEqual(playRows(h.app.innerHTML),['com.example.other']);
+  await h.input({...search,value:'없는 앱'});
+  assert.match(results.innerHTML,/검색 결과가 없습니다/);
+  await h.click({action:'reset-play-filters'});
+  assert.deepEqual(playRows(results.innerHTML),['com.example.other']);
+  assert.equal(search.value,'');
+  assert.equal(filter.value,'all');
+  assert.equal(h.calls.length,before);
+});
+
 function recoveryState() {
   const state=baseState(),run=workflow();
   const node=run.nodes.find(item=>item.id==='build');
@@ -262,6 +341,7 @@ test('acknowledged prompt delivery targets only the existing task and refreshes 
   assert.deepEqual(h.calls.slice(before),[
     {name:'nodes.deliverPrompt',input:{runId:'run-1',nodeId:'build',acknowledgeUnsent:true,expectedNonce:'receipt-1'}},
     {name:'state.get',input:{view:'summary'}},
+    {name:'play.submissionAccounts',input:{}},
   ]);
   assert.equal(h.requests('runs.start').length,0);
   assert.equal(h.requests('agent.launch').length,0);
@@ -274,7 +354,9 @@ test('first-prompt recovery is offered only for a blocked reportless terminal wi
     ['working stage',run=>{run.nodes[1].status='running';},false],
     ['missing terminal',run=>{delete run.nodes[1].pendingReceipt.terminalId;},false],
     ['running job',run=>{run.jobs[0].state='running';},false],
-    ['known session',run=>{run.jobs[0].sessionId='session-1';},false],
+    // A session id is no evidence of a prompt (an idle, ready Claude has one); a started turn is.
+    ['known session',run=>{run.jobs[0].sessionId='session-1';},true],
+    ['started turn',run=>{run.jobs[0].promptSeen=true;},false],
     ['previous recovery',run=>{run.jobs[0].promptRecovery={state:'sent'};},false],
     ['cancelled run',run=>{run.status='cancelled';},false],
     ['completed run',run=>{run.status='completed';},false],
@@ -441,7 +523,7 @@ test('a failed request from an old tab cannot replace the current page with an e
   await h.settle();
   await h.click({action:'tab',tab:'agents'});
   gate.reject(new Error('stale Play navigation failure'));await prior;await h.flushFrames();
-  assert.ok(h.app.innerHTML.includes('각자의 역할, 하나의 앱.'));
+  assert.ok(h.app.innerHTML.includes('팀별 에이전트'));
   assert.ok(!h.app.innerHTML.includes('stale Play navigation failure'));
 });
 
@@ -452,7 +534,7 @@ test('a stale Today hydration failure during refresh cannot contaminate a later 
   await h.settle();
   await h.click({action:'tab',tab:'agents'});
   gate.reject(new Error('stale Today hydration failure'));await prior;await h.flushFrames();
-  assert.ok(h.app.innerHTML.includes('각자의 역할, 하나의 앱.'));
+  assert.ok(h.app.innerHTML.includes('팀별 에이전트'));
   assert.ok(!h.app.innerHTML.includes('stale Today hydration failure'));
 });
 
@@ -485,4 +567,268 @@ test('a dirty recovery screen sends its captured nonce after a newer assignment 
   assert.equal(h.requests('nodes.deliverPrompt')[0].input.expectedNonce,'receipt-1');
   assert.match(h.toast.textContent,/배정이 이미 변경/);
   assert.equal(h.requests('agent.launch').length,0);
+});
+
+function liveRun() {
+  const run=workflow();
+  run.status='running';run.workspaceId='w1';
+  run.nodes[1]={...run.nodes[1],agent:'claude',reviewer:'codex',status:'running',attempts:1,
+    active:{phase:'work',nonce:'job-1',terminalId:'term-1',startedAt:NOW,attempt:1}};
+  run.jobs=[{nonce:'job-1',nodeId:'build',terminalId:'term-1',state:'running',promptSeen:true}];
+  return run;
+}
+
+test('Auto App shows teams, the live stage with its agents and ECC subagent, and who works now',async()=>{
+  const state=baseState();state.runs=[liveRun()];state.eccAgents=['ecc:tdd-guide','ecc:planner'];
+  state.runs[0].nodes[1].eccShortlist={phase:'work',stack:{label:'Godot/GDScript',stacks:['godot']},situation:{summary:'구현 작업 1회차'},
+    agents:[{name:'ecc:tdd-guide',why:'테스트 우선 구현'}],skills:[{name:'ecc:godot-patterns',why:'Godot 구현 패턴'}]};
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});await h.flushFrames();
+  const html=h.app.innerHTML;
+  assert.match(html,/class="lane team-plan/);
+  assert.match(html,/class="lane team-build is-busy/);
+  assert.match(html,/class="stage is-working[^"]*" data-action="select-node" data-node="build"/);
+  assert.match(html,/ecc:tdd-guide/);
+  assert.match(html,/ecc:godot-patterns/);
+  assert.match(html,/Godot\/GDScript/);
+  assert.match(html,/<option value="" selected>자동\(상황에 맞게\)<\/option>/);
+  assert.match(html,/crew-end is-holder[^>]*><span class="crew-role">작업<\/span><strong>claude<\/strong>/);
+  assert.match(html,/data-action="focus-terminal" data-terminal="term-1"/);
+  assert.match(html,/<time data-since="2026-11-19T01:00:00.000Z"/);
+});
+
+test('a pushed state moves the stage to review without a refresh request',async()=>{
+  const state=baseState();state.runs=[liveRun()];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});await h.flushFrames();
+  const before=h.requests('state.get').length;
+  state.revision=2; // runs.get serves the same state, as the worker does
+  state.runs[0].nodes[1].active={phase:'review',nonce:'job-2',terminalId:'term-2',startedAt:NOW,attempt:1};
+  state.runs[0].nodes[1].status='review';
+  h.events.get('state.changed')(copy(state));await h.flushFrames();
+  assert.equal(h.requests('state.get').length,before);
+  assert.match(h.app.innerHTML,/class="stage is-reviewing[^"]*pulse-handoff/);
+  assert.match(h.app.innerHTML,/conduit is-forward[^>]*><span class="conduit-label">검토 인계/);
+  assert.match(h.app.innerHTML,/crew-end is-holder[^>]*><span class="crew-role">검토<\/span><strong>codex<\/strong>/);
+});
+
+test('the agents tab groups the same stages by team and both tabs jump to each other keeping the stage',async()=>{
+  const state=baseState();state.runs=[liveRun()];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  await h.click({action:'show-agent',node:'build'});
+  let html=h.app.innerHTML;
+  assert.match(html,/팀별 에이전트/);
+  assert.match(html,/class="pair is-selected" id="pair-build"/);
+  assert.match(html,/live-tag is-working">작업 중/);
+  await h.click({action:'open-stage',node:'build'});
+  html=h.app.innerHTML;
+  assert.match(html,/class="stage is-working is-selected/);
+});
+
+test('an ECC change from either tab submits only that field of the shared assignment',async()=>{
+  const state=baseState();state.runs=[workflow()];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const form=h.form('assignments',{'build.agent':'codex','build.reviewer':'codex','build.eccAgent':'ecc:planner'},{run:'run-1'});
+  await h.submit(form);
+  assert.deepEqual(h.requests('runs.updateAssignments')[0].input.assignments,{build:{eccAgent:'ecc:planner'}});
+});
+
+test('the attach card offers only the reserved workspace, never the project checkout',async()=>{
+  const state=baseState();
+  state.projects[0].path='/repo';
+  const run=workflow();run.status='blocked';run.projectId='project-1';run.workspaceCreation={state:'uncertain',name:'neon-abc'};
+  state.runs=[run];
+  state.workspaces=[
+    {id:'primary',name:'neon-abc',projectId:'project-1',hostId:'local',path:'/repo'},
+    {id:'other',name:'main',projectId:'project-1',hostId:'local',path:'/repo/main'},
+    {id:'reserved',name:'neon-abc',projectId:'project-1',hostId:'local',path:'/repo/neon-abc'},
+  ];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/value="reserved"/);
+  assert.doesNotMatch(html,/value="primary"/);
+  assert.doesNotMatch(html,/value="other"/);
+  assert.doesNotMatch(html,/data-action="start-run"/);
+});
+
+test('a definitely failed workspace creation keeps the same start button',async()=>{
+  const state=baseState();
+  const run=workflow();run.status='blocked';run.workspaceCreation={state:'failed',name:'neon-abc'};
+  run.runtimeMessage='이 저장소에는 아직 커밋이 없어 작업 공간을 만들 기준 브랜치가 없습니다.';
+  state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/data-action="start-run"/);
+  assert.doesNotMatch(html,/attach-workspace/);
+  assert.match(html,/커밋이 없어/);
+});
+
+test('a very long /goal run shows a short title on Today, in the select and on the run card with the full goal on demand',async()=>{
+  const state=baseState();
+  const run=workflow();
+  run.goal='/goal\n# 달빛 판타지 수집형 RPG\n\n'+'아주 긴 요구사항 '.repeat(600);
+  state.runs=[run];
+  const h=await harness({state});
+  await h.flushFrames();
+  let html=h.app.innerHTML;
+  assert.match(html,/<div class="card-title goal-title" title="달빛 판타지 수집형 RPG">달빛 판타지 수집형 RPG<\/div>/);
+  assert.doesNotMatch(html,/아주 긴 요구사항/);
+  await h.click({action:'open-run',run:'run-1'});
+  html=h.app.innerHTML;
+  assert.match(html,/<option value="run-1" selected>\[[^\]]+\] 달빛 판타지 수집형 RPG<\/option>/);
+  assert.match(html,/<details class="goal-detail"[^>]*><summary>전체 목표 보기/);
+  assert.equal(html.split('아주 긴 요구사항').length-1,600,'the full goal appears once, inside the disclosure');
+});
+
+test('selecting an agent identifies the opposite role and linked stages without host actions',async()=>{
+  const state=baseState();state.runs=[liveRun()];
+  const h=await harness({state});
+  await h.click({action:'tab',tab:'agents'});
+  await h.click({action:'select-agent',node:'build',role:'review'});
+  const html=h.app.innerHTML;
+  assert.match(html,/id="member-build-review"[^>]+aria-pressed="true"/);
+  assert.match(html,/class="member is-working is-holder is-partner" id="member-build-work"/);
+  assert.match(html,/협업 상대/);
+  assert.match(html,/class="pair is-related is-upstream" id="pair-research"/);
+  assert.match(html,/다른 팀으로 인계[^]+?인계 완료[^]+?data-node="build"/);
+  assert.equal(h.requests('runs.updateAssignments').length,0);
+  assert.equal(h.requests('agent.launch').length,0);
+});
+
+test('returned review and QA use the right source and a finished run shows no current holder',async()=>{
+  const model=createPreviewModel();
+  for(const scenario of ['return','qa','idle']) {
+    const result=scenario==='idle'
+      ? await model.rpc('runs.cancel',{runId:'preview-demo'})
+      : await model.rpc('preview.scenario',{scenario});
+    const state=baseState();state.runs=[result];
+    const h=await harness({state});
+    await h.click({action:'open-run',run:result.id});
+    const html=h.app.innerHTML;
+    const strip=html.match(/<section class="collab"[^]+?<\/section>/)[0];
+    assert.doesNotMatch(strip,/pulse-/,'a loaded snapshot should stay still');
+    if(scenario==='return') {
+      assert.match(strip,/conduit is-back[^]+?수정 요청[^]+?←/);
+      assert.match(strip,/crew-end is-holder[^]+?작업/);
+      assert.doesNotMatch(strip,/repair-route/,'a build review did not come from QA');
+    } else if(scenario==='qa') {
+      assert.match(strip,/repair-route[^]+?재작업 · 구현팀[^]+?수정 요청 1 \/ 3[^]+?←[^]+?검토 · 검증팀/);
+      assert.match(html,/stage is-waiting is-related is-repair-source[^"]*" data-action="select-node" data-node="test"/);
+    } else {
+      assert.match(strip,/이 흐름은 끝났습니다/);
+      assert.doesNotMatch(strip,/conduit|holder-label|repair-route/);
+      assert.doesNotMatch(html,/is-repair-(source|target)/);
+    }
+  }
+});
+
+function visualRun() {
+  const run=workflow();
+  run.nodes[1]={...run.nodes[1],id:'design',title:'Design',agent:'codex',reviewer:'claude',status:'pending',
+    visualShortlist:{stage:'design',art:{pixel:true,source:'goal'},skills:[{name:'pixel-art-studio',why:'HUD·메뉴 UI 킷 시안'},{name:'codex image_gen',why:'화면 시안 이미지',builtin:true}]},
+    launchSettings:{model:'gpt-6.2-sol',effort:'high',source:'default',applied:false,reason:'Orca의 agent.launch.before hook이 실행되지 않아 모델을 지정하지 못했습니다.'}};
+  return run;
+}
+const launchOptions={efforts:['low','medium','high','xhigh','max','ultra'],visualStages:['design','assets'],visualDefault:{model:'gpt-6.2-sol',effort:'high'}};
+
+test('the assignment row shows the stage model and effort, editable on codex, with the visual default as placeholder',async()=>{
+  const state=baseState();state.runs=[visualRun()];state.launchOptions=launchOptions;
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/<input class="field" name="design\.model"[^>]*placeholder="gpt-6\.2-sol"/);
+  assert.match(html,/<select class="field" name="design\.effort"/);
+  assert.doesNotMatch(html,/name="design\.model"[^>]*disabled/);
+  await h.click({action:'tab',tab:'agents'}); // the full assignment table
+  assert.match(h.app.innerHTML,/name="research\.model"[^>]*disabled/,'a finished stage is not editable');
+});
+
+test('the inspector lists the visual skills and says whether the model was applied',async()=>{
+  const state=baseState();state.runs=[visualRun()];state.launchOptions=launchOptions;
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  await h.click({action:'select-node',node:'design'});
+  const html=h.app.innerHTML;
+  assert.match(html,/시각 스킬/);
+  assert.match(html,/pixel-art-studio/);
+  assert.match(html,/픽셀 아트/);
+  assert.match(html,/gpt-6\.2-sol · high/);
+  assert.match(html,/적용하지 못했/);
+});
+
+test('a model or effort change submits only that field',async()=>{
+  const state=baseState();state.runs=[visualRun()];state.launchOptions=launchOptions;
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  await h.submit(h.form('assignments',{'design.agent':'codex','design.reviewer':'claude','design.model':'gpt-6.1-terra','design.effort':''},{run:'run-1'}));
+  assert.deepEqual(h.requests('runs.updateAssignments')[0].input.assignments,{design:{model:'gpt-6.1-terra'}});
+});
+
+test('the run card shows autonomous progress with its limits and switches it through the worker',async()=>{
+  const state=baseState();const run=workflow();
+  run.autonomous=true;run.autonomy={total:4,retries:{build:2},stopped:{reason:'build 단계를 자동으로 3번 다시 시도했지만 통과하지 못해 멈췄습니다.'}};
+  state.runs=[run];state.autonomyLimits={retriesPerStage:3,retriesPerRun:12,switchAgentAfter:2,decisionNudgesPerJob:2,extraRepairLoopsPerRun:3};
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/자율 진행/);
+  assert.match(html,/자동 재시도 4\/12/);
+  assert.match(html,/3번 다시 시도했지만/);
+  const toggle=renderedAction(html,'toggle-autonomy');
+  assert.equal(toggle.enabled,'false');
+  await h.click(toggle);
+  assert.deepEqual(h.requests('runs.setAutonomous')[0].input,{runId:'run-1',enabled:false});
+});
+
+test('a run whose state cannot be saved says so on its card, with the attempts and the reason',async()=>{
+  const state=baseState();const run=workflow();
+  run.storageWarning={since:'2026-11-22T06:03:40.000Z',attempts:3,message:'toris-neon.run.run-1 저장 실패: value exceeds 262144 bytes'};
+  state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/실행 상태를 저장하지 못하고 있습니다/);
+  assert.match(html,/3회/);
+  assert.match(html,/value exceeds 262144 bytes/);
+});
+
+test('a live stage shows its time budget next to the elapsed time, and passed reviews show their follow-ups',async()=>{
+  const state=baseState();const run=liveRun();run.jobs[0].budgetMinutes=120;
+  run.nodes[0]={...run.nodes[0],status:'passed',review:{outcome:'passed',summary:'검토 통과',followUps:['B8 연속 경로는 구현 테스트로 확인']}};
+  state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});await h.flushFrames();
+  assert.match(h.app.innerHTML,/예산 120분/);
+  await h.click({action:'select-node',node:run.nodes[0].id});
+  assert.match(h.app.innerHTML,/후속 과제/);
+  assert.match(h.app.innerHTML,/B8 연속 경로는 구현 테스트로 확인/);
+});
+
+test('the run card switches closing finished terminals through the worker, on by default for autonomous runs',async()=>{
+  const state=baseState();const run=workflow();run.autonomous=true;state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  assert.match(h.app.innerHTML,/끝난 터미널 자동 닫기 켜짐/);
+  const toggle=renderedAction(h.app.innerHTML,'toggle-terminal-cleanup');
+  assert.equal(toggle.enabled,'false');
+  await h.click(toggle);
+  assert.deepEqual(h.requests('runs.setTerminalCleanup')[0].input,{runId:'run-1',enabled:false});
+});
+
+test('the Auto App tab opens on a live run, not on a cancelled one listed first, and labels each run with its status',async()=>{
+  const state=baseState();
+  const old=workflow();old.id='run-old';old.status='cancelled';old.goal='예전 실행';old.updatedAt='2026-11-23T00:00:00.000Z';
+  const live=workflow();live.id='run-live';live.status='running';live.goal='진행 중 실행';live.updatedAt='2026-11-01T00:00:00.000Z';
+  state.runs=[old,live];
+  const h=await harness({state});
+  await h.flushFrames();
+  await h.click({action:'tab',tab:'studio'});
+  const html=h.app.innerHTML;
+  assert.match(html,/<option value="run-live" selected>\[진행 중\] 진행 중 실행<\/option>/);
+  assert.ok(html.indexOf('value="run-live"')<html.indexOf('value="run-old"'),'live runs are listed before cancelled ones');
+  assert.match(html,/<option value="run-old" >\[취소\] 예전 실행<\/option>/);
 });

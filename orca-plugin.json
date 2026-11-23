@@ -112,6 +112,11 @@
         "type": "boolean",
         "default": true
       }
+    ],
+    "hooks": [
+      {
+        "event": "agent.launch.before"
+      }
     ]
   }
 }

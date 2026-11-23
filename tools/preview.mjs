@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { createRun, claimNode, recordLaunch, pauseRun, resumeRun, cancelRun } from '../src/engine.mjs';
+import { createRun, claimNode, recordLaunch, applyReport, pauseRun, resumeRun, cancelRun } from '../src/engine.mjs';
 import { dayKey, previousDay } from '../src/today.mjs';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
@@ -61,7 +61,7 @@ function fillPassed(node, stamp, prefix) {
   node.history=Array.from({length:3},(_,index)=>({at:iso(stamp-(3-index)*60000),type:'preview',summary:'샘플 단계 이력 '+(index+1)}));
 }
 
-export function createPreviewModel() {
+export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
   const stamp=PREVIEW_STAMP,date=dayKey(stamp),yesterdayDate=previousDay(date);
   let sequence=0,clockStep=0;
   const tick=()=>stamp+(++clockStep)*60000;
@@ -75,8 +75,8 @@ export function createPreviewModel() {
     if(['research','brief','architecture','design','assets'].includes(node.id)) fillPassed(node,stamp-3600000,'preview/demo');
   }
   sample.workspaceId='preview-workspace';sample.workspacePath='/example/moon-habit';sample.started=true;
-  sample=claimNode(sample,'build',{phase:'work',nonce:'preview-nonce',now:stamp-600000});
-  sample=recordLaunch(sample,'build',{nonce:'preview-nonce',terminalId:'preview-terminal',workspaceId:'preview-workspace',now:stamp-600000});
+  sample=claimNode(sample,'build',{phase:'work',nonce:'preview-nonce',now:liveAt-74000});
+  sample=recordLaunch(sample,'build',{nonce:'preview-nonce',terminalId:'preview-terminal',workspaceId:'preview-workspace',now:liveAt-74000});
   sample.jobs=sample.nodes.filter(node=>node.status==='passed').map(node=>({nodeId:node.id,nonce:'preview-finished-'+node.id,terminalId:'preview-finished-'+node.id,state:'completed'}));
   sample.jobs.push({nodeId:'build',nonce:'preview-nonce',terminalId:'preview-terminal',state:'running',agent:'codex'});
 
@@ -97,7 +97,7 @@ export function createPreviewModel() {
   const state={version:1,revision:1,runs:[sample],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
-    agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:stamp-600000}],warnings:[]};
+    agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
   const notes=workspaces.map((workspace,index)=>({
     id:'preview-note-'+(index+1),workspaceId:workspace.id,projectName:workspace.project,
     state:workspace.name+'의 '+['화면 구조와 입력 상태를 정리했습니다.','테스트 범위와 다음 수정 항목을 정리했습니다.','MVP 범위와 보류할 기능을 정했습니다.'][index%3],
@@ -125,7 +125,7 @@ export function createPreviewModel() {
     sessions:[{sessionId:'preview-session-1',workspaceId:'preview-workspace',agent:'codex',title:'루틴 타이머 설계 · 샘플',updatedAt:iso(stamp-86400000),messageCount:12},
       {sessionId:'preview-session-2',workspaceId:'preview-workspace-2',agent:'claude',title:'메모 편집 흐름 검토 · 샘플',updatedAt:iso(stamp-90000000),messageCount:8}],
     sessionsTruncated:false,warnings:[]};
-  const accounts=[{id:'preview-account',name:'샘플 개발자 계정',packages:[],tracks:['production','internal'],hasCredential:false,
+  const accounts=[{id:'preview-account',name:'샘플 개발자 계정',developerId:'1000000000000000000',packages:['com.example.moonhabit'],tracks:['production','internal'],hasCredential:false,
     checkedAt:iso(stamp),discovery:{observedAt:iso(stamp),stale:false},apps:[{packageName:'com.example.moonhabit',name:'달빛 습관 (미리보기)',
       status:'in_review',published:true,needsAttention:true,storeUrl:'https://play.google.com/store/apps/details?id=com.example.moonhabit',
       tracks:[{track:'production',observedAt:iso(stamp),stale:false,releases:[{name:'0.9.0',versionCodes:['9'],state:'published'},{name:'1.0.0',versionCodes:['10'],state:'in_review'}]},
@@ -157,11 +157,52 @@ export function createPreviewModel() {
       lastActiveDay:[...new Set(events.map(event=>event.day))].sort().reverse().find(day=>day<requestedDate)??null,
       sessions:input.workspaceId?today.sessions.filter(session=>session.workspaceId===input.workspaceId):today.sessions};
   };
+  const scenarioBase=clone(sample);
+  // Drive the same engine states the panel receives from Orca, with synthetic reports only.
+  function scenario(name) {
+    let run=clone(scenarioBase),eventAt=liveAt-48000;
+    const start=(id,phase,nonce)=>{
+      eventAt+=3000;
+      run=claimNode(run,id,{phase,nonce,now:eventAt});
+      run=recordLaunch(run,id,{nonce,terminalId:'preview-'+nonce,workspaceId:run.workspaceId,now:eventAt});
+      run.jobs.push({nodeId:id,nonce,terminalId:'preview-'+nonce,state:'running',promptSeen:true});
+    };
+    const report=(nodeId,outcome,summary)=>{
+      const {nonce,phase}=run.nodes.find(node=>node.id===nodeId).active;
+      eventAt+=3000;
+      run=applyReport(run,nodeId,{runId:run.id,nodeId,nonce,phase,outcome,summary,
+        evidence:[{kind:'note',text:'미리보기 전용 근거'}]},{now:eventAt});
+    };
+    if(name==='idle') {
+      run=cancelRun(run,{now:liveAt});
+    } else if(name!=='work') {
+      report('build','passed','구현 결과와 빌드 근거를 검토자에게 넘겼습니다.');
+      if(name!=='queued')start('build','review','build-review');
+      if(name==='return') {
+        report('build','failed','저장 실패 후 재시도 경로를 추가해 주세요.');
+        start('build','work','build-repair');
+      }
+      if(name==='qa') {
+        report('build','passed','구현 검토를 통과했습니다.');
+        start('test','work','test-work');
+        report('test','passed','재시작 복원 테스트를 검토자에게 넘겼습니다.');
+        start('test','review','test-review');
+        report('test','failed','앱 재시작 시 마지막 저장 값이 복원되지 않습니다.');
+        start('build','work','qa-repair');
+      }
+    }
+    return replace(run);
+  }
   const dispatch=async(name,input)=>{
+    if(name==='preview.scenario') {
+      if(!['work','queued','review','return','qa','idle'].includes(input.scenario))throw Error('지원되지 않는 미리보기 상태입니다.');
+      return scenario(input.scenario);
+    }
     if(name==='state.get')return snapshot(input);
     if(name==='runs.get')return lookup(input.runId,true);
     if(name==='today.snapshot')return todaySnapshot(input);
     if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts};
+    if(name==='play.submissionAccounts')return accounts.map(({id,name,developerId})=>({id,name,developerId}));
     if(name==='runs.create') {
       const run=createRun({...input,id:'preview-created-'+(++sequence),now:tick()});
       run.jobs=[];state.runs.unshift(run);return changed(run);
@@ -232,10 +273,10 @@ const bridge=`(()=>{
 })();`;
 
 function servePreview() {
-  const root=fileURLToPath(new URL('../',import.meta.url)),model=createPreviewModel();
+  const root=fileURLToPath(new URL('../',import.meta.url)),model=createPreviewModel({ liveAt: Date.now() });
   const server=http.createServer(async(req,res)=>{
     try {
-      const pathname=new URL(req.url,'http://localhost').pathname;
+      const {pathname,searchParams}=new URL(req.url,'http://localhost');
       res.setHeader('Cache-Control','no-store');
       if(req.method==='POST'&&pathname==='/__stop'){res.end('stopped');server.close();return;}
       if(req.method==='GET'&&pathname==='/__state'){
@@ -249,11 +290,16 @@ function servePreview() {
         res.end(JSON.stringify(result));return;
       }
       if(req.method!=='GET'){res.writeHead(405);res.end();return;}
-      const files={'/':'panel/index.html','/studio.css':'panel/studio.css','/graph.css':'panel/graph.css',
-        '/refinement.css':'panel/refinement.css','/studio.mjs':'panel/studio.mjs'};
-      if(!files[pathname]){res.writeHead(404);res.end('Not found');return;}
-      let content=await fs.readFile(path.join(root,files[pathname]),'utf8');
-      if(pathname==='/')content=content.replace('<body>','<body>'+banner+'<script>'+bridge+'</script>');
+      // The panel's own files only: index.html plus flat panel/*.css|*.mjs names.
+      const file=pathname==='/'?'panel/index.html':/^\/[\w-]+\.(css|mjs)$/.test(pathname)?'panel'+pathname:null;
+      if(!file){res.writeHead(404);res.end('Not found');return;}
+      let content;
+      try{content=await fs.readFile(path.join(root,file),'utf8');}
+      catch(error){if(error.code!=='ENOENT')throw error;res.writeHead(404);res.end('Not found');return;}
+      if(pathname==='/') {
+        if(searchParams.get('theme')==='light')content=content.replace('<html lang="ko" class="dark">','<html lang="ko" class="light">');
+        content=content.replace('<body>','<body>'+banner+'<script>'+bridge+'</script>');
+      }
       res.setHeader('Content-Type',pathname.endsWith('.css')?'text/css':pathname.endsWith('.mjs')?'text/javascript':'text/html');res.end(content);
     }catch(error){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:error.message}));}
   });

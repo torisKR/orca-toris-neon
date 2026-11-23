@@ -23,6 +23,7 @@ const cacheKey = id => `toris-neon.play.cache.v1.${id}`;
 const text = (value, limit = 200) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, limit);
 const clone = value => structuredClone(value);
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const developerIdPattern = /^\d{19}$/;
 
 export class PlayError extends Error {
   constructor(code, message, { status = null, retryAfterMs = 0 } = {}) {
@@ -187,7 +188,8 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
       return { packageName: app.packageName, name: app.name, storeUrl: `https://play.google.com/store/apps/details?id=${encodeURIComponent(app.packageName)}`, tracks, ...summarizeApp(tracks) };
     });
     return {
-      id: account.id, name: account.name, packages: [...account.packages], tracks: [...account.tracks], hasCredential: true,
+      id: account.id, name: account.name, developerId: account.developerId ?? null,
+      packages: [...account.packages], tracks: [...account.tracks], hasCredential: true,
       createdAt: account.createdAt, updatedAt: account.updatedAt,
       attemptedAt: cache.attemptedAt ?? null, checkedAt: cache.checkedAt ?? null, error: cache.error ?? null,
       discovery: { observedAt: cache.discovery?.observedAt ?? null,
@@ -273,6 +275,18 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
       discovery: { ...(cache.discovery ?? {}), stale: true, error: publicError(error) },
       apps: (cache.apps ?? []).map(app => ({ ...app, tracks: (app.tracks ?? []).map(track => ({ ...track, attemptedAt: at, stale: true, error: publicError(error) })) })) };
   }
+  async function readReleases(account, packageName, track, bearer) {
+    if ((cooldowns.get(account.id) ?? 0) > now()) throw httpError(429);
+    try {
+      const response = await request(`${PUBLISHER_URL}/${encodeURIComponent(packageName)}/tracks/${encodeURIComponent(track)}/releases`, { headers: { authorization: `Bearer ${bearer}` } });
+      if (response.releases !== undefined && !Array.isArray(response.releases)) throw new PlayError("invalid_response", "Google returned an invalid releases list.");
+      return (response.releases ?? []).map(normalizeRelease);
+    } catch (error) {
+      if (error.status === 401) tokens.delete(account.id);
+      if (error.retryAfterMs) cooldowns.set(account.id, Math.max(cooldowns.get(account.id) ?? 0, now() + error.retryAfterMs));
+      throw error;
+    }
+  }
   async function performCheck(accountId, force) {
     const account = await getAccount(accountId);
     const before = await loadCache(accountId);
@@ -316,12 +330,10 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
         const old = before.apps?.find(item => item.packageName === app.packageName)?.tracks?.find(item => item.track === track);
         try {
           if (stopError) throw stopError;
-          const response = await request(`${PUBLISHER_URL}/${encodeURIComponent(app.packageName)}/tracks/${encodeURIComponent(track)}/releases`, { headers: { authorization: `Bearer ${bearer}` } });
-          if (response.releases !== undefined && !Array.isArray(response.releases)) throw new PlayError("invalid_response", "Google returned an invalid releases list.");
-          outcomes[slot] = { track, releases: (response.releases ?? []).map(normalizeRelease), observedAt: iso(), attemptedAt: at, stale: false, error: null };
+          const releases = await readReleases(account, app.packageName, track, bearer);
+          outcomes[slot] = { track, releases, observedAt: iso(), attemptedAt: at, stale: false, error: null };
         } catch (error) {
-          if (error.status === 401) { tokens.delete(accountId); stopError ??= error; }
-          if (error.retryAfterMs) { stopError = error; cooldowns.set(accountId, Math.max(cooldowns.get(accountId) ?? 0, now() + error.retryAfterMs)); }
+          if (error.status === 401 || error.retryAfterMs) stopError ??= error;
           outcomes[slot] = { track, releases: old?.releases ?? [], observedAt: old?.observedAt ?? null, attemptedAt: at, stale: true, error: publicError(error) };
         }
       }
@@ -339,6 +351,26 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
       const accounts = await loadAccounts();
       return { version: 1, protection: await protection(), accounts: await Promise.all(accounts.map(async account => accountView(account, await loadCache(account.id)))) };
     },
+    async listSubmissionAccounts() {
+      return (await loadAccounts()).filter(account => account.developerId && account.packages.length)
+        .map(({ id, name, developerId }) => ({ id, name, developerId }));
+    },
+    async submissionAccount({ accountId, developerId, packageName, track }, { verifyAccess = false } = {}) {
+      return serialized(async () => {
+        if (typeof developerId !== "string" || !developerIdPattern.test(developerId)) {
+          throw new PlayError("invalid_input", "Play 개발자 계정을 선택해 다시 승인해 주세요.");
+        }
+        const account = await getAccount(accountId);
+        if (account.developerId !== developerId) throw new PlayError("invalid_input", "Play 개발자 계정이 변경됐습니다. 계정을 확인해 다시 승인해 주세요.");
+        if (!account.packages.includes(packageName)) throw new PlayError("invalid_input", "이 패키지는 선택한 개발자 계정에 등록되어 있지 않습니다. Play Store 계정 설정에서 패키지를 확인해 주세요.");
+        if (verifyAccess) {
+          if ((cooldowns.get(account.id) ?? 0) > now()) throw httpError(429);
+          const bearer = await tokenFor(account);
+          await readReleases(account, packageName, track, bearer);
+        }
+        return { accountId: account.id, developerId: account.developerId, accountName: account.name };
+      });
+    },
     async saveAccount(input = {}) {
       return serialized(async () => {
         const accounts = await loadAccounts();
@@ -348,6 +380,13 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
         if (current && activeChecks.has(current.id)) throw new PlayError("busy", "Wait for this account's check to finish before editing it.");
         const name = typeof input.name === "string" ? text(input.name, 80) : current?.name ?? "";
         if (!name) throw new PlayError("invalid_input", "Give this Play account a name.");
+        const developerId = input.developerId === undefined ? current?.developerId ?? null : input.developerId;
+        if (developerId !== null && (typeof developerId !== "string" || !developerIdPattern.test(developerId))) {
+          throw new PlayError("invalid_input", "Play Console의 19자리 개발자 계정 ID를 입력해 주세요.");
+        }
+        if (developerId && accounts.some(account => account.id !== current?.id && account.developerId === developerId)) {
+          throw new PlayError("invalid_input", "이 Play 개발자 계정은 이미 연결되어 있습니다.");
+        }
         const packages = inputs(input.packages, "packages", current?.packages ?? []);
         const tracks = inputs(input.tracks, "tracks", current?.tracks ?? DEFAULT_TRACKS);
         const suppliedJson = input.serviceAccountJson !== undefined && input.serviceAccountJson !== "";
@@ -384,7 +423,7 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
           try { await secrets.set(secretKey(id), JSON.stringify(key)); }
           catch { throw new PlayError("keyring_unavailable", "The service account could not be saved in the protected OS keyring."); }
         }
-        const account = { id, name, packages, tracks, createdAt: current?.createdAt ?? iso(), updatedAt: iso() };
+        const account = { id, name, developerId, packages, tracks, createdAt: current?.createdAt ?? iso(), updatedAt: iso() };
         if (current) accounts[accounts.findIndex(item => item.id === id)] = account; else accounts.push(account);
         try { await saveAccounts(accounts); }
         catch (error) {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_GRAPH, createRun, validateGraph, nextActions, claimNode, recordLaunch,
   applyReport, approveNode, pauseRun, resumeRun, recoverRun, retryNode, blockNode,
-  cancelRun, dateKey, dailySnapshot,
+  cancelRun, dateKey, dailySnapshot, releaseClaim, ECC_AGENT_PATTERN,
 } from '../src/engine.mjs';
 
 const NOW = '2026-11-18T15:10:00.000Z';
@@ -270,4 +270,116 @@ test('snapshot exposes last verified step and the actual blocking reason', () =>
   assert.match(summary.next[0].why, /기기/);
   assert.match(summary.next[0].next, /ADB/);
   assert.equal(summary.next[0].state, 'blocked');
+});
+
+test('releasing an unstarted claim refunds the attempt and returns the stage to its phase', () => {
+  let run = make({ nodes: graph(['a']) });
+  const claim = nonce();
+  run = claimNode(run, 'a', { nonce: claim, now: NOW });
+  const released = releaseClaim(run, 'a', { nonce: claim, reason: '지시가 전달되지 않았습니다.', now: NOW });
+  const node = released.nodes[0];
+  assert.equal(node.status, 'pending');
+  assert.equal(node.attempts, 0);
+  assert.equal(node.active, null);
+  assert.equal(released.events.at(-1).type, 'task.redispatch');
+  assert.deepEqual(nextActions(released).map(action => action.nodeId), ['a']);
+  assert.equal(run.nodes[0].attempts, 1, 'the input run is not mutated');
+});
+
+test('releasing a claim refuses a stale nonce', () => {
+  let run = make({ nodes: graph(['a']) });
+  run = claimNode(run, 'a', { nonce: nonce(), now: NOW });
+  assert.throws(() => releaseClaim(run, 'a', { nonce: 'other', reason: 'x', now: NOW }), thrown('stale_report'));
+});
+
+test('ECC is automatic unless an assignment pins an installed-style agent or turns ECC off', () => {
+  const run = make({ assignments: { build: { eccAgent: 'ecc:typescript-reviewer' }, assets: { eccAgent: 'none' }, brief: { eccAgent: '' } } });
+  const field = id => run.nodes.find(node => node.id === id);
+  assert.equal(Object.hasOwn(field('research'), 'eccAgent'), false, 'no field means automatic');
+  assert.equal(Object.hasOwn(field('brief'), 'eccAgent'), false);
+  assert.equal(field('build').eccAgent, 'ecc:typescript-reviewer');
+  assert.ok(ECC_AGENT_PATTERN.test(field('build').eccAgent));
+  assert.equal(field('assets').eccAgent, 'none');
+  assert.throws(() => make({ assignments: { build: { eccAgent: 'ecc:x"; drop the prompt' } } }), thrown('invalid_input'));
+});
+
+test('a note evidence written with a note field instead of text is accepted as its text', () => {
+  let run = make({ nodes: graph(['a']) });
+  run = claimNode(run, 'a', { nonce: nonce(), now: NOW });
+  const report = result(run, 'a', 'passed', { evidence: [{ kind: 'artifact', path: 'artifacts/a.md' }, { kind: 'note', note: 'ECC: ecc:planner로 범위 정리' }] });
+  run = applyReport(run, 'a', report, { now: NOW });
+  assert.equal(run.nodes[0].report.evidence[1].text, 'ECC: ecc:planner로 범위 정리');
+  run = make({ nodes: graph(['b']) });
+  run = claimNode(run, 'b', { nonce: nonce(), now: NOW });
+  assert.throws(() => applyReport(run, 'b', result(run, 'b', 'passed', { evidence: [{ kind: 'artifact', path: 'x' }, { kind: 'note' }] }), { now: NOW }), thrown('invalid_input'));
+});
+
+const passWith = (id, evidence) => {
+  let run = make({ nodes: graph([id]) });
+  run = claimNode(run, id, { nonce: nonce(), now: NOW });
+  return () => applyReport(run, id, result(run, id, 'passed', { evidence }), { now: NOW });
+};
+const artifact = { kind: 'artifact', path: 'artifacts/x.md' };
+
+test('a failed first try kept as history does not sink a pass that a later successful command supports', () => {
+  const run = passWith('a', [
+    { kind: 'command', command: "ffmpeg -vf 'drawtext…' (실패, 재실행)", exitCode: 8 },
+    { kind: 'command', command: "ffmpeg -vf 'fps=1'", exitCode: 0 }, artifact])();
+  const [history, check] = run.nodes[0].report.evidence;
+  assert.equal(run.nodes[0].status, 'review');
+  assert.deepEqual([history.role, history.exitCode, check.exitCode], ['history', 8, 0]);
+});
+
+test('exit codes given as numeric strings are compared as numbers', () => {
+  const run = passWith('b', [{ kind: 'command', command: 'a', exitCode: '8', role: 'history' }, { kind: 'command', command: 'b', exitCode: '0' }, artifact])();
+  assert.deepEqual(run.nodes[0].report.evidence.slice(0, 2).map(item => item.exitCode), [8, 0]);
+  assert.throws(passWith('c', [{ kind: 'command', command: 'x', exitCode: 'zero' }, artifact]), thrown('invalid_evidence'));
+  assert.throws(passWith('d', [{ kind: 'command', command: 'x', exitCode: '0', role: 'maybe' }, artifact]), thrown('invalid_evidence'));
+});
+
+test('a pass is refused when its only command evidence failed or a command marked as the check failed', () => {
+  assert.throws(passWith('e', [{ kind: 'command', command: 'npm test', exitCode: 1 }, artifact]), thrown('contradictory_evidence'));
+  assert.throws(passWith('f', [{ kind: 'command', command: 'npm test', exitCode: '1' }, artifact]), thrown('contradictory_evidence'));
+  assert.throws(passWith('g', [{ kind: 'command', command: 'npm test', exitCode: 1, role: 'check' }, { kind: 'command', command: 'ls', exitCode: 0 }, artifact]), thrown('contradictory_evidence'));
+  // Explicit history with artifact support is fine even without a successful command.
+  assert.equal(passWith('h', [{ kind: 'command', command: 'old try', exitCode: 2, role: 'history' }, artifact])().nodes[0].status, 'review');
+});
+
+test('a check whose expected result is a non-zero exit passes when it says so (diff, absent files)', () => {
+  // The entries that sank A live run's brief attempt 3 twice, now stated with their expected exit code.
+  const run = passWith('i', [
+    { kind: 'command', command: 'diff 3-work-43040fa1/task-prompt.md task-prompt.md (1은 다름을 뜻하는 정상 결과)', exitCode: 1, expectedExitCode: 1, role: 'check' },
+    { kind: 'command', command: 'ls AGENTS.md CLAUDE.md (없음 확인)', exitCode: 2, expectedExitCode: '2', role: 'check' },
+    { kind: 'command', command: 'node reachability-check.js', exitCode: 0, role: 'check' }, artifact])();
+  assert.equal(run.nodes[0].status, 'review');
+  assert.deepEqual(run.nodes[0].report.evidence.slice(0, 2).map(item => item.expectedExitCode), [1, 2]);
+  assert.throws(passWith('j', [{ kind: 'command', command: 'diff a b', exitCode: 1, expectedExitCode: 0, role: 'check' }, artifact]), thrown('contradictory_evidence'));
+  assert.throws(passWith('k', [{ kind: 'command', command: 'diff a b', exitCode: 1, expectedExitCode: 'one' }, artifact]), thrown('invalid_evidence'));
+});
+
+test('a refused check names the entry, its command and how to state an expected non-zero exit', () => {
+  try {
+    passWith('l', [
+      { kind: 'command', command: 'cp -p brief.md task-prompt.md', exitCode: 0 },
+      { kind: 'command', command: 'diff 1-work/brief.md 3-work/brief.md (의도한 절만 변경 확인)', exitCode: 1, role: 'check' }, artifact])();
+    assert.fail('should refuse');
+  } catch (error) {
+    assert.equal(error.code, 'contradictory_evidence');
+    assert.match(error.message, /evidence\[1\]/);
+    assert.match(error.message, /diff 1-work/);
+    assert.match(error.message, /expectedExitCode/);
+  }
+});
+
+test('review follow-ups are kept as a short list of text; any other shape is a form error', () => {
+  const run = passWith('m', [{ kind: 'command', command: 'grep', exitCode: 0 }, artifact]);
+  let ok = make({ nodes: graph(['n']) });
+  ok = claimNode(ok, 'n', { nonce: nonce(), now: NOW });
+  const passed = applyReport(ok, 'n', result(ok, 'n', 'passed', { evidence: [artifact], followUps: [' B8 경로는 구현 테스트로 확인 ', 'J3 문구'] }), { now: NOW });
+  assert.deepEqual(passed.nodes[0].report.followUps, ['B8 경로는 구현 테스트로 확인', 'J3 문구']);
+  assert.equal(run().nodes[0].report.followUps, undefined);
+  let bad = make({ nodes: graph(['o']) });
+  bad = claimNode(bad, 'o', { nonce: nonce(), now: NOW });
+  assert.throws(() => applyReport(bad, 'o', result(bad, 'o', 'passed', { evidence: [artifact], followUps: 'one string' }), { now: NOW }), thrown('invalid_report'));
+  assert.throws(() => applyReport(bad, 'o', result(bad, 'o', 'passed', { evidence: [artifact], followUps: Array(13).fill('x') }), { now: NOW }), thrown('invalid_report'));
 });

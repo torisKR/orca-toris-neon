@@ -100,6 +100,35 @@ body{background:radial-gradient(ellipse at 80% 0,color-mix(in srgb,var(--neon) 4
 .team-table select{min-width:94px}
 .track-header{align-items:flex-start}
 .track-header strong{overflow-wrap:anywhere}
+.play-hero{margin-bottom:14px}
+.play-hero h1{margin:0}
+.play-account{margin-bottom:20px;padding-block:5px 9px;border-bottom:1px solid var(--line)}
+.play-account-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.play-account-toolbar .hint{margin:0}
+.play-account-settings summary{width:max-content;padding-block:3px;font-size:11px}
+.play-account-settings[open]>summary{margin-bottom:2px}
+.play-account-settings .actions{margin-block:7px}
+.play-list-heading .hint{margin:0}
+.play-filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,36%);gap:8px;margin-bottom:10px}
+.play-filters .field{min-width:0}
+.play-list{margin:0;padding:0;list-style:none;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.play-list li+li{border-top:1px solid var(--line)}
+.play-app-row{display:flex;align-items:center;gap:8px;min-height:51px;padding:7px 10px;list-style:none;color:var(--fg)}
+.play-app-row::-webkit-details-marker{display:none}
+.play-app-row:focus-visible{outline-offset:-3px}
+.play-app-row:hover,.play-app[open]>.play-app-row{background:color-mix(in srgb,var(--neon) 5%,transparent)}
+.play-app[open]>.play-app-row{margin:0}
+.play-app-name{display:grid;flex:1;min-width:0}
+.play-title{font-weight:620;line-height:1.45;overflow-wrap:anywhere}
+.play-package{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.play-app-status{display:flex;flex-wrap:wrap;justify-content:flex-end;flex:0 0 auto;max-width:40%;gap:3px}
+.play-app-status .badge{padding:1px 6px}
+.play-chevron{width:7px;height:7px;margin-right:2px;flex:0 0 7px;border:solid var(--muted);border-width:0 1.5px 1.5px 0;transform:rotate(45deg) translateY(-2px)}
+.play-app[open] .play-chevron{transform:rotate(225deg)}
+.play-app-tracks{padding:0 10px 10px}
+.play-app-tracks .actions{margin-top:7px}
+.track .play-track-error,.badge.lookup_error{color:var(--red)}
+.badge.not_sent_for_review,.badge.approved_not_published{color:var(--amber)}
 .agent-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
 .agent-card{padding:15px}
 .agent-card .card-title{font-size:12px}
