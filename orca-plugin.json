@@ -106,6 +106,24 @@
         "maxLength": 2048
       },
       {
+        "key": "maxActiveJobs",
+        "title": "Neon 동시 작업 수",
+        "description": "모든 실행을 합쳐 Neon이 동시에 배정하는 작업 수입니다(기본 2). Neon이 배정하지 않은 에이전트는 세지 않습니다.",
+        "type": "number",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 8
+      },
+      {
+        "key": "maxHeavyJobs",
+        "title": "Neon 동시 빌드·기기 작업 수",
+        "description": "빌드·테스트·기기 작업처럼 무거운 작업의 동시 배정 수입니다(기본 1). 동시 작업 수보다 클 수 없습니다.",
+        "type": "number",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 8
+      },
+      {
         "key": "notifications",
         "title": "작업 알림",
         "description": "검토와 승인 대기 시 알림을 표시합니다.",

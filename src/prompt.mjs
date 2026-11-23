@@ -30,6 +30,12 @@ function candidateReceipt(job) {
     ...(job.phase === 'review' ? { sourceFingerprint: job.sourceFingerprint } : {})
   };
 }
+/** What the result card shows; reviewers also say which kind of non-pass it is. */
+const RESULT_CONTRACT = '보고서에 결과 카드용 필드를 함께 적으세요: "changes"(바뀐 것 문장 배열), "criteria"([{"criterion":"완료 조건","met":true,"evidence":"근거"}], 조건마다 하나), ' +
+  '"beforeAfter"([{"label":"항목","before":"이전 실측","after":"이후 실측"}], 실제로 잰 값만), "notVerified"(확인하지 못한 것 배열). ' +
+  '화면 이미지 artifact에는 "label"을 붙이세요: 실제 실행 화면을 캡처했으면 "screenshot", 디자인 시안이면 "mockup". 화면이 무엇을 보여 주는지 "description"에 한 문장으로 적으세요.';
+const FAILURE_CONTRACT = 'passed가 아니면 "failureClass"를 적으세요: "code"(코드 결함, 다시 구현 필요), "check"(검증이 빠졌거나 부족함, 검증만 다시), ' +
+  '"external"(계정·권한·기기 등 외부 조건, 사람이 무엇을 해야 하는지 summary에 정확히).';
 export function buildNodePrompt(run, node, job) {
   const dependencyEvidence = run.nodes.filter((item) => node.deps.includes(item.id)).map((item) => ({
     id: item.id, title: item.title, report: item.report, review: item.review,
@@ -70,6 +76,8 @@ export function buildNodePrompt(run, node, job) {
     '아래 스키마의 식별자를 그대로 사용하세요. 결과에 따라 outcome을 passed, failed, blocked 중 하나로 설정하세요.',
     JSON.stringify(candidateReceipt(job), null, 2),
     'passed에는 비어 있지 않은 summary, 실제 evidence, 최소 한 개의 artifact가 필요합니다. 명령 실패를 숨기지 마세요. 실패했다가 고쳐서 다시 실행한 명령은 {"kind": "command", "command": "...", "exitCode": 8, "role": "history"}처럼 기록으로 남기고, 결과를 뒷받침하는 명령은 exitCode 0이어야 합니다(필요하면 "role": "check"). 0이 아닌 종료 코드가 기대 결과인 확인(다름을 보이는 diff의 1, 파일이 없음을 보이는 ls의 2)은 {"kind": "command", "command": "diff a b", "exitCode": 1, "expectedExitCode": 1, "role": "check"}처럼 expectedExitCode를 적으세요.',
+    RESULT_CONTRACT,
+    review ? FAILURE_CONTRACT : '',
     review ? 'sourceFingerprint는 위 값을 그대로 포함하세요. 검토 중 소스가 달라지면 blocked로 보고하세요.' : '',
     'JSON 보고서는 다른 임시 파일에 먼저 쓴 후 위 경로로 원자적으로 교체하세요. 보고서를 저장한 뒤 작업을 종료하세요.',
     '다음 단계는 Toris Neon이 검증 후 배정합니다. 직접 다음 에이전트를 실행하지 마세요.',

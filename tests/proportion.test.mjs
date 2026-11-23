@@ -80,8 +80,8 @@ test('the report fix request is one line, names the path and the reason, and say
 });
 
 test('update stages have budgets; audit and plan are documents, monetization and the catalog check stay strict', () => {
-  for (const id of ['audit', 'plan', 'monetization', 'catalog']) assert.ok(STAGE_BUDGETS[id]?.work > 0 && STAGE_BUDGETS[id].review > 0, id);
-  assert.ok(DOCUMENT_STAGES.has('audit') && DOCUMENT_STAGES.has('plan'));
+  for (const id of ['identity', 'plan', 'monetization', 'catalog']) assert.ok(STAGE_BUDGETS[id]?.work > 0 && STAGE_BUDGETS[id].review > 0, id);
+  assert.ok(DOCUMENT_STAGES.has('identity') && DOCUMENT_STAGES.has('plan'));
   assert.equal(DOCUMENT_STAGES.has('monetization'), false);
   assert.doesNotMatch(reviewInstruction({ id: 'monetization' }), /followUps/);
 });

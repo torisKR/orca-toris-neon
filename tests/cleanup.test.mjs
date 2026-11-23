@@ -94,3 +94,11 @@ test('a truncated terminal list never marks an unlisted terminal as gone', async
   assert.deepEqual(records, [['a', 'closed']]);
   assert.deepEqual(summary.gone, []);
 });
+
+test('a run says how many finished terminals were closed, which failed and why, and which were kept and why', async () => {
+  const { cleanupSummary } = await import('../src/cleanup.mjs');
+  const r = run([job('a', { terminalClosed: { at: iso(NOW), sessionId: 's-a' } }), job('b', { terminalClosed: { at: iso(NOW), gone: true } }),
+    job('c', { closeAttempts: 2, closeError: 'Orca could not complete this action' }), job('d', { terminalKept: { state: 'working', at: iso(NOW) } }), job('e')]);
+  assert.deepEqual(cleanupSummary(r), { closed: 1, gone: 1, failed: [{ terminalId: 't-c', attempts: 2, error: 'Orca could not complete this action' }], kept: [{ terminalId: 't-d', state: 'working' }] });
+  assert.equal(cleanupSummary(run([job('z')])), null);
+});

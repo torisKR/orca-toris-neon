@@ -3,6 +3,7 @@
  * Both render from teams.mjs view models; ctx carries the panel's state and callbacks.
  */
 import { e, badge, button, options, title, descriptions } from './kit.mjs';
+import { stageResult } from './result.mjs';
 import {
   stageView, relations, teamLanes, collaboration, agentRoster, teamOf,
   eccOverride, elapsed, LIVE_LABELS, STATE_LABELS, STATE_GLYPHS,
@@ -187,7 +188,7 @@ function stageButton(item, node, ctx, related, back) {
   return '<li><button type="button" id="' + key + '" class="' + classes + pulseClass(ctx, node.id) + '" data-action="select-node" data-node="' + e(node.id) + '" data-id="' + e(node.id) + '"' + pulseOffset(ctx, node.id) +
     ' aria-pressed="' + selected + '" aria-labelledby="' + key + '-name ' + key + '-state" aria-describedby="' + key + '-crew' + (relation ? ' ' + key + '-relation' : '') +
     '"><span class="stage-top"><strong class="stage-name" id="' + key + '-name">' + e(title(node)) + '</strong><span id="' + key + '-state">' + stateTag(view.state, view.undelivered) + '</span></span>' +
-    compactCrew(item, node, view, back, key + '-crew') + (relation || selected ? '<span class="stage-relations" id="' + key + '-relation">' + (selected ? '<span class="relation-tag">선택한 단계</span>' : relationTag(relation)) + '</span>' : '') +
+    compactCrew(item, node, view, back, key + '-crew') + (item.waiting?.[node.id] && !node.active ? '<span class="stage-wait" id="' + key + '-wait">대기 · ' + e(item.waiting[node.id]) + '</span>' : '') + (relation || selected ? '<span class="stage-relations" id="' + key + '-relation">' + (selected ? '<span class="relation-tag">선택한 단계</span>' : relationTag(relation)) + '</span>' : '') +
     '</button>' + (selected ? stageConnections(item, related) + '<div class="stage-actions">' +
       button('단계 상세 보기', 'inspect-stage', 'data-node="' + e(node.id) + '"', 'small') + '</div>' : '') + '</li>';
 }
@@ -311,6 +312,7 @@ export function inspector(item, node, ctx) {
   html += eccShortlist(node, view);
   html += visualPanel(node);
   html += exchange(item, node);
+  if (node.status === 'passed') html += stageResult(item, node, { artifacts: ctx.artifacts ?? new Map() });
   for (const [label, report] of [['작업 보고서', node.report], ['독립 검토 결과', node.review]]) {
     if (!report) continue;
     html += '<div class="divider"></div><h4>' + label + ' ' + badge(report.outcome) + '</h4><p class="note-line">' + e(report.summary) + '</p>';

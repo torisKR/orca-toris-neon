@@ -83,6 +83,7 @@ export function cleanupRecorder({ log, appendEvent, at, where }) {
       job.terminalKept = { state: outcome.state, at: at() };
     } else if (outcome.kind === 'failed') {
       job.closeAttempts = (job.closeAttempts ?? 0) + 1;
+      job.closeError = String(outcome.error).slice(0, 200);
       log('Toris Neon cleanup: ' + job.terminalId + ' 터미널을 닫지 못했습니다 (' + job.closeAttempts + '/' + MAX_CLOSE_ATTEMPTS + '): ' + outcome.error);
     } else {
       delete job.terminalKept;
@@ -99,4 +100,14 @@ export function describeSweep(summary) {
   if (!counts.some(Boolean)) return '';
   return '닫음 ' + counts[0] + ', 이미 없음 ' + counts[1] + ', 남김 ' + counts[2] + ', 실패 ' + counts[3] + ', 조회 불가 실행 ' + counts[4] +
     summary.kept.map((item) => ' · 남김 ' + item.terminalId + ' (' + item.state + ')').join('') + summary.failed.map((item) => ' · 실패 ' + item.terminalId + ': ' + item.error).join('');
+}
+
+/** Per run, for the run card: terminals closed, already gone, failed to close (why), kept (why). */
+export function cleanupSummary(run) {
+  const jobs = run.jobs ?? [];
+  const closed = jobs.filter((job) => job.terminalClosed && !job.terminalClosed.gone).length;
+  const gone = jobs.filter((job) => job.terminalClosed?.gone).length;
+  const failed = jobs.filter((job) => !job.terminalClosed && job.closeAttempts).map((job) => ({ terminalId: job.terminalId, attempts: job.closeAttempts, error: job.closeError ?? null }));
+  const kept = jobs.filter((job) => !job.terminalClosed && job.terminalKept).map((job) => ({ terminalId: job.terminalId, state: job.terminalKept.state }));
+  return closed || gone || failed.length || kept.length ? { closed, gone, failed, kept } : null;
 }

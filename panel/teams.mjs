@@ -11,12 +11,12 @@ export const LEGACY_ECC_DEFAULTS = {
   release: 'ecc:code-reviewer',
 };
 export const TEAMS = [
-  { id: 'plan', name: '기획팀', mark: '◇', stages: ['research', 'brief', 'audit', 'plan'], craft: '문제와 범위를 정합니다. 기존 앱은 현황을 진단합니다' },
+  { id: 'plan', name: '기획팀', mark: '◇', stages: ['research', 'brief', 'identity', 'diagnose', 'plan'], craft: '문제와 범위를 정합니다. 기존 앱은 정체성과 개선 후보를 확인합니다' },
   { id: 'arch', name: '설계팀', mark: '△', stages: ['architecture'], craft: '구조와 데이터 흐름을 나눕니다' },
   { id: 'design', name: '디자인팀', mark: '○', stages: ['design', 'assets'], craft: '화면과 에셋을 만듭니다' },
   { id: 'build', name: '구현팀', mark: '□', stages: ['build'], craft: '설계를 작동하는 앱으로 만듭니다' },
   { id: 'money', name: '수익화팀', mark: '◆', stages: ['monetization', 'catalog'], craft: 'Play 결제를 연동하고 상품 등록을 사람에게 넘깁니다' },
-  { id: 'qa', name: '검증팀', mark: '◎', stages: ['test'], craft: '실제로 돌려 보고 결함을 돌려보냅니다' },
+  { id: 'qa', name: '검증팀', mark: '◎', stages: ['test', 'reproduce', 'measure'], craft: '실제로 돌려 보고 결함을 돌려보냅니다. 재현과 측정도 맡습니다' },
   { id: 'ship', name: '출시팀', mark: '▷', stages: ['policy', 'listing', 'internal', 'release'], craft: '정책·스토어·제출을 준비합니다' },
 ];
 const OTHER_TEAM = { id: 'other', name: '추가 단계', mark: '·', stages: [], craft: '사용자 정의 단계' };
@@ -63,6 +63,7 @@ export function stageState(node) {
 
 function stageMessage(run, node) {
   if (node.runtimeMessage) return node.runtimeMessage;
+  if (run.waiting?.[node.id] && !node.active) return '대기 · ' + run.waiting[node.id];
   if (node.failureReason) return node.failureReason;
   if (node.feedback?.summary && node.status !== 'passed') return '수정 요청 · ' + node.feedback.summary;
   return [...(run.events ?? [])].reverse().find((event) => event.nodeId === node.id)?.summary ?? '';

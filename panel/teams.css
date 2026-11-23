@@ -365,3 +365,32 @@
 /* Follow-ups a document review passed on to the next stage. */
 .follow-ups { margin-top: 8px; font-size: 13px; }
 .follow-ups ul { margin: 4px 0 0 18px; padding: 0; }
+
+/* Why a ready stage is not assigned (src/scheduler.mjs) and the Neon-wide limits. */
+.stage-wait { display: block; font-size: 11px; opacity: .78; margin-top: 2px; }
+.limits-line { margin: 4px 0 0; font-size: 13px; }
+.limits-line .hint { display: block; }
+.cleanup-result p { margin: 2px 0; }
+/* Result card (panel/result.mjs): the state is in words, colour only repeats it. */
+.result-card, .run-result { margin-top: 12px; }
+.result-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; background: var(--card); }
+.result-part { margin-top: 10px; }
+.result-part h5 { margin: 0 0 4px; font-size: 12px; color: var(--muted); }
+.result-part ul { margin: 0; padding-left: 18px; }
+.criteria { list-style: none; padding-left: 0 !important; }
+.criterion-state { display: inline-block; min-width: 3.5em; font-weight: 600; }
+.criteria .is-met .criterion-state { color: var(--mint); }
+.criteria .is-unmet .criterion-state { color: var(--amber); }
+.criterion-evidence { color: var(--muted); }
+.before-after { width: 100%; border-collapse: collapse; font-size: 13px; }
+.before-after th, .before-after td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+.artifact { margin: 8px 0 0; }
+.artifact figcaption { font-size: 12px; margin-bottom: 4px; }
+.artifact-label { font-weight: 600; padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px; }
+.artifact-label.is-mockup { border-style: dashed; }
+.artifact img, .artifact video { display: block; max-width: 100%; max-height: 360px; border: 1px solid var(--line); border-radius: var(--radius); }
+.artifact-text { max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: 12px; background: var(--bg); padding: 6px; }
+.artifact-text:focus-visible, .result-card .button:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
+.completion-label { font-weight: 700; color: var(--neon); }
+.result-chain p { margin: 4px 0; }
+.run-result .button:focus-visible, .artifact video:focus-visible, .artifact:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }

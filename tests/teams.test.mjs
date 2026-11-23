@@ -4,7 +4,7 @@ import {
   TEAMS, teamOf, stageView, agentRoster, collaboration, transitions, snapshotStates, relations,
   handsOffTo, teamLanes, elapsed, LEGACY_ECC_DEFAULTS as PANEL_LEGACY, eccOverride as panelOverride,
 } from '../panel/teams.mjs';
-import { DEFAULT_GRAPH, IMPROVE_GRAPH, createRun, claimNode, templateGraph } from '../src/engine.mjs';
+import { DEFAULT_GRAPH, IMPROVE_STAGE_IDS, createRun, claimNode, templateGraph } from '../src/engine.mjs';
 import { LEGACY_ECC_DEFAULTS, eccOverride } from '../src/ecc.mjs';
 
 const NOW = '2026-11-19T05:00:00.000Z';
@@ -13,7 +13,7 @@ const node = (run, id) => run.nodes.find((item) => item.id === id);
 
 test('every stage of both templates belongs to exactly one team with its own mark', () => {
   const ids = TEAMS.flatMap((team) => team.stages);
-  assert.deepEqual([...ids].sort(), [...new Set([...DEFAULT_GRAPH, ...IMPROVE_GRAPH].map((item) => item.id))].sort());
+  assert.deepEqual([...ids].sort(), [...new Set([...DEFAULT_GRAPH.map((item) => item.id), ...IMPROVE_STAGE_IDS])].sort());
   assert.deepEqual(TEAMS.find((team) => team.id === 'money').stages, ['monetization', 'catalog']);
   assert.equal(TEAMS.find((team) => team.id === 'money').name, '수익화팀');
   assert.equal(new Set(ids).size, ids.length);
@@ -73,7 +73,7 @@ test('both tabs read the same job: an idle never-prompted agent is undelivered i
 test('the roster groups every stage worker and reviewer under its team', () => {
   const roster = agentRoster(fresh());
   assert.deepEqual(roster.map((entry) => entry.team.id), TEAMS.map((team) => team.id).filter((id) => id !== 'money'), 'a new app has no monetization lane');
-  const update = createRun({ id: 'u', goal: '결제 추가', now: NOW, nodes: templateGraph('improve', { areas: ['payments'] }) });
+  const update = createRun({ id: 'u', goal: '결제 추가', now: NOW, nodes: templateGraph('improve', { kind: 'feature', payments: true }) });
   assert.deepEqual(agentRoster(update).find((entry) => entry.team.id === 'money').members.map((member) => member.key), ['monetization:work', 'monetization:review', 'catalog:work', 'catalog:review']);
   assert.equal(roster.flatMap((entry) => entry.members).length, DEFAULT_GRAPH.length * 2);
   const run = fresh();

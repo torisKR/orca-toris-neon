@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createRun, claimNode, recordLaunch, applyReport, pauseRun, resumeRun, cancelRun, templateGraph } from '../src/engine.mjs';
 import { dayKey, previousDay } from '../src/today.mjs';
+import { projectState } from '../src/views.mjs';
+import { deflateSync, crc32 } from 'node:zlib';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
 const clone = value => structuredClone(value);
@@ -23,33 +25,8 @@ const projectsSample = [
 const roles = {research:'grok',brief:'codex',architecture:'codex',design:'cursor',assets:'gemini',build:'codex',test:'claude',policy:'claude',listing:'grok',internal:'codex',release:'codex'};
 const iso = stamp => new Date(stamp).toISOString();
 
-function reportSummary(report) {
-  if (!report || typeof report !== 'object') return report;
-  const {evidence,...summary} = report;
-  return {...summary,evidenceCount:Array.isArray(evidence)?evidence.length:0};
-}
-function nodeSummary(node) {
-  const {history,report,review,feedback,lastFailure,receipt,...summary} = node;
-  return {...summary,report:reportSummary(report),review:reportSummary(review),
-    ...(feedback===undefined?{}:{feedback:reportSummary(feedback)}),
-    ...(lastFailure===undefined?{}:{lastFailure:reportSummary(lastFailure)}),
-    ...(receipt?{receipt:{path:receipt.path,at:receipt.at,phase:receipt.phase,artifactCount:receipt.artifacts?.length??0}}:{})};
-}
-function runSummary(run) {
-  const {events,acceptedReports,nodes,jobs,...summary} = run;
-  const current = new Set(nodes.flatMap(node=>[node.active?.nonce,node.pendingReceipt?.nonce]).filter(Boolean));
-  return {...summary,nodes:nodes.map(nodeSummary),jobs:(jobs??[]).filter(job=>current.has(job.nonce)),
-    nodeCount:nodes.length,passedCount:nodes.filter(node=>node.status==='passed').length};
-}
-function archiveSummary(run) {
-  return {id:run.id,goal:run.goal,status:run.status,projectId:run.projectId,
-    archivedAt:run.archivedAt,createdAt:run.createdAt,updatedAt:run.updatedAt,
-    nodeCount:run.nodes.length,passedCount:run.nodes.filter(node=>node.status==='passed').length};
-}
-function compactState(state) {
-  return {version:state.version,revision:state.revision,view:'summary',
-    runs:state.runs.map(runSummary),archivedRuns:state.archivedRuns.map(archiveSummary)};
-}
+// The same summary projection Orca pushes (limits, waiting reasons, cleanup included).
+const compactState = state => projectState(state, 'summary');
 function fillPassed(node, stamp, prefix) {
   node.status='passed';node.attempts=1;node.reviewAttempts=1;
   node.report={outcome:'passed',summary:'미리보기 자료 · 실제 작업이나 검증 결과가 아닙니다.',
@@ -94,7 +71,8 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     run.jobs=run.nodes.filter(node=>node.status==='passed').map(node=>({nodeId:node.id,nonce:'preview-archive-'+index+'-'+node.id,state:'completed'}));
     return run;
   });
-  const state={version:1,revision:1,runs:[sample],archivedRuns,projects,workspaces,
+  const improved=improvementSample(stamp),diagnosed=diagnosisSample(stamp);
+  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
     agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
@@ -203,9 +181,11 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     if(name==='today.snapshot')return todaySnapshot(input);
     if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts};
     if(name==='play.submissionAccounts')return accounts.map(({id,name,developerId})=>({id,name,developerId}));
+    if(name==='artifacts.read')return previewArtifact(input.path);
     if(name==='runs.create') {
-      const run=createRun({...input,nodes:templateGraph(input.template??'new-app',{areas:input.areas}),id:'preview-created-'+(++sequence),now:tick()});
-      if(input.template==='improve')Object.assign(run,{template:'improve',improvement:{areas:input.areas,projectName:input.projectId,playLink:null}});
+      const template=input.fromDiagnosis?'improve':input.template??'new-app',kind=input.fromDiagnosis?'bugfix':input.kind;
+      const run=createRun({goal:input.goal??'미리보기 진단',projectId:input.projectId??'preview-project-5',nodes:templateGraph(template,{kind,...input.options}),id:'preview-created-'+(++sequence),now:tick()});
+      if(template!=='new-app')Object.assign(run,{template,parentRunId:input.parentRunId??input.fromDiagnosis?.runId,improvement:{kind,options:input.options??{},projectName:input.projectId,playLink:null}});
       run.jobs=[];state.runs.unshift(run);return changed(run);
     }
     if(name==='runs.pause')return replace(pauseRun(lookup(input.runId),{now:tick()}));
@@ -248,6 +228,55 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
   };
   return {rpc:async(name,input={})=>clone(await dispatch(name,input)),
     compact:()=>clone(compactState(state)),revision:()=>state.revision};
+}
+
+// A synthetic phone screen, drawn here so the preview never reads a real file.
+function previewPng(variant) {
+  const width=180,height=320,rows=[];
+  for(let y=0;y<height;y++){
+    const row=[0];
+    for(let x=0;x<width;x++){
+      let color=[24,28,36];
+      if(y<44)color=variant==='mockup'?[70,60,110]:[46,125,92];
+      else if(y>60&&(y-60)%52<40&&x>12&&x<168)color=(y-60)/52<1&&variant!=='mockup'?[64,160,120]:[44,50,62];
+      if(variant==='mockup'&&(x+y)%23===0)color=[120,110,170];
+      row.push(...color);
+    }
+    rows.push(Buffer.from(row));
+  }
+  const chunk=(type,data)=>{const head=Buffer.alloc(8);head.writeUInt32BE(data.length);head.write(type,4);const crc=Buffer.alloc(4);crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type),data])));return Buffer.concat([head,data,crc]);};
+  const header=Buffer.alloc(13);header.writeUInt32BE(width);header.writeUInt32BE(height,4);header.set([8,2,0,0,0],8);
+  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.concat(rows))),chunk('IEND',Buffer.alloc(0))]);
+}
+function previewArtifact(file) {
+  if(/\.png$/.test(file)){const data=previewPng(/mock/.test(file)?'mockup':'screenshot');return {kind:'image',mime:'image/png',size:data.length,data:data.toString('base64')};}
+  return {kind:'text',size:2048,text:'> Task :app:testDebugUnitTest\nNotificationSchedulerTest > schedulesOnce PASSED\nBUILD SUCCESSFUL in 41s (미리보기 로그)',truncated:false};
+}
+function improvementSample(stamp) {
+  const run=createRun({id:'preview-improve',goal:'초록 물주기 · 같은 알림이 두 번 울리는 문제 고치기',projectId:'preview-project-5',now:stamp-7200000,nodes:templateGraph('improve',{kind:'bugfix'})});
+  Object.assign(run,{template:'improve',started:true,status:'completed',workspaceId:'preview-workspace-5',workspacePath:'/example/green-water',jobs:[],
+    improvement:{kind:'bugfix',options:{design:false,payments:false},projectName:'green-water',playLink:null}});
+  for(const node of run.nodes){node.agent='codex';node.reviewer='claude';fillPassed(node,stamp-3600000,'preview/improve');}
+  const dir='/example/receipts/preview-improve/build/1-work-n';
+  Object.assign(run.nodes.find(node=>node.id==='build').report,{summary:'알림 예약 중복을 없앴습니다. (미리보기 자료)',
+    changes:['앱 재시작 때 NotificationScheduler가 이미 예약된 알림을 다시 예약하지 않습니다.','알림 ID를 식물 ID에서 만들도록 바꿨습니다.'],
+    criteria:[{criterion:'같은 시각에 알림이 한 번만 울린다',met:true,evidence:'NotificationSchedulerTest.schedulesOnce'},{criterion:'기존 사용자의 알림 설정이 유지된다',met:true,evidence:'업그레이드 테스트'},{criterion:'Android 9 실기기에서 확인',met:false}],
+    beforeAfter:[{label:'재시작 후 예약된 알림 수',before:'2',after:'1'},{label:'단위 테스트',before:'41개',after:'43개'}],
+    notVerified:['Android 9 실기기에서의 알림 표시'],
+    evidence:[{kind:'command',command:'./gradlew testDebugUnitTest',exitCode:0},{kind:'command',command:'./gradlew testDebugUnitTest (수정 전)',exitCode:1,role:'history'},
+      {kind:'artifact',path:dir+'/after.png',label:'screenshot'},{kind:'artifact',path:dir+'/mock-settings.png',label:'mockup'},{kind:'artifact',path:dir+'/build.log'}]});
+  return run;
+}
+function diagnosisSample(stamp) {
+  const run=createRun({id:'preview-diagnose',goal:'고요 메모 진단: 근거 있는 개선 후보 찾기',projectId:'preview-project-2',now:stamp-5400000,nodes:templateGraph('diagnose')});
+  Object.assign(run,{template:'diagnose',started:true,status:'completed',workspaceId:'preview-workspace-2',workspacePath:'/example/quiet-notes',jobs:[],
+    improvement:{kind:null,options:{},projectName:'quiet-notes',playLink:null}});
+  for(const node of run.nodes){node.agent='claude';node.reviewer='codex';fillPassed(node,stamp-1800000,'preview/diagnose');}
+  run.nodes.find(node=>node.id==='diagnose').report.candidates=[
+    {kind:'performance',title:'첫 실행이 3초 넘게 걸림',problem:'메모 전체를 시작 시점에 읽습니다.',evidence:'콜드 스타트 3.4초 (Pixel 6, 5회 평균)',impact:'첫 화면 이탈',scope:'MemoRepository 초기 로딩',verify:'같은 기기에서 콜드 스타트 재측정'},
+    {kind:'bugfix',title:'긴 메모 저장 시 마지막 줄 유실',problem:'4,000자 이상에서 잘립니다.',evidence:'재현 테스트 실패 로그',impact:'사용자 데이터 손실',scope:'MemoEditor 저장 경로',verify:'4,000자 메모 저장 후 재열기 테스트'},
+    {kind:'design',title:'다크 모드 대비 부족',problem:'본문 대비 3.1:1',evidence:'대비 측정 스크린샷',impact:'읽기 어려움',scope:'테마 색상',verify:'대비 4.5:1 이상 측정'}];
+  return run;
 }
 
 const banner='<div style="background:#312642;color:#e4d5ff;font:11px system-ui;padding:7px 14px;text-align:center" role="note">UI 개발 미리보기 · 샘플 데이터 · 실제 에이전트와 Play API는 실행하지 않습니다.</div>';

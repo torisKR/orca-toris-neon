@@ -12,11 +12,16 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 | [`watch.mjs`](../src/watch.mjs) | 활성 작업 주기 점검(놓친 상태 이벤트, 받지 않은 보고서, 오래 멈춘 에이전트) | 직접 배정·입력 |
 | [`cleanup.mjs`](../src/cleanup.mjs) | 끝난 작업의 에이전트 터미널 정리(유예 시간, 시작 점검) | 현재·불확실 배정이나 다른 터미널 종료 |
 | [`proportion.mjs`](../src/proportion.mjs), [`reportfix.mjs`](../src/reportfix.mjs) | 단계별 시간·분량 예산과 문서 검토 기준, 형식이 거부된 보고서 수정 요청 | 상태 변경 |
-| [`prompt.mjs`](../src/prompt.mjs), [`views.mjs`](../src/views.mjs) | 작업 지시 생성, 패널·RPC용 상태 투영(summary·timeline) | 상태 변경 |
+| [`prompt.mjs`](../src/prompt.mjs), [`views.mjs`](../src/views.mjs) | 작업 지시 생성(결과 카드 필드·실패 분류 계약 포함), 패널·RPC용 상태 투영(summary·timeline) | 상태 변경 |
+| [`scheduler.mjs`](../src/scheduler.mjs) | Neon 전체 배정 한도(동시 2개, 무거운 작업 1개), 실행 간 차례 배정, 실제 대기 이유 | Neon 밖 에이전트 제한 |
+| [`commitcheck.mjs`](../src/commitcheck.mjs) | 쓰기 단계의 커밋 확인(깨끗한 트리·HEAD 이동), 검토와 커밋 연결 | 커밋 대신 만들기 |
+| [`flows.mjs`](../src/flows.mjs) | `runs.create` 계획: 새 앱·개선 종류·진단·후보에서 개선·이어서 개선, 요청 키(중복 생성 방지) | 실행 시작 |
+| [`artifacts.mjs`](../src/artifacts.mjs) | 보고서가 기록한 결과 파일 하나를 요청 시 읽기(실행 결과 폴더·작업 공간 안, 심볼릭 링크 탈출 거부, 크기 제한) | 상태 푸시에 파일 포함 |
+| [`buildinfo.mjs`](../src/buildinfo.mjs) | 실행 중인 코드의 버전·커밋·수정 여부·개발 폴더/설치본 | 버전 변경 |
 | [`worker.mjs`](../src/worker.mjs) | Orca 수명 주기, 명령·패널 요청 등록 | HTML 화면 렌더링 |
 | [`play.mjs`](../src/play.mjs) | 계정 보호, OAuth, Play GET 조회와 캐시 | 앱 업로드·트랙 변경 |
 | [`today.mjs`](../src/today.mjs) | 날짜별 기록, 인계, Git 신선도, 에이전트 재개 | 원본 작업 일지 수정 |
-| [`panel/`](../panel) | 사용자 입력과 표시. `teams.mjs`(팀·상태 뷰 모델, 순수 함수), `flow.mjs`(Auto App 레인·에이전트 탭 렌더러), `kit.mjs`(이스케이프·버튼 등 공용), `studio.mjs`(상태·이벤트·나머지 탭) | 직접 비밀키 저장·자체 모델 호출 |
+| [`panel/`](../panel) | 사용자 입력과 표시. `teams.mjs`(팀·상태 뷰 모델, 순수 함수), `flow.mjs`(Auto App 레인·에이전트 탭 렌더러), `newflow.mjs`(새 흐름 양식·진단 후보), `result.mjs`(결과 카드·완료 단계), `kit.mjs`(이스케이프·버튼 등 공용), `studio.mjs`(상태·이벤트·나머지 탭) | 직접 비밀키 저장·자체 모델 호출 |
 
 패널은 `window.orca.plugin.request(name, input)`로 워커에 요청합니다. 워커는 `orca.panels.handle`에 등록한 핸들러를 실행합니다. 별도 HTTP 서버나 클라우드 백엔드는 없습니다.
 
@@ -360,7 +365,8 @@ await window.orca.plugin.request("runs.approve", {
 |---|---|---|
 | `state.get` | view?: summary/full/timeline, forceHost? | 선택한 실행 응답 범위 + 프로젝트·작업 공간·에이전트·경고. 기본 full |
 | `runs.get` | runId | 활성·보관 실행 하나의 전체 상세 |
-| `runs.create` | goal, projectId, assignments, isolate, workspaceId, 제한 설정 | 실행 계획 저장. 아직 실행하지 않음 |
+| `runs.create` | goal, projectId, template?(new-app/improve/diagnose), kind?, options?, playLink?, fromDiagnosis?, parentRunId?, requestId?, instructions/description(단계별), assignments, 제한 설정 | 실행 계획 저장. 같은 requestId·같은 진단 후보는 기존 실행을 돌려줌. 아직 실행하지 않음 |
+| `artifacts.read` | runId, path | 보고서에 기록된 결과 파일 하나: 이미지·짧은 영상은 base64, 로그는 앞부분. 상태 푸시에는 넣지 않음 |
 | `runs.start` | runId | 작업 공간 확보 후 배정 시작 |
 | `runs.pause` / `runs.resume` | runId | 새 배정 정지 / 검증 후 재개 |
 | `runs.refresh` | runId | 기존 터미널·완료 파일 대조 |
@@ -514,39 +520,51 @@ Orca의 `terminal.sendText`는 활성 작업 공간 확인, 터미널 목록 작
 
 ## 흐름 템플릿과 기존 앱 디벨롭 (`src/engine.mjs`, `src/improve.mjs`, `src/catalog.mjs`, `src/approval.mjs`)
 
-`runs.create`는 `template`으로 그래프를 고릅니다. `new-app`(기본, `DEFAULT_GRAPH`)과 `improve`(`IMPROVE_GRAPH`)가 있고, `templateGraph()`가 이름과 개선 영역을 검증합니다. 패널은 템플릿 이름만 보내고 단계 목록은 보내지 않습니다. `nodes`는 API 호환용으로만 남아 있습니다.
+`runs.create`는 `template`으로 그래프를 고릅니다(`src/flows.mjs`). `new-app`(기본, `DEFAULT_GRAPH`), `improve`(개선 종류 하나), `diagnose`(진단만)가 있습니다. 패널은 템플릿 이름만 보내고 단계 목록은 보내지 않습니다. `nodes`는 `new-app`에서만 API 호환용으로 받습니다.
 
-`improve`는 이미 출시한 앱을 개선하는 흐름입니다. 영역(`design`·`features`·`payments`)에 따라 단계가 들어가고 빠집니다.
+`improve`는 이미 출시한 앱을 개선합니다. 종류마다 짧은 그래프가 있고 build·test는 공유합니다.
 
-| 단계 | 포함 조건 | 내용 |
-|---|---|---|
-| audit 현황 진단 | 항상 | 빌드·테스트 실행, 버전·패키지·서명·의존성 기준선, 깨뜨리면 안 되는 것 목록, 연결된 Play 앱의 상태와 배포 버전 |
-| plan 개선 기획 | 항상 | 영역별 범위·수용 조건·회귀 보호. 결제를 고르면 모델과 상품 제안(`products`) |
-| design / assets | 디자인 개선 | 현재 화면 스크린샷에서 출발. gpt-6.2-sol·high와 이미지·스프라이트·픽셀 스킬 규칙은 그대로 적용 |
-| build 기능·디자인 구현 | 항상 | 특성화 테스트를 먼저 쓴 뒤 계획 범위만 구현 |
-| monetization 결제 연동 | 결제 추가 | Play Billing(버전은 공식 문서로 확인), 확인·복원·보류 구매·권한 저장, 페이월. 테스트 상품으로 검증. 수익화팀 |
-| test / policy / listing | 항상 | 업데이트 기준(versionCode 증가, 패키지·서명 유지, 기존 데이터 읽기, 결제 정책·데이터 보안 양식) |
-| catalog Play 상품 등록(사용자) | 결제 추가 | 사람만 승인하는 단계(`humanApproval`) |
-| internal / release | 항상 | 업데이트 빌드와 릴리스 노트. 실제 제출은 이전과 같이 사람이 승인 |
+| 종류 | 단계 (괄호는 선택) |
+|---|---|
+| bugfix 오류 수정 | identity → reproduce → build → test |
+| feature 기능 추가 | identity → plan → (design → assets) → build → (monetization) → test → (catalog) |
+| design 디자인 | identity → design → assets → build → test |
+| performance 성능 | identity → measure → build → test |
+| maintenance 유지보수 | identity → plan → build → test |
+| release 출시 | identity → test → policy → listing → internal → release |
 
-단계를 이렇게 나눈 이유는 다음과 같습니다.
-- 새 앱 흐름의 research·brief·architecture는 기존 앱에서 audit·plan으로 대체됩니다. 구조는 이미 있으므로 따로 설계하지 않고, 진단이 이를 기록합니다.
-- 결제는 구현과 검증 기준이 달라서(보안 검토, 테스트 상품) 별도 단계로 둡니다.
-- 상품 등록은 외부 작업이므로 사람의 단계로 분리합니다.
+- identity(앱 정체성 확인)는 스택·패키지·빌드 대상·저장 데이터 여부를 `identity` 객체로 보고합니다. 이 보고는 이후 모든 지시에 들어가며 "다른 스택으로 다시 만들지 마세요"가 붙습니다. 저장 데이터를 다루면 "기존 사용자 데이터가 새 버전에서 열리는지"가 필수 검증 항목이 됩니다.
+- diagnose(진단만)는 identity → diagnose이고, 근거 있는 후보 3~5개(problem·evidence·impact·scope·verify, kind)를 냅니다. 후보를 고르면 `fromDiagnosis`로 그 종류의 개선 실행이 만들어지고 `parentRunId`로 이어집니다. 같은 후보를 다시 고르면 같은 실행이 열립니다.
+- "이 결과 더 개선하기"는 `parentRunId`가 있는 새 `improve` 실행을 만들고, 이전 결과 요약(바뀐 것·검증하지 못한 것)을 지시에 넣습니다. 같은 프로젝트에서만 가능하며 이전 실행은 바꾸지 않습니다.
 
-모든 update 단계의 지시에는 `UPDATE_RULE`(동작하는 기능·사용자 데이터 보존, 계획 범위만 변경, 패키지·서명·판매한 구매 유지)과 개선 영역, 연결된 Play 정보가 들어갑니다. 플러그인은 Play 평점·리뷰를 수집하지 않으므로, 진단 지시에는 Play Console에서 확인할 항목으로 남기라고 적습니다.
+입력 검증(`prepareImprovement`)은 개선 종류, 커밋이 있는 로컬 Git 프로젝트, 연결한 Play 패키지가 등록된 계정의 것인지(`play.appSnapshot`)를 확인합니다.
 
-입력 검증(`prepareImprovement`)은 다음을 확인합니다.
-- 영역이 하나 이상인지.
-- 로컬 Git 프로젝트이고 커밋이 있는지.
-- 연결한 Play 패키지가 등록된 계정의 패키지인지(`play.appSnapshot`).
+## 실행 한도, 커밋 확인, 결과 카드
+
+- **배정 한도** (`src/scheduler.mjs`): 실행별 `maxConcurrency` 위에 Neon 전체 동시 작업 수(기본 2)와 무거운 단계(build·test·internal·monetization·reproduce·measure) 수(기본 1)를 둡니다. 플러그인 설정 `maxActiveJobs`·`maxHeavyJobs`로 바꿀 수 있고, 잘못된 값은 기본값으로 처리합니다. 실행은 차례로 배정받습니다. 대기 중인 단계는 실제 이유를 표시합니다(전체 작업 2개 실행 중, 빌드 작업 완료 대기, 실행별 한도, 선행 단계 대기, 승인 대기 등). 이 한도는 Neon이 배정하는 작업에만 적용됩니다.
+- **커밋 확인** (`src/commitcheck.mjs`): 쓰기 단계의 통과 보고는 작업 트리가 깨끗하고(ignored 파일 제외) HEAD가 시작 때와 달라야 받습니다. 아니면 "이 실행 브랜치에 커밋" 보고서 수정 요청을 보냅니다. git을 읽지 못하면 받지 않습니다. 검토는 시작 시 커밋에 묶이며, 도중에 커밋이 바뀌면 통과하지 못합니다.
+- **실패 분류**: 통과가 아닌 보고는 `failureClass`를 적습니다. `code`(코드 결함)는 구현으로 돌아갑니다. `check`(검증 부족)는 검증만 다시 합니다. 테스트를 다시 하거나 검토를 다시 하고, 빌드는 다시 하지 않습니다. `external`(외부 조건)은 확인 필요로 멈추고 자율 진행도 재시도하지 않습니다.
+- **결과 카드** (`panel/result.mjs`): 단계와 실행마다 다음 순서로 보여 줍니다.
+  1. 바뀐 것(`changes`)
+  2. 완료 기준별 충족 여부(`criteria`)
+  3. 실측 이전/이후(`beforeAfter`)와 결과 파일. 시안은 `mockup`, 실제 화면은 `screenshot`으로 구분합니다.
+  4. 실제 실행한 검증 명령
+  5. 검증하지 못한 것(`notVerified`)
+  6. "이 결과 더 개선하기"
+
+  결과 파일은 누를 때 `artifacts.read`로 하나씩 읽습니다. 요약 상태 푸시에는 이 필드들을 넣지 않습니다.
+- **완료 단계**: 구현 결과 생성 → 검증 완료 → 출시 준비 완료 → 내부 테스트 제출 확인 → 프로덕션 게시 확인. 마지막 단계는 승인한 계정·패키지·트랙·versionCode가 Play 탭의 최신 관측에서 published일 때만 표시합니다. 이때 관측한 트랙·versionCode·상태·시각을 함께 보여 줍니다. 단계적 출시 비율은 확인하지 않는다고 적습니다.
+- **일시 정지와 취소**: 일시 정지는 새 배정만 멈춥니다. 패널은 "새 배정 멈춤"으로 표시하고, 작업 중인 에이전트는 계속 작업한다고 알립니다. 취소는 세 상태로 표시합니다.
+  - 취소 요청 처리 중
+  - 취소 완료: Orca가 소유 터미널마다 `closed: true`를 돌려줌
+  - 종료 확인 필요: `stopFailures`가 남아 있음
 
 상품 등록은 기존 승인 게이트를 확장해 처리합니다(`src/approval.mjs`). `runs.approve`의 범위는 `submission`(내부 테스트·출시의 실제 제출 대상)이거나 `productCatalog`(catalog 단계)입니다. catalog 단계는 `productCatalog: { confirmed: [productId…] }`와 10자 이상의 메모 없이는 승인할 수 없습니다. 결제 연동 보고서(없으면 기획 보고서)가 제안한 상품을 모두 확인해야 합니다.
 
 자율 진행은 이 단계를 승인하지 않습니다. 대신 한 번 알림을 보내고 멈춥니다. 알림에는 판매자 계정 확인, 상품 ID·유형·가격·기본 요금제, 광고를 골랐다면 AdMob 연결, 그리고 기다리는 단계가 적힙니다. 사람이 승인하면 멈춤 표시가 지워지고 내부 테스트 준비부터 이어갑니다. 플러그인은 Play Console이나 API로 상품을 만들거나 바꾸지 않고, 판매자 계정 활성화·AdMob 연결·업로드도 하지 않습니다.
 
 ECC 규칙은 다음과 같습니다(설치된 이름만).
-- audit: code-reviewer, silent-failure-hunter, 스택 검토자와 빌드 해결사.
+- identity: code-reviewer, silent-failure-hunter, 스택 검토자와 빌드 해결사. diagnose: code-reviewer, silent-failure-hunter, performance-optimizer, 스택 검토자, product-lens. reproduce: e2e-runner, 스택 검토자, tdd-guide. measure: performance-optimizer, 스택 검토자, benchmark-methodology.
 - plan: planner.
 - monetization: security-reviewer를 먼저 두고, 스택 검토자, 빌드 해결사, tdd-guide.
 - Flutter 앱이면 flutter-reviewer·dart-build-resolver가 들어갑니다.

@@ -384,46 +384,73 @@ test('review follow-ups are kept as a short list of text; any other shape is a f
   assert.throws(() => applyReport(bad, 'o', result(bad, 'o', 'passed', { evidence: [artifact], followUps: Array(13).fill('x') }), { now: NOW }), thrown('invalid_report'));
 });
 
-// Flow templates: the new-app graph and the improvement graph for an existing, shipped app.
-import { templateGraph, IMPROVE_GRAPH, IMPROVEMENT_AREAS } from '../src/engine.mjs';
+// Flow templates: a new app, one short graph per improvement kind for a shipped app, and diagnose-only.
+import { templateGraph, IMPROVE_KINDS, IMPROVE_STAGE_IDS } from '../src/engine.mjs';
 const ids = (nodes) => nodes.map(node => node.id);
 const depsOf = (nodes, id) => nodes.find(node => node.id === id)?.deps;
 
-test('templates are a validated choice: new-app is the default graph, unknown names and areas are refused', () => {
+test('templates are a validated choice: new-app is the default graph, unknown templates, kinds and options are refused', () => {
   assert.deepEqual(templateGraph('new-app'), DEFAULT_GRAPH);
   assert.deepEqual(templateGraph(), DEFAULT_GRAPH);
   assert.throws(() => templateGraph('rewrite'), thrown('invalid_input'));
-  assert.throws(() => templateGraph('improve', { areas: [] }), thrown('invalid_input'));
-  assert.throws(() => templateGraph('improve', { areas: ['design', 'design'] }), thrown('invalid_input'));
-  assert.throws(() => templateGraph('improve', { areas: ['crypto'] }), thrown('invalid_input'));
-  assert.deepEqual([...IMPROVEMENT_AREAS], ['design', 'features', 'payments']);
+  assert.throws(() => templateGraph('improve', {}), thrown('invalid_input'));
+  assert.throws(() => templateGraph('improve', { kind: 'rewrite' }), thrown('invalid_input'));
+  assert.throws(() => templateGraph('improve', { kind: 'bugfix', payments: true }), thrown('invalid_input'), 'payments is a feature option only');
+  assert.deepEqual(Object.keys(IMPROVE_KINDS), ['bugfix', 'feature', 'design', 'performance', 'maintenance', 'release']);
 });
 
-test('the improvement graph keeps design and payment stages only for the areas chosen', () => {
-  const features = templateGraph('improve', { areas: ['features'] });
-  assert.deepEqual(ids(features), ['audit', 'plan', 'build', 'test', 'policy', 'listing', 'internal', 'release']);
-  assert.deepEqual(depsOf(features, 'build'), ['plan']);
-  assert.deepEqual(depsOf(features, 'test'), ['build']);
-  assert.deepEqual(depsOf(features, 'internal'), ['listing']);
-  const all = templateGraph('improve', { areas: ['payments', 'design', 'features'] });
-  assert.deepEqual(ids(all), ids(IMPROVE_GRAPH));
-  assert.deepEqual(depsOf(all, 'build'), ['plan', 'assets']);
-  assert.deepEqual(depsOf(all, 'test'), ['build', 'monetization']);
-  assert.deepEqual(depsOf(all, 'internal'), ['listing', 'catalog']);
-  const payments = templateGraph('improve', { areas: ['payments'] });
-  assert.deepEqual(ids(payments), ['audit', 'plan', 'build', 'monetization', 'test', 'policy', 'listing', 'catalog', 'internal', 'release']);
-  for (const nodes of [features, all, payments]) {
-    const run = make({ nodes });
-    assert.equal(run.nodes.length, nodes.length, 'every gated graph is a valid run graph');
+test('each improvement kind has its own short graph, always starting from identity and reusing build and test', () => {
+  const expected = {
+    bugfix: ['identity', 'reproduce', 'build', 'test'],
+    feature: ['identity', 'plan', 'build', 'test'],
+    design: ['identity', 'design', 'assets', 'build', 'test'],
+    performance: ['identity', 'measure', 'build', 'test'],
+    maintenance: ['identity', 'plan', 'build', 'test'],
+    release: ['identity', 'test', 'policy', 'listing', 'internal', 'release'],
+  };
+  for (const [kind, stages] of Object.entries(expected)) {
+    const nodes = templateGraph('improve', { kind });
+    assert.deepEqual(ids(nodes), stages, kind);
+    nodes.forEach((node, index) => assert.deepEqual(node.deps, index ? [stages[index - 1]] : [], kind + ' ' + node.id + ' follows the previous stage'));
+    assert.equal(make({ nodes }).nodes.length, stages.length);
   }
+  assert.deepEqual(ids(templateGraph('improve', { kind: 'feature', design: true, payments: true })),
+    ['identity', 'plan', 'design', 'assets', 'build', 'monetization', 'test', 'catalog']);
+  assert.equal(templateGraph('improve', { kind: 'bugfix' }).find(node => node.id === 'build').title, '오류 수정');
+  assert.deepEqual(ids(templateGraph('diagnose')), ['identity', 'diagnose']);
+  for (const id of [...ids(templateGraph('improve', { kind: 'feature', design: true, payments: true })), 'reproduce', 'measure', 'diagnose', 'policy']) assert.ok(IMPROVE_STAGE_IDS.includes(id), id);
+});
+
+test('test failures go back to build in an improvement as in a new app (the repair loop is reused)', () => {
+  let run = make({ nodes: templateGraph('improve', { kind: 'bugfix' }), maxRepairLoops: 2 });
+  for (const id of ['identity', 'reproduce', 'build']) run = complete(run, id);
+  run = claimNode(run, 'test', { nonce: nonce(), now: NOW });
+  run = applyReport(run, 'test', result(run, 'test', 'failed'), { now: NOW });
+  assert.equal(run.repairLoops, 1);
+  assert.equal(run.nodes.find(node => node.id === 'build').status, 'pending');
 });
 
 test('the product catalog stage is an approval only a person can give', () => {
-  const run = make({ nodes: templateGraph('improve', { areas: ['payments'] }) });
+  const run = make({ nodes: templateGraph('improve', { kind: 'feature', payments: true }) });
   const catalog = run.nodes.find(node => node.id === 'catalog');
   assert.equal(catalog.requiresApproval, true);
   assert.equal(catalog.humanApproval, true);
-  assert.equal(run.nodes.find(node => node.id === 'internal').humanApproval, undefined);
+});
+
+test('identity and diagnosis reports are checked: an identity object and 1-5 candidates of a known kind', () => {
+  const reportFor = (id, extra) => {
+    let run = make({ nodes: graph([id]) });
+    run = claimNode(run, id, { nonce: nonce(), now: NOW });
+    return () => applyReport(run, id, result(run, id, 'passed', { evidence: [{ kind: 'artifact', path: 'a.md' }], ...extra }), { now: NOW });
+  };
+  const ok = reportFor('identity', { identity: { stack: 'Kotlin/Compose', packageName: 'com.example.water', storedData: true, flows: ['물주기 기록'] } })();
+  assert.equal(ok.nodes[0].report.identity.stack, 'Kotlin/Compose');
+  assert.throws(reportFor('identity', { identity: 'Kotlin' }), thrown('invalid_report'));
+  const candidate = { title: '알림이 두 번 울림', kind: 'bugfix', problem: 'p', evidence: 'e', impact: 'i', scope: 's', verify: 'v' };
+  assert.equal(reportFor('diagnose', { candidates: [candidate, { ...candidate, title: '느린 시작', kind: 'performance' }] })().nodes[0].report.candidates.length, 2);
+  assert.throws(reportFor('diagnose', { candidates: [{ ...candidate, kind: 'rewrite' }] }), thrown('invalid_report'));
+  assert.throws(reportFor('diagnose', { candidates: Array(6).fill(candidate) }), thrown('invalid_report'));
+  assert.throws(reportFor('diagnose', { candidates: [{ ...candidate, verify: '' }] }), thrown('invalid_report'));
 });
 
 test('a monetization report may carry the proposed Play products; their shape is checked', () => {
@@ -437,4 +464,63 @@ test('a monetization report may carry the proposed Play products; their shape is
     assert.throws(() => applyReport(run, 'monetization', result(run, 'monetization', 'passed', { evidence: [{ kind: 'artifact', path: 'a.md' }], products }), { now: NOW }),
       thrown('invalid_report'), JSON.stringify(products));
   }
+});
+
+test('custom stage instructions and descriptions are kept as bounded plain text', () => {
+  const run = make({ nodes: [{ id: 'x', title: 'x', deps: [], instructions: '  홈 화면만 바꾸세요.\u0007\n버튼은 그대로.  ', description: '설명' }] });
+  assert.equal(run.nodes[0].instructions, '홈 화면만 바꾸세요.\n버튼은 그대로.');
+  assert.equal(run.nodes[0].description, '설명');
+  assert.equal('instructions' in make({ nodes: graph(['y']) }).nodes[0], false);
+  assert.throws(() => make({ nodes: [{ id: 'x', title: 'x', deps: [], instructions: 42 }] }), thrown('invalid_input'));
+  assert.throws(() => make({ nodes: [{ id: 'x', title: 'x', deps: [], instructions: 'a'.repeat(4001) }] }), thrown('invalid_input'));
+});
+
+// Bundle 3: result fields people can judge, and the three classes of a non-pass.
+test('a report may carry what changed, criteria met, before/after, what was not verified, and labelled images', () => {
+  let run = make({ nodes: graph(['build']) });
+  run = claimNode(run, 'build', { nonce: nonce(), now: NOW });
+  const passed = applyReport(run, 'build', result(run, 'build', 'passed', {
+    evidence: [{ kind: 'artifact', path: 'after.png', label: 'screenshot' }, { kind: 'artifact', path: 'mock.png', label: 'mockup' }],
+    changes: ['알림 중복 제거'], criteria: [{ criterion: '알림 1회', met: true, evidence: '로그 1회' }],
+    beforeAfter: [{ label: '시작 시간', before: '3.1초', after: '1.4초' }], notVerified: ['실기기 iOS'] }), { now: NOW });
+  const report = passed.nodes[0].report;
+  assert.deepEqual(report.criteria, [{ criterion: '알림 1회', met: true, evidence: '로그 1회' }]);
+  assert.deepEqual(report.evidence.map(item => item.label), ['screenshot', 'mockup']);
+  for (const bad of [{ criteria: [{ criterion: 'x', met: 'yes' }] }, { beforeAfter: [{ label: 'x', before: 1 }] }, { changes: 'one' },
+    { evidence: [{ kind: 'artifact', path: 'a.png', label: 'photo' }] }]) {
+    assert.throws(() => applyReport(run, 'build', result(run, 'build', 'passed', { evidence: [{ kind: 'artifact', path: 'a.md' }], ...bad }), { now: NOW }), thrown('invalid_report'), JSON.stringify(bad));
+  }
+});
+
+test('a failed test with a missing check repeats the verification only; an external condition holds; a code defect repairs', () => {
+  const ready = () => {
+    let run = make({ nodes: graph(['build'], ['test', ['build']]), maxRepairLoops: 2 });
+    run = complete(run, 'build');
+    return claimNode(run, 'test', { nonce: nonce(), now: NOW });
+  };
+  let run = ready();
+  run = applyReport(run, 'test', result(run, 'test', 'failed', { failureClass: 'check', summary: '회귀 테스트를 돌리지 않음' }), { now: NOW });
+  assert.equal(run.repairLoops, 0, 'no rebuild');
+  assert.equal(run.nodes.find(node => node.id === 'build').status, 'passed');
+  assert.equal(run.nodes.find(node => node.id === 'test').status, 'pending', 'the test stage is retried');
+  run = ready();
+  run = applyReport(run, 'test', result(run, 'test', 'failed', { failureClass: 'external', summary: '연결된 기기가 없음' }), { now: NOW });
+  assert.equal(run.nodes.find(node => node.id === 'test').status, 'blocked', 'held for the person');
+  run = ready();
+  run = applyReport(run, 'test', result(run, 'test', 'failed', { failureClass: 'code' }), { now: NOW });
+  assert.equal(run.repairLoops, 1, 'a code defect goes back to build');
+  assert.throws(() => { const r = ready(); applyReport(r, 'test', result(r, 'test', 'failed', { failureClass: 'hold' }), { now: NOW }); }, thrown('invalid_report'));
+});
+
+test('a review that finds only a missing check repeats the review, never the build work', () => {
+  let run = make({ nodes: graph(['build']) });
+  run = claimNode(run, 'build', { nonce: nonce(), now: NOW });
+  run = applyReport(run, 'build', result(run, 'build', 'passed'), { now: NOW });
+  run = claimNode(run, 'build', { nonce: nonce(), now: NOW, phase: 'review' });
+  run = applyReport(run, 'build', result(run, 'build', 'failed', { phase: 'review', failureClass: 'check', summary: '회귀 테스트를 돌리지 않음' }), { now: NOW });
+  const build = run.nodes.find(node => node.id === 'build');
+  assert.equal(build.status, 'review', 'only the verification is repeated');
+  assert.equal(build.report.outcome, 'passed', 'the work report stays');
+  assert.equal(build.attempts, 1);
+  assert.match(JSON.stringify(build.feedback), /회귀 테스트/);
 });

@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+import { readBuildInfo } from './buildinfo.mjs';
 import { createRuntime } from './runtime.mjs';
 import { createPlayService } from './play.mjs';
 import { createTodayService } from './today.mjs';
@@ -27,8 +29,11 @@ export default async function activate(orca) {
   // Runs only when orca-plugin.json lists the hook; otherwise launches record "not applied".
   try { subscriptions.push(orca.hooks?.on?.('agent.launch.before', (event, next) => launchOverrides.handle(event, next))); }
   catch (error) { orca.log?.('Toris Neon: agent.launch.before hook unavailable: ' + String(error?.message ?? error)); }
+  // Which code is running: version, commit, dev folder or installed release (src/buildinfo.mjs).
+  const buildInfo = await readBuildInfo({ root: fileURLToPath(new URL('..', import.meta.url)) });
+  if (buildInfo.error) orca.log?.('Toris Neon build info: ' + buildInfo.error);
   const runtime = createRuntime({
-    orca, resolvePlayAccount: play.submissionAccount, readPlayApp: (input) => play.appSnapshot(input), eccAdvisor: createEccAdvisor(),
+    orca, buildInfo, resolvePlayAccount: play.submissionAccount, readPlayApp: (input) => play.appSnapshot(input), eccAdvisor: createEccAdvisor(),
     visualAdvisor: createVisualAdvisor(), launchOverrides
   });
   activeRuntime = runtime;

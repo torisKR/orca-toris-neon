@@ -147,6 +147,7 @@ function harness(options = {}) {
     ...(options.visualAdvisor ? { visualAdvisor: options.visualAdvisor } : {}),
     ...(options.launchOverrides ? { launchOverrides: options.launchOverrides } : {}),
     ...(options.readPlayApp ? { readPlayApp: options.readPlayApp } : {}),
+    gitState: options.gitState ?? null, buildInfo: options.buildInfo,
     ensureDirectory: async () => {},
     writeBrief: async (filename, text) => { briefs.set(filename, text); },
     readReceipt: async (filename) => {
@@ -347,13 +348,14 @@ test('read-only work runs beside one writer; a second writer and reviews wait fo
   const h = harness();
   await h.create([
     { id: 'research', title: '조사', deps: [], write: false },
-    { id: 'design', title: '설계', deps: [], write: false },
     { id: 'build', title: '구현', deps: [], write: true },
     { id: 'assets', title: '에셋', deps: [], write: true }
   ], { maxConcurrency: 4 });
   await h.start();
   // A live run: assets (a writer) waited 57 minutes for read-only architecture work to finish.
-  assert.equal(launchCalls(h).length, 3);
+  // Two assignments is also the Neon-wide limit, whatever the run allows (src/scheduler.mjs).
+  assert.equal(launchCalls(h).length, 2);
+  assert.equal(h.runtime.getState({ view: 'summary' }).runs[0].waiting.assets, '쓰기 작업 완료 대기', 'a second writer waits for the first');
   assert.deepEqual(h.getRun().nodes.filter((node) => node.active && node.write).map((node) => node.id), ['build']);
 });
 
@@ -1044,6 +1046,8 @@ test('summary transport preserves current ownership; a migrated old value keeps 
   active.status = 'blocked';
   active.nodes[0].status = 'blocked';
   active.nodes[0].pendingReceipt = { nonce: 'current', terminalId: 'current-terminal' };
+  Object.assign(active.nodes[0].report, { changes: ['x'], criteria: [{ criterion: 'c', met: true }], beforeAfter: [{ label: 'l', before: '1', after: '2' }], notVerified: ['n'] });
+  active.improvement = { kind: 'bugfix', parent: { runId: 'p', summary: '이전 결과 '.repeat(300) } };
   active.jobs.push({ nonce: 'current', state: 'awaiting-report', terminalId: 'current-terminal' });
   const store = new Map([[LEGACY_KEY, { version: 1, runs: [active], archivedRuns: archived }]]);
   const h = harness({ store });
@@ -1058,6 +1062,9 @@ test('summary transport preserves current ownership; a migrated old value keeps 
   assert.deepEqual(summary.runs[0].jobs.map(job => job.nonce), ['current']);
   assert.equal(summary.runs[0].nodes[0].report.evidence, undefined);
   assert.equal(summary.runs[0].nodes[0].report.evidenceCount, 32);
+  for (const field of ['changes', 'criteria', 'beforeAfter', 'notVerified']) assert.equal(summary.runs[0].nodes[0].report[field], undefined, field + ' is read with the run, not pushed');
+  assert.deepEqual(summary.runs[0].improvement.parent, { runId: 'p' });
+  assert.deepEqual(full.runs[0].nodes[0].report.changes, ['x']);
   assert.equal(summary.runs[0].nodes[0].history, undefined);
   assert.equal(summary.runs[0].nodes[0].receipt.artifactCount, 1);
   assert.equal(summary.archivedRuns[0].nodes, undefined);
@@ -1867,7 +1874,7 @@ test('after a worker restart an autonomous run continues on its own and never re
   await h.start();
   const job = h.currentJob();
   h.runtime.dispose();
-  const restarted = createRuntime({ orca: h.orca, now: () => NOW, sleep: async () => {}, fingerprint: async () => 'source-v1', ensureDirectory: async () => {}, writeBrief: async () => {},
+  const restarted = createRuntime({ orca: h.orca, gitState: null, now: () => NOW, sleep: async () => {}, fingerprint: async () => 'source-v1', ensureDirectory: async () => {}, writeBrief: async () => {},
     readReceipt: async (file) => { if (!h.receipts.has(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return structuredClone(h.receipts.get(file)); },
     validateArtifact: async (evidence) => ({ ...evidence, sha256: 'x', size: 1 }) });
   await restarted.initialize(); await restarted.drain();
@@ -1897,7 +1904,7 @@ test('a finished autonomous run is announced once; a permission prompt is announ
 });
 
 // Storage: one value per run (src/store.mjs); a failed write never stops the run.
-const restartRuntime = (h, extra = {}) => createRuntime({ orca: h.orca, now: () => NOW, sleep: async () => {}, fingerprint: async () => 'source-v1', ensureDirectory: async () => {}, writeBrief: async () => {},
+const restartRuntime = (h, extra = {}) => createRuntime({ orca: h.orca, gitState: null, now: () => NOW, sleep: async () => {}, fingerprint: async () => 'source-v1', ensureDirectory: async () => {}, writeBrief: async () => {},
   readReceipt: async (file) => { if (!h.receipts.has(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return structuredClone(h.receipts.get(file)); },
   validateArtifact: async (evidence) => ({ ...evidence, sha256: 'x', size: 1 }), ...extra });
 
@@ -2197,10 +2204,10 @@ test('a send that keeps being refused before writing is handled as undelivered: 
 });
 
 // Improving an existing, shipped app (src/improve.mjs, src/catalog.mjs).
-const improveInput = (extra = {}) => ({ template: 'improve', areas: ['features', 'payments'], goal: '알림 기능과 프리미엄 결제를 추가합니다.', projectId: 'p1', autonomous: false, ...extra });
+const improveInput = (extra = {}) => ({ template: 'improve', kind: 'feature', options: { payments: true }, goal: '알림 기능과 프리미엄 결제를 추가합니다.', projectId: 'p1', autonomous: false, ...extra });
 const linkedApp = { accountId: 'acc-1', accountName: 'Toris', packageName: 'com.example.water', status: 'published', tracks: [{ track: 'production', versionCodes: [42], state: 'published' }], observedAt: '2026-11-22T00:00:00.000Z' };
 
-test('an improvement flow is created from the gated template and records the areas and the linked Play app', async () => {
+test('an improvement flow is created from its kind\'s template and records the kind and the linked Play app', async () => {
   const h = harness({ readPlayApp: async ({ accountId, packageName }) => {
     if (accountId !== 'acc-1' || packageName !== 'com.example.water') throw Object.assign(new Error('이 계정에 등록된 패키지가 아닙니다.'), { code: 'invalid_input' });
     return linkedApp;
@@ -2208,12 +2215,12 @@ test('an improvement flow is created from the gated template and records the are
   await h.runtime.initialize();
   const run = await h.runtime.handlers['runs.create'](improveInput({ playLink: { accountId: 'acc-1', packageName: 'com.example.water' } }));
   assert.equal(run.template, 'improve');
-  assert.deepEqual(run.nodes.map((node) => node.id), ['audit', 'plan', 'build', 'monetization', 'test', 'policy', 'listing', 'catalog', 'internal', 'release']);
-  assert.deepEqual(run.improvement.areas, ['features', 'payments']);
+  assert.deepEqual(run.nodes.map((node) => node.id), ['identity', 'plan', 'build', 'monetization', 'test', 'catalog']);
+  assert.equal(run.improvement.kind, 'feature');
   assert.equal(run.improvement.playLink.packageName, 'com.example.water');
   assert.equal(run.nodes.find((node) => node.id === 'catalog').humanApproval, true);
   await assert.rejects(h.runtime.handlers['runs.create'](improveInput({ playLink: { accountId: 'acc-2', packageName: 'com.example.water' } })), /등록된 패키지/);
-  await assert.rejects(h.runtime.handlers['runs.create'](improveInput({ areas: [] })), /개선 영역/);
+  await assert.rejects(h.runtime.handlers['runs.create'](improveInput({ kind: undefined })), /개선 종류/);
   await assert.rejects(h.runtime.handlers['runs.create']({ ...improveInput(), template: 'rewrite' }), /흐름 종류/);
   assert.equal(h.runtime.getState().runs.length, 1, 'refused inputs create nothing');
 });
@@ -2248,4 +2255,108 @@ test('the product catalog is approved only by a person confirming every proposed
   assert.deepEqual(catalog.approval.productCatalog.products.map((item) => item.productId), ['premium_unlock']);
   assert.equal(approved.autonomy.stopped, undefined, 'the person acted; autonomy may continue');
   restarted.dispose();
+});
+
+// Bundle 1: custom instructions survive, writing stages commit, the summary says what runs and why stages wait.
+test('custom stage instructions survive create, storage, a restart and reach the brief', async () => {
+  const h = harness();
+  await h.runtime.initialize();
+  const created = await h.runtime.handlers['runs.create']({ goal: '앱', projectId: 'p1', autonomous: false,
+    nodes: [{ id: 'build', title: '구현', deps: [], write: true, instructions: '설정 화면의 알림 토글만 고치세요.' }] });
+  assert.equal(created.nodes[0].instructions, '설정 화면의 알림 토글만 고치세요.');
+  assert.equal(savedState(h.store).runs[0].nodes[0].instructions, '설정 화면의 알림 토글만 고치세요.');
+  h.runtime.dispose();
+  const restarted = restartRuntime(h);
+  await restarted.initialize();
+  const run = restarted.getState().runs[0];
+  const job = { runId: run.id, nodeId: 'build', nonce: 'n', phase: 'work', attempt: 1, agent: 'codex', receiptDirectory: '/r', receiptPath: '/r/result.json' };
+  assert.match(buildNodePrompt(run, run.nodes[0], job), /실행 범위\/완료 조건: 설정 화면의 알림 토글만 고치세요\./);
+  restarted.dispose();
+});
+
+test('a writing stage must leave its work committed: otherwise the agent is asked to commit, not failed', async () => {
+  let git = { head: 'h0', clean: true, changed: [] };
+  const h = harness({ gitState: async () => git });
+  await h.create(); await h.start();
+  await turn(h, 'working', NOW + 1);
+  const job = h.currentJob();
+  assert.equal(h.getRun().jobs[0].startHead, 'h0');
+  git = { head: 'h0', clean: false, changed: ['lib/main.dart', 'test/app_test.dart'] };
+  h.report(job); await h.done(job);
+  assert.equal(h.getRun().nodes[0].status, 'running', 'not failed');
+  const [fix] = sendCalls(h).filter((call) => /커밋/.test(call.input.text));
+  assert.match(fix.input.text, /이 실행 브랜치에 커밋/);
+  assert.match(fix.input.text, /lib\/main\.dart/);
+  git = { head: 'h1', clean: true, changed: [] };
+  await turn(h, 'working', NOW + 5); h.report(job); await turn(h, 'done', NOW + 6, 'success');
+  assert.equal(h.getRun().jobs[0].state, 'complete');
+  const review = h.currentJob();
+  assert.equal(review.sourceCommit, 'h1', 'the review is tied to the commit');
+  git = { head: 'h2', clean: true, changed: [] };
+  h.report(review); await h.done(review);
+  assert.notEqual(h.getRun().nodes[0].status, 'passed', 'a review of a commit that moved does not pass');
+});
+
+test('when git cannot be read, a writing stage is not accepted as committed', async () => {
+  let fails = false;
+  const h = harness({ gitState: async () => { if (fails) throw new Error('index.lock exists'); return { head: 'h0', clean: true, changed: [] }; } });
+  await h.create(); await h.start();
+  await turn(h, 'working', NOW + 1);
+  const job = h.currentJob();
+  fails = true;
+  h.report(job); await h.done(job);
+  const node = h.getRun().nodes[0];
+  assert.notEqual(node.status, 'review', 'not passed on to review unchecked');
+  assert.notEqual(node.status, 'passed');
+  assert.match(JSON.stringify(h.getRun()), /git 상태를 읽지 못해[^"]*index\.lock/);
+});
+
+test('the summary says which code runs, the Neon-wide limits, why stages wait and what cleanup did', async () => {
+  const h = harness({ buildInfo: { version: '0.2.0', commit: 'abc1234def', shortCommit: 'abc1234', dirty: false, channel: 'dev', error: null } });
+  await h.create([{ id: 'build', title: '구현', deps: [], write: true }, { id: 'test', title: '테스트', deps: ['build'] }]);
+  await h.start();
+  const summary = await h.runtime.handlers['state.get']({ view: 'summary' });
+  assert.equal(summary.build.label, 'v0.2.0 · abc1234 · 개발 폴더');
+  assert.deepEqual(summary.limits, { activeJobs: 2, heavyJobs: 1, active: 1, heavy: 1 });
+  assert.equal(summary.runs[0].waiting.test, '선행 단계 대기');
+  assert.equal(h.posts.at(-1).value.build.label, 'v0.2.0 · abc1234 · 개발 폴더', 'pushed too');
+});
+
+test('the same request returns the run it already made, never a second one', async () => {
+  const h = harness();
+  await h.runtime.initialize();
+  const first = await h.runtime.handlers['runs.create']({ goal: '앱', projectId: 'p1', requestId: 'bot-req-7', autonomous: false });
+  const again = await h.runtime.handlers['runs.create']({ goal: '다른 문구', projectId: 'p1', requestId: 'bot-req-7', autonomous: false });
+  assert.equal(again.id, first.id);
+  assert.equal(again.requestId, 'req:bot-req-7');
+  assert.equal(h.runtime.getState().runs.length, 1);
+  await assert.rejects(h.runtime.handlers['runs.create']({ goal: '앱', projectId: 'p1', requestId: 'bad id!' }), /requestId/);
+});
+
+test('picking a diagnosis candidate creates one linked improvement run of the candidate\'s kind', async () => {
+  const h = harness();
+  await h.runtime.initialize();
+  const diag = await h.runtime.handlers['runs.create']({ template: 'diagnose', projectId: 'p1', autonomous: false });
+  assert.deepEqual(diag.nodes.map((node) => node.id), ['identity', 'diagnose']);
+  const saved = savedState(h.store);
+  const node = saved.runs[0].nodes.find((item) => item.id === 'diagnose');
+  node.status = 'passed';
+  node.report = { outcome: 'passed', summary: '후보', candidates: [{ kind: 'bugfix', title: '알림이 두 번 울림', problem: 'p', evidence: 'e', impact: 'i', scope: 's', verify: 'v' }] };
+  writeSaved(h.store, saved);
+  h.runtime.dispose();
+  const restarted = restartRuntime(h);
+  await restarted.initialize();
+  const picked = await restarted.handlers['runs.create']({ fromDiagnosis: { runId: diag.id, index: 0 }, autonomous: false });
+  assert.deepEqual(picked.nodes.map((item) => item.id), ['identity', 'reproduce', 'build', 'test']);
+  assert.equal(picked.parentRunId, diag.id);
+  assert.match(picked.goal, /알림이 두 번 울림/);
+  const twice = await restarted.handlers['runs.create']({ fromDiagnosis: { runId: diag.id, index: 0 } });
+  assert.equal(twice.id, picked.id, 'picking the same candidate again opens the existing run');
+  restarted.dispose();
+});
+
+test('the summary shows the configured limits', async () => {
+  const { projectState } = await import('../src/views.mjs');
+  const summary = projectState({ version: 1, revision: 1, runs: [], archivedRuns: [] }, 'summary', { activeJobs: 3, heavyJobs: 2 });
+  assert.deepEqual(summary.limits, { activeJobs: 3, heavyJobs: 2, active: 0, heavy: 0 });
 });

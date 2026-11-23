@@ -26,6 +26,7 @@ function humanReason(node, job) {
   if (node.launchUncertain) return '에이전트 시작이나 작업 지시 전달 결과가 불명확합니다. 다시 보내면 작업이 중복될 수 있어 멈췄습니다.';
   if (['uncertain', 'rejected'].includes(job?.promptRecovery?.state)) return '작업 지시 전달 결과가 ' + (job.promptRecovery.state === 'rejected' ? '거부됐습니다' : '불명확합니다') + '. 다시 보내면 작업이 중복될 수 있어 멈췄습니다.';
   if (!node.pendingReceipt && node.history?.at(-1)?.outcome === 'blocked') return '에이전트가 사람의 조치가 필요하다고 보고했습니다: ' + (node.failureReason ?? '');
+  if (!node.pendingReceipt && node.history?.at(-1)?.failureClass === 'external') return '외부 조건이 필요합니다(재시도하지 않음): ' + (node.failureReason ?? '');
   return null;
 }
 

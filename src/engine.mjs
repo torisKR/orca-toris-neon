@@ -19,39 +19,62 @@ export const DEFAULT_GRAPH = [
   { id: 'release', title: '출시 제출', deps: ['internal'], write: true, requiresApproval: true },
 ];
 
-/** What an improvement of an existing app can cover; each brings its own stages into the graph. */
-export const IMPROVEMENT_AREAS = Object.freeze(['design', 'features', 'payments']);
 /**
- * Improving an app that already ships. `when` names the area that brings a stage in; deps on a
- * stage that is left out are dropped. `catalog` is the Play Console product setup: an approval only
- * a person can give (humanApproval), never the plugin's autonomy.
+ * Improving an app that already ships: one short, linear graph per kind of improvement, always
+ * starting from `identity` (what the app is) and reusing `build` and `test`, so a failed test goes
+ * back to build exactly as in a new app. `catalog` is the Play Console product setup: an approval
+ * only a person can give (humanApproval). `diagnose` runs identity plus one diagnosis stage.
  */
-export const IMPROVE_GRAPH = [
-  { id: 'audit', title: '현황 진단', deps: [], write: false },
-  { id: 'plan', title: '개선 기획', deps: ['audit'], write: false },
-  { id: 'design', title: '디자인 개선', deps: ['plan'], write: false, when: 'design' },
-  { id: 'assets', title: '디자인 에셋', deps: ['design'], write: true, when: 'design' },
-  { id: 'build', title: '기능·디자인 구현', deps: ['plan', 'assets'], write: true },
-  { id: 'monetization', title: '결제 연동', deps: ['build'], write: true, when: 'payments' },
-  { id: 'test', title: '회귀·신규 기능 테스트', deps: ['build', 'monetization'], write: false },
-  { id: 'policy', title: 'Play 정책·결제 정책 점검', deps: ['test'], write: false },
-  { id: 'listing', title: '스토어 자료 업데이트', deps: ['test', 'policy'], write: false },
-  { id: 'catalog', title: 'Play 상품 등록(사용자)', deps: ['listing'], write: false, when: 'payments', requiresApproval: true, humanApproval: true },
-  { id: 'internal', title: '내부 테스트 제출', deps: ['listing', 'catalog'], write: true, requiresApproval: true },
-  { id: 'release', title: '업데이트 출시', deps: ['internal'], write: true, requiresApproval: true },
-];
-export const TEMPLATES = Object.freeze(['new-app', 'improve']);
+const IMPROVE_STAGES = {
+  identity: { title: '앱 정체성 확인', write: false },
+  diagnose: { title: '진단·개선 후보', write: false },
+  reproduce: { title: '증상 재현', write: false },
+  measure: { title: '기준 성능 측정', write: false },
+  plan: { title: '개선 기획', write: false },
+  design: { title: '디자인 기준·시안', write: false },
+  assets: { title: '디자인 에셋', write: true },
+  build: { title: '구현', write: true },
+  monetization: { title: '결제 연동', write: true },
+  test: { title: '검증', write: false },
+  policy: { title: 'Play 정책 점검', write: false },
+  listing: { title: '스토어 자료 업데이트', write: false },
+  catalog: { title: 'Play 상품 등록(사용자)', write: false, requiresApproval: true, humanApproval: true },
+  internal: { title: '내부 테스트 제출', write: true, requiresApproval: true },
+  release: { title: '업데이트 출시', write: true, requiresApproval: true },
+};
+export const IMPROVE_STAGE_IDS = Object.freeze(Object.keys(IMPROVE_STAGES));
+/** Stages per kind; `design?`/`payments?` entries come in only with that feature option. */
+export const IMPROVE_KINDS = Object.freeze({
+  bugfix: ['identity', 'reproduce', 'build', 'test'],
+  feature: ['identity', 'plan', 'design?', 'assets?', 'build', 'monetization?', 'test', 'catalog?'],
+  design: ['identity', 'design', 'assets', 'build', 'test'],
+  performance: ['identity', 'measure', 'build', 'test'],
+  maintenance: ['identity', 'plan', 'build', 'test'],
+  release: ['identity', 'test', 'policy', 'listing', 'internal', 'release'],
+});
+const OPTION_OF = { 'design?': 'design', 'assets?': 'design', 'monetization?': 'payments', 'catalog?': 'payments' };
+const KIND_TITLES = {
+  bugfix: { build: '오류 수정', test: '수정 재검증' },
+  feature: { build: '기능 구현', test: '새 기능·기존 기능 검증' },
+  design: { build: '디자인 적용', test: '화면·상호작용 검증' },
+  performance: { build: '성능 개선', test: '같은 조건 재측정' },
+  maintenance: { build: '유지보수 변경', test: '해당 검증' },
+  release: { test: '변경 재검증' },
+};
+export const TEMPLATES = Object.freeze(['new-app', 'improve', 'diagnose']);
+const linear = (ids, titles = {}) => ids.map((id, index) => ({ id, title: titles[id] ?? IMPROVE_STAGES[id].title, deps: index ? [ids[index - 1]] : [],
+  write: IMPROVE_STAGES[id].write, ...(IMPROVE_STAGES[id].requiresApproval ? { requiresApproval: true } : {}), ...(IMPROVE_STAGES[id].humanApproval ? { humanApproval: true } : {}) }));
 
 /** The graph of a named flow template; the only way the panel chooses stages. */
-export function templateGraph(template = 'new-app', { areas = [] } = {}) {
+export function templateGraph(template = 'new-app', { kind, design = false, payments = false } = {}) {
   if (template === 'new-app') return copy(DEFAULT_GRAPH);
+  if (template === 'diagnose') return linear(['identity', 'diagnose']);
   if (template !== 'improve') fail('invalid_input', '알 수 없는 흐름 종류입니다: ' + String(template).slice(0, 40));
-  if (!Array.isArray(areas) || !areas.length || new Set(areas).size !== areas.length || areas.some(area => !IMPROVEMENT_AREAS.includes(area))) {
-    fail('invalid_input', '개선 영역을 하나 이상, 중복 없이 고르세요: ' + IMPROVEMENT_AREAS.join(', '));
-  }
-  const kept = IMPROVE_GRAPH.filter(spec => !spec.when || areas.includes(spec.when));
-  const ids = new Set(kept.map(spec => spec.id));
-  return kept.map(({ when, ...spec }) => ({ ...copy(spec), deps: spec.deps.filter(dep => ids.has(dep)) }));
+  if (!Object.hasOwn(IMPROVE_KINDS, kind)) fail('invalid_input', '개선 종류를 고르세요: ' + Object.keys(IMPROVE_KINDS).join(', '));
+  if (kind !== 'feature' && (design || payments)) fail('invalid_input', '디자인·결제 옵션은 기능 추가에서만 고를 수 있습니다.');
+  const options = { design: Boolean(design), payments: Boolean(payments) };
+  const ids = IMPROVE_KINDS[kind].filter(id => !OPTION_OF[id] || options[OPTION_OF[id]]).map(id => id.replace('?', ''));
+  return linear(ids, KIND_TITLES[kind]);
 }
 
 // A pinned ECC agent ends up inside an agent prompt: a namespaced slug only.
@@ -93,6 +116,16 @@ function requiredText(value, label, max = 4000) {
   }
   return value.trim();
 }
+
+// Plain text an agent will read: control characters other than newline and tab are dropped.
+function optionalText(value, label, max) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') fail('invalid_input', label + '은(는) 문자열이어야 합니다.');
+  const text = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim();
+  if (text.length > max) fail('invalid_input', label + '은(는) ' + max + '자 이하여야 합니다.');
+  return text || undefined;
+}
+const textField = (name, value, label, max) => { const text = optionalText(value, label, max); return text === undefined ? {} : { [name]: text }; };
 
 function bounded(value, fallback, min, max, label) {
   const number = value ?? fallback;
@@ -245,6 +278,8 @@ export function createRun(options = {}) {
         write: Boolean(spec.write),
         requiresApproval: Boolean(spec.requiresApproval) || spec.id === 'internal' || spec.id === 'release',
         ...(spec.humanApproval ? { humanApproval: true } : {}),
+        ...textField('instructions', spec.instructions, '단계 지시', 4000),
+        ...textField('description', spec.description, '단계 설명', 2000),
         status: 'pending',
         attempts: 0,
         reviewAttempts: 0,
@@ -366,6 +401,53 @@ const MAX_FOLLOW_UPS = 12;
 // Play product ids: lowercase letters, digits, '_' and '.', starting with a letter or digit.
 const PRODUCT_ID = /^[a-z0-9][a-z0-9._]{0,138}$/;
 const reportText = (value, label, max) => { try { return requiredText(value, label, max); } catch (error) { return fail('invalid_report', error.message); } };
+const ARTIFACT_LABELS = new Set(['mockup', 'screenshot']);
+/** Non-pass classes: repair the code, run or add the missing check only, or hold for an external condition. */
+export const FAILURE_CLASSES = Object.freeze(['code', 'check', 'external']);
+const textList = (value, label, max, count) => {
+  if (!Array.isArray(value) || value.length > count) fail('invalid_report', label + '은(는) 최대 ' + count + '개의 문자열 배열이어야 합니다.');
+  return value.map(item => reportText(item, label, max));
+};
+/** Result fields the person judges: what changed, criteria met, before/after, not verified, failure class. */
+function resultFieldsOf(report) {
+  const out = {};
+  if (report.changes !== undefined) out.changes = textList(report.changes, '바뀐 것', 600, 20);
+  if (report.notVerified !== undefined) out.notVerified = textList(report.notVerified, '검증하지 못한 것', 600, 20);
+  if (report.criteria !== undefined) {
+    if (!Array.isArray(report.criteria) || report.criteria.length > 20) fail('invalid_report', 'criteria는 최대 20개 배열이어야 합니다.');
+    out.criteria = report.criteria.map(item => {
+      if (!item || typeof item.met !== 'boolean') fail('invalid_report', '기준마다 met(true/false)이 필요합니다.');
+      return { criterion: reportText(item.criterion, '기준', 300), met: item.met, ...(item.evidence ? { evidence: reportText(item.evidence, '기준 근거', 600) } : {}) };
+    });
+  }
+  if (report.beforeAfter !== undefined) {
+    if (!Array.isArray(report.beforeAfter) || report.beforeAfter.length > 12) fail('invalid_report', 'beforeAfter는 최대 12개 배열이어야 합니다.');
+    out.beforeAfter = report.beforeAfter.map(item => ({ label: reportText(item?.label, '비교 항목', 120), before: reportText(item?.before, '변경 전', 300), after: reportText(item?.after, '변경 후', 300) }));
+  }
+  if (report.failureClass !== undefined) {
+    if (!FAILURE_CLASSES.includes(report.failureClass)) fail('invalid_report', 'failureClass는 code, check, external 중 하나여야 합니다.');
+    out.failureClass = report.failureClass;
+  }
+  return out;
+}
+/** What the app is (identity stage): flat facts, strings, booleans or short string lists. */
+function identityOf(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 24) fail('invalid_report', 'identity는 최대 24개 항목의 객체여야 합니다.');
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if (typeof item === 'boolean' || item === null) return [key, item];
+    if (Array.isArray(item)) return [key, item.slice(0, 20).map(entry => reportText(entry, 'identity.' + key, 300))];
+    return [key, reportText(String(item), 'identity.' + key, 600)];
+  }));
+}
+const CANDIDATE_FIELDS = ['title', 'problem', 'evidence', 'impact', 'scope', 'verify'];
+/** Diagnosis output: up to five improvements, each a kind the person can start. */
+function candidatesOf(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 5) fail('invalid_report', 'candidates는 1~5개의 개선 후보 배열이어야 합니다.');
+  return value.map(item => {
+    if (!item || typeof item !== 'object' || !Object.hasOwn(IMPROVE_KINDS, item.kind)) fail('invalid_report', '개선 후보의 kind는 ' + Object.keys(IMPROVE_KINDS).join(', ') + ' 중 하나여야 합니다.');
+    return { kind: item.kind, ...Object.fromEntries(CANDIDATE_FIELDS.map(field => [field, reportText(item[field], '후보 ' + field, field === 'title' ? 160 : 1500)])) };
+  });
+}
 function productsOf(report) {
   if (!Array.isArray(report.products) || report.products.length > 20) fail('invalid_report', 'products는 최대 20개의 상품 배열이어야 합니다.');
   const products = report.products.map(item => {
@@ -405,7 +487,10 @@ function normalizeReport(run, nodeId, report) {
       if (item.role !== undefined && !COMMAND_ROLES.has(item.role)) fail('invalid_evidence', '명령 role은 check 또는 history여야 합니다.');
       return { ...copy(item), kind: 'command', command, exitCode, ...(expected === undefined ? {} : { expectedExitCode: expected }) };
     }
-    if (item.kind === 'artifact') return { ...copy(item), kind: 'artifact', path: requiredText(item.path, '산출물 경로', 4000) };
+    if (item.kind === 'artifact') {
+      if (item.label !== undefined && !ARTIFACT_LABELS.has(item.label)) fail('invalid_report', '이미지 label은 mockup(시안) 또는 screenshot(실제 화면)이어야 합니다.');
+      return { ...copy(item), kind: 'artifact', path: requiredText(item.path, '산출물 경로', 4000) };
+    }
     if (item.kind === 'note') {
       // Agents sometimes write the note under `note`; keep it as the canonical `text`.
       const { note, ...rest } = copy(item);
@@ -421,6 +506,9 @@ function normalizeReport(run, nodeId, report) {
     ...(report.next ? { next: requiredText(report.next, '다음 행동', 4000) } : {}),
     ...(report.followUps === undefined ? {} : { followUps: followUpsOf(report) }),
     ...(report.products === undefined ? {} : { products: productsOf(report) }),
+    ...(report.identity === undefined ? {} : { identity: identityOf(report.identity) }),
+    ...resultFieldsOf(report),
+    ...(report.candidates === undefined ? {} : { candidates: candidatesOf(report.candidates) }),
   };
 }
 
@@ -428,7 +516,15 @@ function repairAfterFailure(run, node, report, at) {
   node.active = null;
   node.failureReason = report.summary;
   invalidate(run, node.id);
-  if (node.id === 'test' && run.nodes.some(item => item.id === 'build')) {
+  // A missing check repeats the verification only; a code defect from testing goes back to build.
+  if (report.phase === 'review' && report.failureClass === 'check' && node.reviewAttempts < run.maxAttempts) {
+    node.feedback = copy(report);
+    node.status = 'review';
+    node.review = null;
+    event(run, 'task.retry-planned', node.title + ' 검증이 부족해 검토만 다시 합니다.', at, node.id);
+    return;
+  }
+  if (node.id === 'test' && report.failureClass !== 'check' && run.nodes.some(item => item.id === 'build')) {
     const build = nodeIn(run, 'build');
     if (run.repairLoops < run.maxRepairLoops && node.attempts < run.maxAttempts && build.attempts < run.maxAttempts) {
       run.repairLoops++;
@@ -478,7 +574,8 @@ export function applyReport(run, nodeId, report, { now } = {}) {
   node.active = null;
   event(next, 'task.reported', clean.summary, at, nodeId, { phase: clean.phase, outcome: clean.outcome, next: clean.next ?? null });
 
-  if (clean.outcome === 'blocked') {
+  // An external condition (device, permission, account, outside service) holds like a blocked report.
+  if (clean.outcome === 'blocked' || (clean.outcome === 'failed' && clean.failureClass === 'external')) {
     node.status = 'blocked';
     node.failureReason = clean.summary;
     node.blockedPhase = clean.phase;

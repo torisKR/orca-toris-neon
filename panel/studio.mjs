@@ -1,11 +1,12 @@
 import { e, statusNames, badge, localDate, todayDate, title, button, options, goalTitle } from './kit.mjs';
-import { flowTypeSwitch, improveFields, newRunPayload, catalogApprovalForm, catalogApprovalInput } from './newflow.mjs';
+import { flowTypeSwitch, improveFields, diagnoseFields, resumeList, candidateList, newRunPayload, catalogApprovalForm, catalogApprovalInput } from './newflow.mjs';
 import { transitions, snapshotStates, elapsed, eccOverride, stageState, STATE_LABELS } from './teams.mjs';
 import { collabStrip, relay, inspector, attachCard, people, assignmentForm, teamNavigator } from './flow.mjs';
+import { runResult, artifactId } from './result.mjs';
 const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
 const bridge = window.orca;
-const ui = {tab:'today',state:null,today:null,play:null,runId:null,nodeId:null,agentRole:null,accountId:null,newRun:false,newAccount:false,error:null,busy:false,drafts:{},day:'yesterday',feedLimit:8,sessionLimit:12,archiveId:null,notesBusy:false,pendingUpdate:false};
+const ui = {tab:'today',state:null,today:null,play:null,runId:null,nodeId:null,agentRole:null,accountId:null,newRun:false,newAccount:false,error:null,busy:false,drafts:{},day:'yesterday',feedLimit:8,sessionLimit:12,archiveId:null,notesBusy:false,pendingUpdate:false,artifacts:new Map(),cancelling:new Set()};
 const playFilters = {query:'',status:'all'};
 let submissionAccounts = [];
 const details = new Map();
@@ -120,6 +121,8 @@ async function hydrateTab() {
   if(tab==='studio'&&!ui.newRun) {
     const [data]=await Promise.all([request('play.submissionAccounts'),loadSelectedDetail()]);
     if(epoch===navigation&&ui.tab===tab)submissionAccounts=data;
+    // "Published" is shown only from Play's observed status, so read it when a run has an approved submission.
+    if((ui.state?.runs??[]).some(r=>r.nodes?.some(n=>n.approval?.submission?.developerId))){try{ui.play=await request('play.list');ui.playError=null;}catch(err){ui.play=null;ui.playError=err.message;}}
   }
 }
 async function refresh({quiet=false,forceHost=false}={}) {
@@ -179,7 +182,7 @@ function render({background=false}={}) {
   const selection=focusId==='play-search'?[document.activeElement.selectionStart,document.activeElement.selectionEnd,document.activeElement.selectionDirection]:null;
   const active=(ui.state?.runs??[]).filter(r=>r.status==='running').length;
   app.setAttribute('aria-busy',String(ui.busy));
-  app.innerHTML='<div class="shell"><header class="topbar"><div class="brand-mark" aria-hidden="true">N</div><div class="grow"><div class="brand-name">TORIS NEON</div><div class="brand-meta"><span>APP STUDIO</span><span>·</span><span>FOR ORCA</span></div></div><div class="top-actions"><span class="status-label"><i class="dot '+(!ui.state?'offline':'')+'"></i>'+(active?active+'개 실행':ui.state?'연결됨':'연결 대기')+'</span><button class="icon-button" data-action="refresh" aria-label="새로고침" title="새로고침" '+(ui.busy?'disabled':'')+'>↻</button></div></header><nav class="nav" aria-label="주요 메뉴">'+[['today','오늘 이어하기'],['studio','Auto App'],['play','Play Store'],['agents','에이전트']].map(([id,label])=>'<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?'active':'')+'" aria-current="'+(ui.tab===id?'page':'false')+'">'+label+'</button>').join('')+'</nav><main class="main"><div class="update-notice" data-update-notice hidden>새 상태가 도착했습니다. 작성 중인 내용은 저장하거나 화면을 이동할 때 갱신됩니다.</div>'+(ui.error?'<div class="callout error page-error" role="alert">'+e(ui.error)+'</div>':'')+(ui.state?.warnings??[]).map(w=>'<div class="callout warning">'+e(w)+'</div>').join('')+(ui.tab==='today'?renderToday():ui.tab==='studio'?renderStudio():ui.tab==='play'?renderPlay():renderAgents())+'<footer class="footer"><span>상태와 근거를 남기는 앱 제작 공간</span><span>v0.2.0 · Asia/Seoul</span></footer></main></div>';
+  app.innerHTML='<div class="shell"><header class="topbar"><div class="brand-mark" aria-hidden="true">N</div><div class="grow"><div class="brand-name">TORIS NEON</div><div class="brand-meta"><span>APP STUDIO</span><span>·</span><span>FOR ORCA</span></div></div><div class="top-actions"><span class="status-label"><i class="dot '+(!ui.state?'offline':'')+'"></i>'+(active?active+'개 실행':ui.state?'연결됨':'연결 대기')+'</span><button class="icon-button" data-action="refresh" aria-label="새로고침" title="새로고침" '+(ui.busy?'disabled':'')+'>↻</button></div></header><nav class="nav" aria-label="주요 메뉴">'+[['today','오늘 이어하기'],['studio','Auto App'],['play','Play Store'],['agents','에이전트']].map(([id,label])=>'<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?'active':'')+'" aria-current="'+(ui.tab===id?'page':'false')+'">'+label+'</button>').join('')+'</nav><main class="main"><div class="update-notice" data-update-notice hidden>새 상태가 도착했습니다. 작성 중인 내용은 저장하거나 화면을 이동할 때 갱신됩니다.</div>'+(ui.error?'<div class="callout error page-error" role="alert">'+e(ui.error)+'</div>':'')+(ui.state?.warnings??[]).map(w=>'<div class="callout warning">'+e(w)+'</div>').join('')+(ui.tab==='today'?renderToday():ui.tab==='studio'?renderStudio():ui.tab==='play'?renderPlay():renderAgents())+'<footer class="footer"><span>상태와 근거를 남기는 앱 제작 공간</span><span>'+e(ui.state?.build?.label??'버전 확인 중')+' · Asia/Seoul</span></footer></main></div>';
   restoreDisclosures(app);
   ui.pendingUpdate=false;
   if(focusId) {
@@ -244,7 +247,7 @@ function renderStudio() {
   const item=run();
   if(!item) return html+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 여섯 팀, 11개 단계의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
   const nodes=item.nodes??[],selected=selectedNode(item),ctx=flowContext(item);
-  html+=runPicker(item)+'<div class="studio-overview">'+runSummaryCard(item,nodes)+collabStrip(item,ctx)+'</div>';
+  html+=runPicker(item)+'<div class="studio-overview">'+runSummaryCard(item,nodes)+collabStrip(item,ctx)+'</div>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError})+(item.template==='diagnose'?candidateList(item):'');
   if(['completed','cancelled'].includes(item.status)&&!item.stopFailures?.length) html+='<div class="actions">'+button('완료된 실행 보관','archive-run','data-run="'+e(item.id)+'"','small')+'</div>';
   if(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId) html+=attachCard(item,ctx);
   html+=teamNavigator(item,ctx)+'<div class="studio-columns">'+relay(item,ctx)+inspector(item,selected,ctx)+'</div>';
@@ -264,7 +267,7 @@ function flowContext(item) {
   for(const [nodeId,kind] of changes)active.set(nodeId,{kind,at:now});
   announce(item,changes);
   stageSnapshots.set(item.id,snapshotStates(item));stageMotions.set(item.id,active);
-  return {state:ui.state,selectedId:ui.nodeId,selectedRole:ui.agentRole,providers:providers(),eccChoices:ui.state?.eccAgents??[],launchOptions:ui.state?.launchOptions,draft,approvalForm,now,motion:active};
+  return {state:ui.state,selectedId:ui.nodeId,selectedRole:ui.agentRole,providers:providers(),eccChoices:ui.state?.eccAgents??[],launchOptions:ui.state?.launchOptions,draft,approvalForm,now,motion:active,artifacts:ui.artifacts};
 }
 // One polite sentence per real transition, outside the re-rendered #app.
 function announce(item,changes) {
@@ -279,6 +282,12 @@ function announce(item,changes) {
 function runPicker(item) {
   return '<select class="field run-select" aria-label="앱 제작 흐름 선택" id="run-select">'+options(orderedRuns().map(r=>({value:r.id,label:'['+(statusNames[r.status]??r.status)+'] '+goalTitle(r.goal).slice(0,80)})),item.id)+'</select>';
 }
+// Cancel states as confirmed: requested, done (Orca confirmed every owned terminal closed), or needs checking.
+function stopBadge(item) {
+  if(ui.cancelling.has(item.id))return '<span class="badge cancelled">취소 요청 처리 중</span>';
+  if(item.status==='cancelled')return '<span class="badge '+(item.stopFailures?.length?'blocked">종료 확인 필요':'cancelled">취소 완료')+'</span>';
+  return badge(item.status);
+}
 function runSummaryCard(item,nodes) {
   const done=nodes.filter(n=>n.status==='passed').length;
   // A run whose workspace was never created restarts with the same start button.
@@ -286,14 +295,21 @@ function runSummaryCard(item,nodes) {
   // A short title; the full goal (often thousands of characters) only on demand, here only.
   const short=goalTitle(item.goal);
   const goal='<div class="card-title goal-title">'+e(short)+'</div>'+(item.goal.trim()!==short?'<details class="goal-detail" data-disclosure="goal:'+e(item.id)+'"><summary>전체 목표 보기 · '+item.goal.length.toLocaleString('ko-KR')+'자</summary><p class="note-line goal-full">'+e(item.goal)+'</p></details>':'');
-  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+badge(item.status)+'</div><div class="progress"><span style="width:'+(done/Math.max(nodes.length,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+nodes.length+' 단계 통과</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div><div class="actions">'+
+  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(nodes.length,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+nodes.length+' 단계 통과</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div><div class="actions">'+
     (startable?button(item.workspaceId?'계속 실행':'앱 제작 시작','start-run','data-run="'+e(item.id)+'"','primary'):'')+
     (!startable&&['paused','blocked'].includes(item.status)?button(item.status==='blocked'?'상태 확인 후 재개':'재개','resume-run','data-run="'+e(item.id)+'"','primary'):'')+
-    (['running','ready','blocked'].includes(item.status)?button('일시 정지','pause-run','data-run="'+e(item.id)+'"'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+
+    (['running','ready','blocked'].includes(item.status)?button('새 배정 멈춤','pause-run','data-run="'+e(item.id)+'" title="새 단계 배정만 멈춥니다. 작업 중인 에이전트는 계속 작업합니다."'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+
     (item.workspaceId?button('작업 공간 열기','open-workspace','data-workspace="'+e(item.workspaceId)+'"'):'')+(!['cancelled','completed'].includes(item.status)?button('실행 취소','cancel-run','data-run="'+e(item.id)+'"','danger'):'')+'</div>'+
-    autonomyLine(item)+cleanupLine(item)+storageLine(item)+
-    (item.status==='paused'?'<p class="hint spacer">새 단계 배정을 멈췄습니다. 이미 실행 중인 에이전트는 완료 보고서를 남길 수 있습니다.</p>':'')+(item.runtimeMessage?'<div class="callout error" role="status">'+e(item.runtimeMessage)+'</div>':'')+
+    autonomyLine(item)+cleanupLine(item)+cleanupResult(item)+storageLine(item)+
+    (item.status==='paused'?'<p class="hint spacer">새 단계 배정만 멈췄습니다. 이미 작업 중인 에이전트는 계속 작업하고 완료 보고서를 남길 수 있습니다. 모두 멈추려면 실행 취소를 누르세요.</p>':'')+(item.runtimeMessage?'<div class="callout error" role="status">'+e(item.runtimeMessage)+'</div>':'')+
     (item.stopFailures?.length?'<div class="callout error"><strong>일부 에이전트의 종료를 확인하지 못했습니다.</strong>'+item.stopFailures.map(f=>'<p>'+e(f.message)+'</p>'+(f.terminalId?button('해당 에이전트 확인','focus-terminal','data-terminal="'+e(f.terminalId)+'"','small'):button('Orca 작업 공간 확인','open-workspace','data-workspace="'+e(item.workspaceId)+'"','small'))).join('')+'</div>':'')+'</div>';
+}
+// What cleanup did for this run: closed, already gone, failed (and why), kept (and why).
+function cleanupResult(item) {
+  const c=item.cleanup;if(!c)return '';
+  return '<details class="cleanup-result"><summary class="hint">끝난 터미널 '+e(c.closed)+'개 닫음'+(c.gone?' · 이미 없음 '+e(c.gone)+'개':'')+(c.failed.length?' · 닫기 실패 '+e(c.failed.length)+'개':'')+(c.kept.length?' · 남김 '+e(c.kept.length)+'개':'')+'</summary>'+
+    c.failed.map(f=>'<p class="hint mono">'+e(f.terminalId)+' — '+e(f.attempts)+'번 실패: '+e(f.error??'원인 미기록')+'</p>').join('')+
+    c.kept.map(k=>'<p class="hint mono">'+e(k.terminalId)+' — 에이전트가 '+e(k.state)+' 상태라 남김</p>').join('')+'</details>';
 }
 // Finished agents' terminals close on their own (src/cleanup.mjs); off keeps them for reading.
 function cleanupLine(item) {
@@ -342,10 +358,30 @@ function approvalForm(item,node) {
     <p class="hint">기본 승인 범위는 준비와 검토입니다.</p>
   </form>`;
 }
+// "Improve this result": the new run links to the previous one and never changes it.
+function parentNotice() {
+  const id=draft('new-run','parentRunId');if(!id)return'';
+  const parent=(ui.state?.runs??[]).find(r=>r.id===id);
+  return '<input type="hidden" name="parentRunId" value="'+e(id)+'"><div class="callout"><strong>이전 결과에서 이어서 개선합니다.</strong><br>'+e(parent?goalTitle(parent.goal):id)+' · 이전 실행과 보고서는 그대로 두고 새 실행으로 만듭니다.</div>';
+}
+const ARTIFACT_CACHE=8;
+// One artifact at a time, only when asked; never part of a state push (src/artifacts.mjs).
+async function loadArtifact(runId,path) {
+  const known=ui.artifacts.get(path);if(known&&!known.error)return;
+  const announcer=document.querySelector('#announcer'),say=text=>{if(announcer)announcer.textContent=text;};
+  ui.artifacts.set(path,{loading:true});render();say('결과 파일을 불러오는 중입니다.');
+  try{ui.artifacts.set(path,await request('artifacts.read',{runId,path}));say('결과 파일을 불러왔습니다.');}
+  catch(err){ui.artifacts.set(path,{error:'불러오지 못했습니다: '+err.message});say('결과 파일을 불러오지 못했습니다: '+err.message);}
+  while(ui.artifacts.size>ARTIFACT_CACHE)ui.artifacts.delete(ui.artifacts.keys().next().value);
+  render();
+  document.querySelector('#'+artifactId(path))?.focus?.(); // the pressed button is replaced; keep the place
+}
 function newRunForm() {
   const projects=(ui.state?.projects??[]).filter(p=>p.kind==='git'&&(!p.hostId||p.hostId==='local')).map(p=>({value:p.id,label:p.name}));
-  const type=draft('new-run','flowType','new-app'),improve=type==='improve';
-  return '<section class="card accent"><div class="section-heading"><div><p class="eyebrow">'+(improve?'IMPROVE AN APP':'NEW APP FLOW')+'</p><h2>'+(improve?'어떤 앱을 디벨롭할까요?':'어떤 앱을 만들까요?')+'</h2></div>'+button('닫기','close-new','','small')+'</div>'+flowTypeSwitch(type)+'<form id="new-run"><input type="hidden" name="flowType" value="'+e(type)+'"><label class="label" for="app-goal">'+(improve?'개선 목표와 완료 기준':'앱 목표와 완료 기준')+'</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" required maxlength="6000" placeholder="'+(improve?'예: 물주기 앱의 홈 화면을 새 디자인으로 바꾸고, 알림 시간 설정과 광고 제거 결제를 추가하고 싶어요. 기존 사용자 기록은 그대로 유지해야 해요.':'예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.')+'">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">'+(improve?'이미 출시한 앱의 저장소를 고르세요. 커밋이 있어야 하며, 시작 시 별도 브랜치와 작업 공간에서 개선합니다.':'프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.')+'</p>'+(improve?improveFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):'')+'<div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent">'+providerOptions(draft('new-run','agent','codex'))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer">'+providerOptions(draft('new-run','reviewer','codex'))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
+  const type=draft('new-run','flowType','new-app'),improve=type==='improve',diagnose=type==='diagnose',existing=improve||diagnose;
+  const head='<section class="card accent"><div class="section-heading"><div><p class="eyebrow">'+({improve:'IMPROVE AN APP',diagnose:'DIAGNOSE',resume:'RESUME'}[type]??'NEW APP FLOW')+'</p><h2>'+({improve:'어떤 앱을 개선할까요?',diagnose:'어떤 앱을 진단할까요?',resume:'어떤 흐름을 이어갈까요?'}[type]??'어떤 앱을 만들까요?')+'</h2></div>'+button('닫기','close-new','','small')+'</div>'+flowTypeSwitch(type);
+  if(type==='resume')return head+resumeList(ui.state?.runs)+'</section>';
+  return head+'<form id="new-run"><input type="hidden" name="flowType" value="'+e(type)+'">'+parentNotice()+'<label class="label" for="app-goal">'+(diagnose?'진단 메모 (선택)':improve?'개선 목표와 완료 기준':'앱 목표와 완료 기준')+'</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" '+(diagnose?'':'required ')+'maxlength="6000" placeholder="'+(diagnose?'예: 최근 리뷰에 앱이 느리다는 말이 많아요. 그쪽을 먼저 봐 주세요.':improve?'예: 물주기 앱의 홈 화면을 새 디자인으로 바꾸고, 알림 시간 설정과 광고 제거 결제를 추가하고 싶어요. 기존 사용자 기록은 그대로 유지해야 해요.':'예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.')+'">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">'+(existing?'이미 출시한 앱의 저장소를 고르세요. 커밋이 있어야 하며, 시작 시 별도 브랜치와 작업 공간에서 개선합니다.':'프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.')+'</p>'+(improve?improveFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):diagnose?diagnoseFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):'')+'<div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent">'+providerOptions(draft('new-run','agent','codex'))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer">'+providerOptions(draft('new-run','reviewer','codex'))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
 }
 function selectedPlayAccount() {
   const accounts=ui.play?.accounts??[];
@@ -470,7 +506,8 @@ function accountForm() {
 }
 function renderAgents() {
   const agents=ui.state?.agents??[],item=run();
-  let html='<section class="hero flow-tab"><h1>팀별 에이전트</h1></section>';
+  const limits=ui.state?.limits;
+  let html='<section class="hero flow-tab"><h1>팀별 에이전트</h1>'+(limits?'<p class="limits-line"><strong>작업 '+e(limits.active)+' / '+e(limits.activeJobs)+'</strong> · 빌드·테스트 '+e(limits.heavy)+' / '+e(limits.heavyJobs)+'<span class="hint"> Neon이 배정하는 작업에만 적용됩니다. 직접 실행한 다른 에이전트는 세지 않습니다. 한도는 플러그인 설정에서 바꿀 수 있습니다.</span></p>':'')+'</section>';
   if(item) {
     selectedNode(item);const ctx=flowContext(item);
     html+='<div class="agent-overview">'+runPicker(item)+collabStrip(item,ctx)+teamNavigator(item,ctx)+'</div><div class="people">'+people(item,ctx)+'</div>';
@@ -552,8 +589,12 @@ app.addEventListener('click',async event=>{
     return;
   }
   if(action==='open-run'){leaveView();ui.runId=target.dataset.run;ui.tab='studio';ui.newRun=false;ui.nodeId=null;ui.agentRole=null;clearDraft('assignments');clearDraft('approval');render();await loadSelectedDetail();return;}
-  if(action==='new-run'){leaveView();ui.newRun=true;ui.tab='studio';render();return;}
-  if(action==='flow-type'){ui.drafts['new-run.flowType']=target.dataset.type;render();if(target.dataset.type==='improve'&&!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
+  if(action==='new-run'){leaveView();delete ui.drafts['new-run.parentRunId'];ui.newRun=true;ui.tab='studio';render();return;}
+  if(action==='resume-existing'){const item=(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(item?.status==='paused')await request('runs.resume',{runId:item.id});leaveView();ui.runId=target.dataset.run;ui.newRun=false;render();await loadSelectedDetail();return;}
+  if(action==='pick-candidate'){const created=await request('runs.create',{fromDiagnosis:{runId:target.dataset.run,index:Number(target.dataset.index)}});leaveView();ui.runId=created.id;ui.nodeId=null;toast('후보로 개선 흐름을 만들었습니다. 같은 후보를 다시 고르면 이 흐름이 열립니다.');render();await loadSelectedDetail();return;}
+  if(action==='load-artifact'){await loadArtifact(target.dataset.run,target.dataset.path);return;}
+  if(action==='improve-result'){const item=run()?.id===target.dataset.run?run():(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(!item)return;leaveView();Object.assign(ui.drafts,{'new-run.flowType':'improve','new-run.projectId':item.projectId,'new-run.parentRunId':item.id});ui.newRun=true;render();document.querySelector('#app-goal')?.focus?.();if(!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
+  if(action==='flow-type'){ui.drafts['new-run.flowType']=target.dataset.type;render();if(['improve','diagnose'].includes(target.dataset.type)&&!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
   if(action==='close-new'){leaveView();ui.newRun=false;render();loadSelectedDetail();return;}
   if(action==='new-account'){leaveView();clearDraft('account');ui.newAccount=true;ui.tab='play';render();return;}
   if(action==='close-account'){leaveView();ui.newAccount=false;clearDraft('account');render();return;}
@@ -580,8 +621,11 @@ app.addEventListener('click',async event=>{
   try {
     const methods={'start-run':'runs.start','pause-run':'runs.pause','resume-run':'runs.resume','cancel-run':'runs.cancel','refresh-run':'runs.refresh'};
     if(methods[action]) {
-      await request(methods[action],{runId:target.dataset.run});
-      toast(action==='pause-run'?'새 단계 배정을 멈췄습니다.':action==='cancel-run'?'실행 취소 요청을 처리했습니다.':'작업 상태를 갱신했습니다.');
+      const cancelling=action==='cancel-run'?target.dataset.run:null;
+      if(cancelling){ui.cancelling.add(cancelling);render();}
+      let result;
+      try{result=await request(methods[action],{runId:target.dataset.run});}finally{if(cancelling)ui.cancelling.delete(cancelling);}
+      toast(action==='pause-run'?'새 단계 배정만 멈췄습니다. 작업 중인 에이전트는 계속 작업합니다.':cancelling?(result?.stopFailures?.length?'취소했지만 일부 에이전트의 종료를 확인해야 합니다. 실행 카드에서 확인하세요.':'취소 완료: Neon이 배정한 에이전트 터미널의 종료를 Orca가 확인했습니다.'):'작업 상태를 갱신했습니다.');
     } else if(action==='retry-node') {
       const selected=run()?.nodes?.find(n=>n.id===target.dataset.node);
       const acknowledgeUncertain=app.querySelector('#retry-ack')?.checked===true;
@@ -635,7 +679,7 @@ app.addEventListener('submit',async event=>{
     if(form.id==='new-run') {
       const data=newRunPayload(values); // a named template, never a stage list (panel/newflow.mjs)
       const created=await request('runs.create',data);
-      ui.runId=created.id;ui.newRun=false;ui.nodeId=null;clearDraft('new-run');toast(data.template==='improve'?'디벨롭 흐름을 만들었습니다. 현황 진단부터 시작합니다.':'앱 제작 그래프를 만들었습니다. 배정을 확인하고 시작하세요.');
+      ui.runId=created.id;ui.newRun=false;ui.nodeId=null;clearDraft('new-run');toast(data.template==='improve'?'개선 흐름을 만들었습니다. 앱 정체성 확인부터 시작합니다.':data.template==='diagnose'?'진단 흐름을 만들었습니다. 시작하면 개선 후보를 찾습니다.':'앱 제작 그래프를 만들었습니다. 배정을 확인하고 시작하세요.');
     } else if(form.id==='assignments') {
       const item=run(),assignments=Object.fromEntries(item.nodes.filter(assignmentMutable).map(n=>[n.id,assignmentChange(n,values)]).filter(([,change])=>Object.keys(change).length));
       if(!Object.keys(assignments).length){toast('변경된 팀 배정이 없습니다.');return;}

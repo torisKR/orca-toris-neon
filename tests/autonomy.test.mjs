@@ -91,3 +91,10 @@ test('an autonomous update run stops at the product catalog with one notice inst
   const prep = node('internal', { status: 'awaiting-approval', requiresApproval: true });
   assert.deepEqual(types(planAutonomy(run([prep], { status: 'ready' }))), ['approve:internal']);
 });
+
+test('an external condition is never retried; autonomy stops and says what is needed', () => {
+  const held = node('test', { status: 'blocked', failureReason: '연결된 Android 기기가 없습니다', history: [{ outcome: 'failed', failureClass: 'external' }] });
+  const [action] = planAutonomy(run([held]));
+  assert.equal(action.type, 'stop');
+  assert.match(action.reason, /기기/);
+});

@@ -6,8 +6,14 @@
 
 /** Minutes per phase, the expected size of the output, and when to stop. */
 export const STAGE_BUDGETS = Object.freeze({
-  audit: { work: 20, review: 8, scope: 'audit.md 2~4쪽: 기준선과 깨뜨리면 안 되는 것 목록',
-    enough: '빌드·테스트를 실제로 돌려 현재 상태를 확인하고, 버전·패키지·서명·의존성·스택과 보존 목록이 있으면 충분합니다. 리팩터링 제안 목록은 필요 없습니다.' },
+  identity: { work: 15, review: 6, scope: 'identity 보고서(사실 목록)',
+    enough: '빌드·테스트를 실제로 돌려 확인한 스택·패키지·빌드 대상·검증 방법·영향 흐름·저장 데이터·결제/광고·출시 도구가 있으면 충분합니다. 리팩터링 제안은 필요 없습니다.' },
+  diagnose: { work: 20, review: 8, scope: '근거 있는 개선 후보 3~5개',
+    enough: '후보마다 문제·근거·사용자 영향·범위·검증 방법이 있으면 충분합니다. 고치지 마세요.' },
+  reproduce: { work: 20, review: 8, scope: '재현 절차와 실패 근거',
+    enough: '같은 증상을 다시 만들 수 있는 절차와 수정 전 실패 근거(테스트·로그·스크린샷)가 있으면 충분합니다.' },
+  measure: { work: 20, review: 8, scope: '측정 환경·방법·기준 수치',
+    enough: '같은 조건으로 다시 잴 수 있는 환경과 방법, 여러 번 잰 실제 수치가 있으면 충분합니다.' },
   plan: { work: 15, review: 8, scope: 'plan.md 2~4쪽',
     enough: '선택된 영역의 변경 목록, 수용 조건, 회귀 보호, 제외 범위, 결제가 있으면 모델과 상품 제안이 있으면 충분합니다.' },
   monetization: { work: 90, review: 20, scope: 'Play 결제 연동, 페이월, 테스트 상품 검증',
@@ -39,7 +45,7 @@ export const STAGE_BUDGETS = Object.freeze({
 });
 
 /** Stages whose output is a document the next stage builds on; their reviews pass non-blocking defects on. */
-export const DOCUMENT_STAGES = new Set(['research', 'brief', 'audit', 'plan', 'architecture', 'design', 'policy', 'listing', 'release']);
+export const DOCUMENT_STAGES = new Set(['research', 'brief', 'identity', 'diagnose', 'plan', 'architecture', 'design', 'policy', 'listing', 'release']);
 const MAX_FOLLOW_UPS = 12;
 
 export const stageBudget = (nodeId, phase) => STAGE_BUDGETS[nodeId]?.[phase === 'review' ? 'review' : 'work'] ?? null;

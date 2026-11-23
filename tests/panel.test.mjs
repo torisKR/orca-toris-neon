@@ -836,47 +836,78 @@ test('the Auto App tab opens on a live run, not on a cancelled one listed first,
 
 // Flow types: a new app, or improving an app that already ships (panel/newflow.mjs).
 const playAccounts = {accounts:[{id:'acc-1',name:'Toris',developerId:'1000',packages:['com.example.water','com.example.quiz'],apps:[{packageName:'com.example.water',name:'물주기 정원',status:'published'}]}],protection:{status:'os-keyring'}};
-test('the new-flow form offers both flow types; the improvement type asks for project, areas and an optional Play package',async()=>{
+test('the new-flow form offers four entry points; improving asks for a kind, and payments is a feature option',async()=>{
   const h=await harness({responses:{'play.list':()=>playAccounts}});
   await h.click({action:'new-run'});await h.settle();
   let html=h.app.innerHTML;
-  assert.match(html,/새 앱 만들기/);
-  assert.match(html,/기존 앱 디벨롭/);
+  for(const label of ['새 앱 만들기','기존 앱 개선하기','진단만 하기','이어하기'])assert.match(html,new RegExp(label));
   assert.match(html,/data-action="flow-type" data-type="new-app" aria-pressed="true"/);
-  assert.doesNotMatch(html,/name="area_payments"/);
   await h.click({action:'flow-type',type:'improve'});await h.settle();
   html=h.app.innerHTML;
-  assert.match(html,/data-action="flow-type" data-type="improve" aria-pressed="true"/);
-  for(const area of ['area_design','area_features','area_payments'])assert.match(html,new RegExp('name="'+area+'"'));
-  assert.match(html,/디자인 개선/);assert.match(html,/결제 추가/);
+  for(const kind of ['bugfix','feature','design','performance','maintenance','release'])assert.match(html,new RegExp('name="kind" value="'+kind+'"'));
+  assert.match(html,/name="option_payments"/);
   assert.match(html,/<option value="acc-1\|com\.example\.water"\s*>물주기 정원 · com\.example\.water · Toris<\/option>/);
-  assert.match(html,/<option value="acc-1\|com\.example\.quiz"\s*>com\.example\.quiz · Toris<\/option>/);
-  assert.match(html,/커밋/);
   assert.equal(h.requests('play.list').length,1);
+  await h.click({action:'flow-type',type:'diagnose'});await h.settle();
+  html=h.app.innerHTML;
+  assert.match(html,/개선 후보 3~5개/);
+  assert.doesNotMatch(html,/name="kind"/);
 });
 
-test('an improvement flow is created from the template with the chosen areas and Play link, never raw stages',async()=>{
+test('an improvement is created from its kind; a diagnosis needs only the project; nothing sends raw stages',async()=>{
   const h=await harness({responses:{'play.list':()=>playAccounts}});
   await h.click({action:'new-run'});await h.click({action:'flow-type',type:'improve'});await h.settle();
-  await h.submit(h.form('new-run',{flowType:'improve',goal:'프리미엄 테마와 결제를 추가합니다.',projectId:'project-1',agent:'codex',reviewer:'claude',
-    maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'2',area_design:'on',area_payments:'on',playApp:'acc-1|com.example.water'}));
+  await h.submit(h.form('new-run',{flowType:'improve',kind:'feature',goal:'프리미엄 결제를 추가합니다.',projectId:'project-1',agent:'codex',reviewer:'claude',
+    maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'2',option_payments:'on',playApp:'acc-1|com.example.water'}));
   const input=h.requests('runs.create')[0].input;
   assert.equal(input.template,'improve');
-  assert.deepEqual(input.areas,['design','payments']);
+  assert.equal(input.kind,'feature');
+  assert.deepEqual(input.options,{design:false,payments:true});
   assert.deepEqual(input.playLink,{accountId:'acc-1',packageName:'com.example.water'});
-  assert.equal(input.nodes,undefined,'the panel names a template, not a node list');
-  assert.deepEqual(Object.keys(input.assignments).sort(),['assets','audit','build','catalog','design','internal','listing','monetization','plan','policy','release','test']);
+  assert.equal(input.nodes,undefined);
   assert.deepEqual(input.assignments.monetization,{agent:'codex',reviewer:'claude'});
   await h.submit(h.form('new-run',{flowType:'improve',goal:'개선',projectId:'project-1',agent:'codex',reviewer:'codex',maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'2'}));
-  assert.equal(h.requests('runs.create').length,1,'no area chosen: nothing is sent');
-  assert.match(h.toast.textContent,/개선 영역/);
+  assert.equal(h.requests('runs.create').length,1,'no kind chosen: nothing is sent');
+  assert.match(h.toast.textContent,/개선 종류/);
+  await h.submit(h.form('new-run',{flowType:'diagnose',projectId:'project-1',agent:'codex',reviewer:'codex',maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'2'}));
+  const diag=h.requests('runs.create')[1].input;
+  assert.equal(diag.template,'diagnose');
+  assert.equal(diag.goal,undefined);
+});
+
+test('resume lists unfinished runs and resumes the chosen one instead of creating another',async()=>{
+  const state=baseState();state.runs=[workflow(),{...workflow(),id:'run-done',status:'completed',goal:'끝난 앱'}];
+  const h=await harness({state});
+  await h.click({action:'new-run'});await h.click({action:'flow-type',type:'resume'});await h.settle();
+  const html=h.app.innerHTML;
+  assert.match(html,/data-action="resume-existing" data-run="run-1"/);
+  assert.doesNotMatch(html,/data-run="run-done"/);
+  await h.click({action:'resume-existing',run:'run-1'});
+  assert.deepEqual(h.requests('runs.resume')[0].input,{runId:'run-1'});
+  assert.equal(h.requests('runs.create').length,0);
+});
+
+test('a passed diagnosis shows its candidates; picking one asks the worker to start that candidate',async()=>{
+  const state=baseState();const run=workflow();run.template='diagnose';run.status='completed';
+  run.nodes=[{id:'identity',title:'앱 정체성 확인',deps:[],agent:'codex',reviewer:'codex',status:'passed',attempts:1,reviewAttempts:1,active:null},
+    {id:'diagnose',title:'진단·개선 후보',deps:['identity'],agent:'codex',reviewer:'codex',status:'passed',attempts:1,reviewAttempts:1,active:null,
+      report:{outcome:'passed',summary:'후보 2개',candidates:[{kind:'bugfix',title:'알림이 두 번 울림',problem:'같은 알림 두 번',evidence:'logcat',impact:'혼란',scope:'스케줄러',verify:'알림 1회'},
+        {kind:'performance',title:'느린 시작',problem:'3초',evidence:'측정',impact:'이탈',scope:'초기화',verify:'재측정'}]}}];
+  state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/알림이 두 번 울림/);assert.match(html,/느린 시작/);
+  assert.match(html,/오류 수정/);assert.match(html,/성능 최적화/);
+  await h.click({action:'pick-candidate',run:'run-1',index:'1'});
+  assert.deepEqual(h.requests('runs.create')[0].input.fromDiagnosis,{runId:'run-1',index:1});
 });
 
 test('the panel\'s template stage lists match the engine\'s',async()=>{
   const {TEMPLATE_STAGES}=await import('../panel/newflow.mjs');
-  const {DEFAULT_GRAPH,IMPROVE_GRAPH}=await import('../src/engine.mjs');
+  const {DEFAULT_GRAPH,IMPROVE_STAGE_IDS}=await import('../src/engine.mjs');
   assert.deepEqual(TEMPLATE_STAGES['new-app'],DEFAULT_GRAPH.map(node=>node.id));
-  assert.deepEqual(TEMPLATE_STAGES.improve,IMPROVE_GRAPH.map(node=>node.id));
+  assert.deepEqual(TEMPLATE_STAGES.improve,[...IMPROVE_STAGE_IDS]);
 });
 
 test('the product catalog stage asks the person to confirm each product created in Play Console',async()=>{
@@ -896,4 +927,76 @@ test('the product catalog stage asks the person to confirm each product created 
   assert.match(html,/name="confirm_premium_unlock"/);
   await h.submit(h.form('catalog-approval',{note:'Play Console에 상품을 만들고 활성화했습니다.',confirm_premium_unlock:'on'},{run:'run-1',node:'catalog'}));
   assert.deepEqual(h.requests('runs.approve')[0].input,{runId:'run-1',nodeId:'catalog',note:'Play Console에 상품을 만들고 활성화했습니다.',productCatalog:{confirmed:['premium_unlock']}});
+});
+
+// Bundle 1 in the panel: which code runs, the Neon-wide limits, why a stage waits, what cleanup did.
+test('the footer names the running build; the agents tab shows active work against the Neon limits',async()=>{
+  const state=baseState();state.build={label:'v0.2.0 · abc1234+수정 · 개발 폴더'};state.limits={activeJobs:2,heavyJobs:1,active:2,heavy:1};state.runs=[liveRun()];
+  const h=await harness({state});
+  assert.match(h.app.innerHTML,/v0\.2\.0 · abc1234\+수정 · 개발 폴더/);
+  await h.click({action:'tab',tab:'agents'});
+  const html=h.app.innerHTML;
+  assert.match(html,/작업 2 \/ 2/);
+  assert.match(html,/빌드·테스트 1 \/ 1/);
+  assert.match(html,/Neon이 배정하는 작업에만/);
+});
+
+test('a waiting stage shows its true reason and the run card shows terminal cleanup',async()=>{
+  const state=baseState();const run=liveRun();
+  run.waiting={research:'전체 작업 2개 실행 중'};run.nodes[0]={...run.nodes[0],status:'pending'};
+  run.cleanup={closed:3,gone:1,failed:[{terminalId:'term_x',attempts:2,error:'Orca could not complete this action'}],kept:[{terminalId:'term_y',state:'working'}]};
+  state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/전체 작업 2개 실행 중/);
+  assert.match(html,/끝난 터미널 3개 닫음/);
+  assert.match(html,/term_x[^<]*Orca could not complete this action/);
+  assert.match(html,/term_y[^<]*working/);
+});
+
+test('a passed stage shows its result card; an image loads only when asked; "improve this result" opens a linked improvement form',async()=>{
+  const state=baseState();const run=workflow();run.template='improve';run.status='completed';run.projectId='project-1';
+  run.nodes=[{id:'build',title:'오류 수정',deps:[],agent:'codex',reviewer:'codex',status:'passed',write:true,attempts:1,reviewAttempts:1,active:null,
+    report:{outcome:'passed',summary:'중복 제거',changes:['중복 예약 제거'],criteria:[{criterion:'알림 1회',met:true}],notVerified:['Android 9 실기기'],
+      evidence:[{kind:'command',command:'./gradlew test',exitCode:0},{kind:'artifact',path:'/r/run-1/build/after.png',label:'screenshot'}]}}];
+  state.runs=[run];
+  const h=await harness({state,responses:{'artifacts.read':()=>({kind:'image',mime:'image/png',size:4,data:'iVBO'})}});
+  await h.click({action:'open-run',run:'run-1'});await h.click({action:'inspect-stage',node:'build'});await h.settle();
+  let html=h.app.innerHTML;
+  assert.match(html,/실행 결과/);assert.match(html,/구현 결과 생성/);
+  assert.match(html,/오류 수정 결과|앱 구현 결과/);assert.match(html,/중복 예약 제거/);assert.match(html,/실제 화면/);
+  assert.equal(h.requests('artifacts.read').length,0,'nothing is fetched before the person asks');
+  assert.doesNotMatch(html,/data:image/);
+  await h.click({action:'load-artifact',run:'run-1',path:'/r/run-1/build/after.png'});
+  assert.deepEqual(h.requests('artifacts.read')[0].input,{runId:'run-1',path:'/r/run-1/build/after.png'});
+  html=h.app.innerHTML;
+  assert.match(html,/<img src="data:image\/png;base64,iVBO" alt="실제 화면: after\.png">/);
+  await h.click({action:'improve-result',run:'run-1'});await h.settle();
+  html=h.app.innerHTML;
+  assert.match(html,/이전 결과에서 이어서 개선합니다/);
+  assert.match(html,/name="parentRunId" value="run-1"/);
+  await h.submit(h.form('new-run',{flowType:'improve',kind:'bugfix',goal:'알림 설정 화면도 정리',projectId:'project-1',parentRunId:'run-1',agent:'codex',reviewer:'codex',maxConcurrency:2,maxAttempts:3,maxRepairLoops:3}));
+  assert.equal(h.requests('runs.create')[0].input.parentRunId,'run-1');
+});
+
+test('pause says it only stops new assignments; cancel shows requested, done, or needs checking, never more than confirmed',async()=>{
+  const state=baseState();const run=workflow();run.status='running';state.runs=[run];
+  let release;const gate=new Promise(resolve=>{release=resolve;});
+  const cancelled={...copy(run),status:'cancelled',stopFailures:[{terminalId:'t-1',code:'action_failed',message:'소유한 에이전트 터미널의 종료를 확인하지 못했습니다.'}]};
+  const h=await harness({state,responses:{'runs.cancel':async()=>{await gate;return cancelled;}}});
+  await h.click({action:'open-run',run:'run-1'});
+  assert.match(h.app.innerHTML,/새 배정 멈춤/);
+  assert.match(h.app.innerHTML,/작업 중인 에이전트는 계속/);
+  const pending=h.click({action:'cancel-run',run:'run-1'});await h.settle();
+  assert.match(h.app.innerHTML,/취소 요청 처리 중/);
+  release();await pending;
+  assert.match(h.toast.textContent,/종료를 확인해야/);
+  assert.doesNotMatch(h.toast.textContent,/모든|종료했습니다/);
+  state.runs=[cancelled];
+  const h2=await harness({state});await h2.click({action:'open-run',run:'run-1'});
+  assert.match(h2.app.innerHTML,/종료 확인 필요/);
+  state.runs=[{...cancelled,stopFailures:[]}];
+  const h3=await harness({state});await h3.click({action:'open-run',run:'run-1'});
+  assert.match(h3.app.innerHTML,/취소 완료/);
 });

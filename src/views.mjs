@@ -2,11 +2,14 @@
  * What the panel and RPC callers see of the runtime state: the full state, a small summary for
  * every push (Orca drops panel messages over 256 KiB), or the event timeline.
  */
+import { GLOBAL_LIMITS, globalCounts, waitReasons } from './scheduler.mjs';
+import { cleanupSummary } from './cleanup.mjs';
+
 const invalidView = () => Object.assign(new Error('지원되지 않는 실행 조회 형식입니다.'), { code: 'invalid_params' });
 // Keep transport payloads small without changing the durable evidence record.
 function reportSummary(report) {
   if (!report || typeof report !== 'object') return report;
-  const { evidence, ...summary } = report;
+  const { evidence, changes, criteria, beforeAfter, notVerified, ...summary } = report; // result-card fields come with runs.get
   return { ...summary, evidenceCount: Array.isArray(evidence) ? evidence.length : 0 };
 }
 function nodeSummary(node) {
@@ -26,6 +29,7 @@ function runSummary(run) {
   const current = new Set(nodes.flatMap(node => [node.active?.nonce, node.pendingReceipt?.nonce]).filter(Boolean));
   return {
     ...summary, nodes: nodes.map(nodeSummary),
+    ...(run.improvement?.parent ? { improvement: { ...run.improvement, parent: { runId: run.improvement.parent.runId } } } : {}),
     jobs: (jobs || []).filter(job => current.has(job.nonce)),
     nodeCount: nodes.length, passedCount: nodes.filter(node => node.status === 'passed').length
   };
@@ -40,11 +44,13 @@ function archiveSummary(run) {
 function timelineRun(run) {
   return { id: run.id, goal: run.goal, projectId: run.projectId, updatedAt: run.updatedAt, events: run.events || [] };
 }
-export function projectState(state, view = 'full') {
+export function projectState(state, view = 'full', limits = GLOBAL_LIMITS) {
   if (view === 'full') return state;
   if (view === 'summary') return {
-    version: state.version, revision: state.revision, view,
-    runs: state.runs.map(runSummary), archivedRuns: state.archivedRuns.map(archiveSummary)
+    version: state.version, revision: state.revision, view, build: state.build ?? null,
+    limits: { ...limits, ...globalCounts(state.runs) },
+    runs: state.runs.map((run) => ({ ...runSummary(run), waiting: waitReasons(run, state.runs, limits), cleanup: cleanupSummary(run) })),
+    archivedRuns: state.archivedRuns.map(archiveSummary)
   };
   if (view === 'timeline') return {
     version: state.version, revision: state.revision, view,

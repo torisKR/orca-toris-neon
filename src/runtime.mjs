@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import {
   createRun, nextActions, claimNode, recordLaunch, applyReport, approveNode,
   pauseRun, resumeRun, retryNode, blockNode, cancelRun, releaseClaim,
-  normalizeEccAgent, templateGraph
+  normalizeEccAgent
 } from './engine.mjs';
 import { AUTONOMY_LIMITS, DECIDE_PROMPT, createSupervisor } from './autonomy.mjs';
 import { launchSettings, normalizeModel, normalizeEffort, EFFORTS, VISUAL_STAGES, VISUAL_DEFAULT } from './visual.mjs';
@@ -15,11 +15,15 @@ import { createPersistence, archiveRun, retainArchives } from './store.mjs';
 import { createJobWatch, WATCH_INTERVAL_MS } from './watch.mjs';
 import { projectState } from './views.mjs';
 import { buildNodePrompt } from './prompt.mjs';
-import { prepareImprovement } from './improve.mjs';
+import { planRunInput, requestKey } from './flows.mjs';
 import { approvalScope } from './approval.mjs';
 import { stageBudget } from './proportion.mjs';
 import { createTerminalCleanup, cleanupRecorder, describeSweep, CLEANUP_INTERVAL_MS } from './cleanup.mjs';
 import { classifySendError, SEND_RETRY_DELAYS_MS } from './delivery.mjs';
+import { nextLaunch, readLimits, GLOBAL_LIMITS } from './scheduler.mjs';
+import { gitWorkingState, sourceProblem } from './commitcheck.mjs';
+import { buildLabel } from './buildinfo.mjs';
+import { artifactReader } from './artifacts.mjs';
 import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, isReportFormError, formError, reportFixPrompt } from './reportfix.mjs';
 
 export { buildNodePrompt };
@@ -234,7 +238,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   inspectRepository = gitRepositoryState, eccAdvisor = null, visualAdvisor = null, launchOverrides = null,
   receiptWrittenAt = async (file) => (await fs.stat(file)).mtimeMs,
   validateArtifact, resolvePlayAccount, readPlayApp, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  watchIntervalMs = WATCH_INTERVAL_MS, cleanupIntervalMs = CLEANUP_INTERVAL_MS } = {}) {
+  watchIntervalMs = WATCH_INTERVAL_MS, cleanupIntervalMs = CLEANUP_INTERVAL_MS, gitState = gitWorkingState, buildInfo = null } = {}) {
   if (!orca?.host || !orca?.storage) throw new Error('Orca host and storage are required.');
   // Situational ECC agents and skills for this launch, kept on the job (prompt) and the stage
   // (inspector). Missing guidance never blocks a launch; for a Claude stage it is said in an event.
@@ -372,7 +376,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     jsonValue(state); // a value JSON cannot hold is a bug; refuse it as before
     const saved = await persistence.save(state);
     if (!saved.ok && durable) throw Object.assign(runtimeError('action_failed', '실행 상태를 저장하지 못해 진행하지 않았습니다: ' + saved.error), { unsaved: true });
-    try { orca.panels?.post('state.changed', jsonValue(projectState(state, 'summary'))); } catch {}
+    try { orca.panels?.post('state.changed', jsonValue(projectState(state, 'summary', limits))); } catch {}
     try {
       const working = state.runs.reduce((sum, run) => sum + activeJobs(run).filter((job) => job.state === 'running').length, 0);
       const blocked = state.runs.filter((run) => run.status === 'blocked').length;
@@ -415,7 +419,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_ARTIFACT_BYTES) {
       throw runtimeError('invalid_params', 'artifact가 없거나 비어 있거나 256 MiB를 초과합니다.');
     }
-    return { kind: 'artifact', path: filename, size: stat.size, sha256: await digestFile(filename) };
+    return { kind: 'artifact', path: filename, size: stat.size, sha256: await digestFile(filename), ...(evidence.label ? { label: evidence.label } : {}) };
   };
   // A passing report can follow a failed turn only if a later turn wrote it. Records stored before
   // turns were tracked (no failedAt) kept their first failure forever, so their outcome may describe
@@ -427,13 +431,14 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     return Number.isFinite(writtenAt) && writtenAt > job.failedAt + RECEIPT_TURN_MARGIN_MS;
   };
   // A report refused for its form: the same agent corrects only the report (src/reportfix.mjs).
-  const requestReportFix = async (run, job, reason) => {
+  const readGit = async (dir) => { try { return gitState ? await gitState(dir) : null; } catch (error) { throw runtimeError('conflict', 'git 상태를 읽지 못해 커밋 여부를 확인할 수 없습니다: ' + safeError(error).message); } }; // never fails open
+  const requestReportFix = async (run, job, reason, { commit = false } = {}) => {
     const count = job.reportFixes ?? 0;
     if (count >= MAX_REPORT_FIXES || job.promptRecovery?.state !== 'sent' || run.status === 'paused' || !job.terminalId) return false;
     let at = null;
     try { at = await receiptWrittenAt(job.receiptPath); } catch { at = null; }
     job.reportRejectedAt = Number.isFinite(at) ? at : now();
-    job.reportFix = { reason: String(reason).slice(0, 900), at: nowIso(now) };
+    job.reportFix = { reason: String(reason).slice(0, 900), at: nowIso(now), ...(commit ? { commit: true } : {}) };
     const node = findNode(run, job.nodeId);
     node.runtimeMessage = '보고서 형식이 받아들여지지 않았습니다: ' + reason + ' 작업은 그대로 두고 같은 에이전트에게 보고서만 고치도록 요청합니다 (' + (count + 1) + '/' + MAX_REPORT_FIXES + ').';
     appendEvent(run, node.title + ': ' + node.runtimeMessage, now, { nodeId: node.id, nonce: job.nonce });
@@ -475,6 +480,9 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
           throw runtimeError('conflict', '검토 도중 소스가 변경됐습니다. 현재 소스를 다시 검증하세요.');
         }
       }
+      const problem = sourceProblem({ job, write: findNode(run, job.nodeId).write, report, state: report.outcome === 'passed' && (job.startHead || job.sourceCommit) ? await readGit(run.workspacePath) : null });
+      if (problem?.kind === 'commit') throw Object.assign(formError(problem.message), { commitRequired: true }); // written source must be committed (src/commitcheck.mjs)
+      if (problem) throw runtimeError('conflict', problem.message);
       const node = findNode(run, job.nodeId);
       if (!node.active) {
         node.active = { ...node.pendingReceipt, ...job };
@@ -500,7 +508,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
         : FAILED_AGENT_OUTCOMES.has(job.agentOutcome) && job.promptSeen ? failedTurnMessage(job, '원인을 해결한 뒤 터미널에서 이어서 진행하고 상태 동기화하거나 이 단계를 재시도하세요.')
         : job.promptSeen ? '에이전트가 종료됐지만 검증 보고서가 없습니다. 보고서를 저장한 뒤 새로고침하거나 이 단계를 재시도하세요.'
           : '에이전트가 작업을 시작한 기록이 없습니다. 작업 지시가 전달되지 않았을 수 있으니 터미널을 확인한 뒤 이 단계를 재시도하세요.';
-      if (isReportFormError(error) && await requestReportFix(run, job, message)) return false;
+      if (isReportFormError(error) && await requestReportFix(run, job, message, { commit: error.commitRequired })) return false;
       markBlocked(run, job, message);
       return false;
     }
@@ -571,9 +579,12 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       await createReceiptDirectory(directory);
       await adviseEcc(run, claimed, job);
       await adviseVisual(run, claimed, job);
+      const git = claimed.write || action.phase === 'review' ? await readGit(run.workspacePath) : null;
+      if (git && action.phase === 'work') job.startHead = git.head;
       if (action.phase === 'review') {
         job.sourceFingerprint = await fingerprint(run.workspacePath);
         claimed.active.sourceFingerprint = job.sourceFingerprint;
+        if (git) job.sourceCommit = git.head;
       }
       await persist({ durable: true }); // The nonce and intent must exist before the host can launch.
       hostRequested = true;
@@ -714,7 +725,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     // promptRecovery (the never-resent assignment) stays untouched.
     const decision = continuation === 'decision';
     const fix = continuation === 'report';
-    const text = decision ? DECIDE_PROMPT : fix ? reportFixPrompt(job.reportFix.reason, job.receiptPath, job.reportFixes) : continuation ? CONTINUE_PROMPT : await nodePrompt(run, node, job);
+    const text = decision ? DECIDE_PROMPT : fix ? reportFixPrompt(job.reportFix.reason, job.receiptPath, job.reportFixes, { commit: job.reportFix.commit }) : continuation ? CONTINUE_PROMPT : await nodePrompt(run, node, job);
     const record = { state: 'sending', at: nowIso(now), terminalId: job.terminalId,
       ...(manual ? { acknowledgedEmpty: true } : {}), ...(continuation ? { count: job.continuations } : {}) };
     if (continuation) job.continuation = record;
@@ -923,6 +934,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     appendEvent: (run, text, extra) => appendEvent(run, text, now, extra),
     notify: (title, body) => { void Promise.resolve().then(() => call('notifications.show', { title, body: body.slice(0, 900) })).catch((error) => orca.log?.('Toris Neon notification: ' + safeError(error).message)); }
   });
+  let launchCursor = 0, limits = GLOBAL_LIMITS; // Neon-wide limits, refreshed from the settings on each pump
   const pump = async () => {
     if (disposed) return;
     for (const entry of [...state.runs]) {
@@ -938,22 +950,13 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
         if (!job.promptRecovery) startDelivery(run.id, job.nonce);
         else if (job.promptRecovery.state === 'sent' && !job.promptSeen) startConfirmation(run.id, job.nonce);
       }
-      if (state.runs.some((other) => other.id !== run.id && other.workspaceId === run.workspaceId && activeJobs(other).length)) continue;
-      for (let guard = 0; guard < 50; guard++) {
-        run = getRun(run.id);
-        if (!run.started || !['ready', 'running'].includes(run.status)) break;
-        if (run.nodes.some((node) => ['blocked', 'failed'].includes(node.status)) || activeJobs(run).some((job) => ['uncertain', 'awaiting-report'].includes(job.state))) break;
-        const actions = nextActions(run);
-        const active = run.nodes.filter((node) => node.active);
-        const action = actions.find((candidate) => {
-          const node = findNode(run, candidate.nodeId);
-          if (candidate.phase === 'review') return !active.some((item) => item.write && item.active.phase === 'work');
-          if (node.write) return !active.some((item) => item.write || item.active.phase === 'review'); // read-only work may continue beside it
-          return !active.some((item) => item.write && item.active.phase === 'work');
-        });
-        if (!action) break;
-        if (await launchOne(run, action) === false) break;
-      }
+    }
+    limits = await readLimits(orca.settings); // settings maxActiveJobs/maxHeavyJobs; runs take turns (src/scheduler.mjs)
+    for (let guard = 0; guard < 50 && !disposed; guard++) {
+      const pick = nextLaunch(state.runs, { cursor: launchCursor, limits });
+      if (!pick) break;
+      launchCursor = pick.cursor;
+      if (await launchOne(getRun(pick.runId), pick.action) === false) break;
     }
   };
   const schedulePump = () => {
@@ -1070,7 +1073,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       const results = await Promise.allSettled(names.map((name) => catalogRead(name, input.forceHost === true)));
       const value = (index, key, fallback) => results[index].status === 'fulfilled' ? (key ? results[index].value?.[key] ?? fallback : results[index].value) : fallback;
       return {
-        ...projectState(state, input.view), projects: value(0, 'projects', []), workspaces: value(1, 'workspaces', []),
+        ...projectState(state, input.view, limits), projects: value(0, 'projects', []), workspaces: value(1, 'workspaces', []),
         context: value(2, null, null), agents: value(3, 'agents', []), providers: PROVIDERS, eccAgents: await eccChoices(),
         autonomyLimits: AUTONOMY_LIMITS,
         launchOptions: { efforts: EFFORTS, visualStages: VISUAL_STAGES, visualDefault: VISUAL_DEFAULT },
@@ -1078,27 +1081,23 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
           ...(persistence.failure() ? ['실행 상태를 저장하지 못했습니다 (' + persistence.failure().attempts + '회): ' + persistence.failure().message + '. 메모리에서 계속 진행하며 자동으로 다시 저장합니다.'] : [])]
       };
     },
-    'runs.get': async (input = {}) => {
-      const run = state.runs.find(entry => entry.id === input.runId) ||
-        state.archivedRuns.find(entry => entry.id === input.runId);
-      if (!run) throw runtimeError('invalid_params', '실행을 찾을 수 없습니다.');
-      return run;
-    },
+    'artifacts.read': artifactReader({ runs: () => [...state.runs, ...state.archivedRuns], receiptRoot }), // lazy, one file, never pushed
+    'runs.get': async (input = {}) => [...state.runs, ...state.archivedRuns].find(entry => entry.id === input.runId) ??
+      (() => { throw runtimeError('invalid_params', '실행을 찾을 수 없습니다.'); })(),
     'runs.create': (input = {}) => queue(async () => {
+      const key = requestKey(input); // the same requestId or diagnosis candidate returns the run it already made
+      const existing = key && [...state.runs, ...state.archivedRuns].find((item) => item.requestId === key && item.status !== 'cancelled');
+      if (existing) return clone(existing);
       if (state.runs.length >= MAX_RUNS) throw runtimeError('too_large', '최대 40개 실행을 보관합니다. 기존 실행을 완료한 뒤 보관 정리를 진행하세요.');
-      const goal = requireString(input.goal, '앱 목표', 6000);
-      const projectId = requireString(input.projectId, '프로젝트', 256);
-      // A named template (src/engine.mjs); an update of a shipped app is validated against the repository and Play.
-      const update = input.template === 'improve' ? await prepareImprovement(input, { call, inspectRepository, readPlayApp }) : null;
-      let graph;
-      try { graph = input.nodes ?? templateGraph(input.template ?? 'new-app', { areas: update?.areas }); } catch (error) { throw runtimeError('invalid_params', error.message); }
+      const plan = await planRunInput(input, { call, inspectRepository, readPlayApp, runs: [...state.runs, ...state.archivedRuns] });
+      const { goal, projectId } = plan;
       const run = createRun({
         id: id(), goal, projectId, assignments: input.assignments || {},
         maxConcurrency: input.maxConcurrency ?? 2, maxAttempts: input.maxAttempts ?? 3,
         maxRepairLoops: input.maxRepairLoops ?? 3,
-        nodes: graph, now: now()
+        nodes: plan.nodes, now: now()
       });
-      if (update) Object.assign(run, { template: 'improve', improvement: update.improvement });
+      Object.assign(run, plan.extra, key ? { requestId: key } : {});
       run.isolate = input.isolate !== false;
       run.autonomous = input.autonomous !== false; // new runs go on without a person unless asked
       if (input.baseBranch) {
@@ -1441,6 +1440,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   async function initialize() {
     const loaded = await persistence.load(); // an unreadable layout throws here; nothing is overwritten
     state = loaded.state;
+    state.build = buildInfo ? { ...buildInfo, label: buildLabel(buildInfo) } : null;
     const migration = loaded.migration;
     if (migration) orca.log?.('Toris Neon storage: ' + (migration.ok
       ? '이전 단일 값(' + migration.before + '바이트)을 실행별 값으로 옮기고 확인한 뒤 삭제했습니다: 실행 ' + migration.runs + '개, 보관 ' + migration.archived + '개 (' + migration.after + '바이트)' + (migration.droppedArchives ? ', 오래된 보관 ' + migration.droppedArchives + '개 정리' : '') + '.'
@@ -1476,7 +1476,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   const api = {
     initialize,
     handlers: Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, async (input) => jsonValue(await handler(input))])),
-    getState: (input = {}) => jsonValue(projectState(state, input.view)),
+    getState: (input = {}) => jsonValue(projectState(state, input.view, limits)),
     drain: async () => {
       let pending;
       do { pending = chain; await pending; await Promise.all([...background]); } while (pending !== chain || background.size);

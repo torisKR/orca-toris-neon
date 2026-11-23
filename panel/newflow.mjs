@@ -8,14 +8,19 @@ import { e, options } from './kit.mjs';
 // tests/panel.test.mjs keeps them equal. Used only to address per-stage assignments.
 export const TEMPLATE_STAGES = Object.freeze({
   'new-app': ['research', 'brief', 'architecture', 'design', 'assets', 'build', 'test', 'policy', 'listing', 'internal', 'release'],
-  improve: ['audit', 'plan', 'design', 'assets', 'build', 'monetization', 'test', 'policy', 'listing', 'catalog', 'internal', 'release'],
+  improve: ['identity', 'diagnose', 'reproduce', 'measure', 'plan', 'design', 'assets', 'build', 'monetization', 'test', 'policy', 'listing', 'catalog', 'internal', 'release'],
 });
-export const AREAS = [
-  ['design', '디자인 개선', '현재 화면에서 출발해 디자인과 에셋을 다듬습니다'],
-  ['features', '기능 추가', '기존 동작을 테스트로 고정한 뒤 기능을 더합니다'],
-  ['payments', '결제 추가', 'Play 결제와 페이월을 연동합니다. 상품 등록은 직접 합니다'],
+export const KINDS = [
+  ['bugfix', '오류 수정', '증상을 재현하고 고친 뒤 같은 증상으로 다시 확인합니다'],
+  ['feature', '기능 추가', '새 기능과 영향을 받는 기존 기능을 함께 검증합니다'],
+  ['design', '디자인·에셋 개선', '실제 화면의 전후를 비교합니다. 시안은 시안으로 표시합니다'],
+  ['performance', '성능 최적화', '같은 조건에서 전후 수치를 잽니다'],
+  ['maintenance', '유지보수', '의존성·구조 정리 등, 해당하는 검증을 실행합니다'],
+  ['release', '출시 업데이트', '바뀐 부분을 다시 검증하고 출시 자료를 준비합니다. 제출은 직접 승인합니다'],
 ];
-const TYPES = [['new-app', '새 앱 만들기', '아이디어에서 출시까지'], ['improve', '기존 앱 디벨롭', '출시한 앱의 디자인·기능·결제 개선']];
+export const KIND_NAMES = Object.fromEntries(KINDS.map(([id, label]) => [id, label]));
+const TYPES = [['new-app', '새 앱 만들기', '아이디어에서 출시까지'], ['improve', '기존 앱 개선하기', '출시한 앱을 종류별로 개선'],
+  ['diagnose', '진단만 하기', '개선 후보만 찾고 바꾸지 않음'], ['resume', '이어하기', '끝나지 않은 흐름을 다시 시작']];
 
 export function flowTypeSwitch(type) {
   return '<div class="flow-type" role="group" aria-label="흐름 종류">' + TYPES.map(([value, label, hint]) =>
@@ -29,31 +34,61 @@ export function playAppOptions(play) {
     return { value: account.id + '|' + packageName, label: [app?.name, packageName, account.name].filter(Boolean).join(' · ') };
   }));
 }
+function playField({ draft, play }) {
+  const apps = playAppOptions(play);
+  return '<label class="label" for="app-play">연결할 Play 앱 (선택)</label><select class="field" id="app-play" name="playApp"><option value="">연결하지 않음</option>' + options(apps, draft('playApp')) + '</select>' +
+    '<p class="hint">' + (play ? (apps.length ? '연결하면 정체성 확인에 스토어 상태와 배포 버전이 들어갑니다.' : 'Play Store 탭에 등록된 패키지가 없습니다.') : 'Play 계정을 불러오고 있습니다.') + '</p>';
+}
 
 export function improveFields({ draft, play }) {
-  const apps = playAppOptions(play);
-  return '<fieldset class="improve-areas"><legend class="label">개선 영역 (하나 이상)</legend>' + AREAS.map(([id, label, hint]) =>
-    '<label class="checkbox area-option"><input type="checkbox" name="area_' + id + '" ' + (draft('area_' + id, false) ? 'checked' : '') + '><span><strong>' + label + '</strong><small>' + hint + '</small></span></label>').join('') + '</fieldset>' +
-    '<label class="label" for="app-play">연결할 Play 앱 (선택)</label><select class="field" id="app-play" name="playApp"><option value="">연결하지 않음</option>' + options(apps, draft('playApp')) + '</select>' +
-    '<p class="hint">' + (play ? (apps.length ? '연결하면 현황 진단에 스토어 상태와 배포 버전이 들어갑니다.' : 'Play Store 탭에 등록된 패키지가 없습니다.') : 'Play 계정을 불러오고 있습니다.') + '</p>';
+  const chosen = draft('kind', '');
+  return '<fieldset class="improve-areas"><legend class="label">개선 종류</legend>' + KINDS.map(([id, label, hint]) =>
+    '<label class="checkbox area-option"><input type="radio" name="kind" value="' + id + '" ' + (chosen === id ? 'checked' : '') + '><span><strong>' + label + '</strong><small>' + hint + '</small></span></label>').join('') + '</fieldset>' +
+    '<fieldset class="improve-areas"><legend class="label">기능 추가 옵션</legend>' +
+    '<label class="checkbox"><input type="checkbox" name="option_design" ' + (draft('option_design', false) ? 'checked' : '') + '>디자인·에셋도 함께</label>' +
+    '<label class="checkbox"><input type="checkbox" name="option_payments" ' + (draft('option_payments', false) ? 'checked' : '') + '>결제 추가(상품 등록은 직접)</label></fieldset>' + playField({ draft, play });
+}
+export const diagnoseFields = ({ draft, play }) => '<p class="hint">정체성 확인 뒤 근거 있는 개선 후보 3~5개를 찾습니다. 아무것도 바꾸지 않으며, 원하는 후보를 골라 개선 흐름을 시작합니다.</p>' + playField({ draft, play });
+
+/** Unfinished runs to resume; picking one never creates a run. */
+export function resumeList(runs) {
+  const open = (runs ?? []).filter((run) => !['completed', 'cancelled'].includes(run.status));
+  if (!open.length) return '<p class="hint">이어갈 흐름이 없습니다.</p>';
+  return '<ul class="resume-list">' + open.map((run) => '<li><button type="button" class="button small" data-action="resume-existing" data-run="' + e(run.id) + '">' +
+    e(String(run.goal ?? '').split('\n')[0].slice(0, 80)) + ' · ' + e(run.status) + '</button></li>').join('') + '</ul>';
 }
 
 /** runs.create input from the form's values; throws a person-readable Error when incomplete. */
 export function newRunPayload(values) {
-  const template = values.flowType === 'improve' ? 'improve' : 'new-app';
-  const assignments = Object.fromEntries(TEMPLATE_STAGES[template].map((id) => [id, { agent: values.agent, reviewer: values.reviewer }]));
-  const data = { template, goal: values.goal, projectId: values.projectId, assignments,
+  const template = ['improve', 'diagnose'].includes(values.flowType) ? values.flowType : 'new-app';
+  const stages = TEMPLATE_STAGES[template === 'new-app' ? 'new-app' : 'improve'];
+  const assignments = Object.fromEntries(stages.map((id) => [id, { agent: values.agent, reviewer: values.reviewer }]));
+  const data = { template, projectId: values.projectId, assignments,
     maxConcurrency: Number(values.maxConcurrency), maxAttempts: Number(values.maxAttempts), maxRepairLoops: Number(values.maxRepairLoops) };
+  if (template !== 'diagnose' || values.goal?.trim()) data.goal = values.goal;
   if (values.baseBranch?.trim()) data.baseBranch = values.baseBranch.trim();
+  if (values.parentRunId) data.parentRunId = values.parentRunId;
   if (template === 'improve') {
-    data.areas = AREAS.map(([id]) => id).filter((id) => values['area_' + id]);
-    if (!data.areas.length) throw new Error('개선 영역을 하나 이상 고르세요.');
-    if (values.playApp) {
-      const [accountId, packageName] = String(values.playApp).split('|');
-      data.playLink = { accountId, packageName };
-    }
+    if (!KIND_NAMES[values.kind]) throw new Error('개선 종류를 고르세요.');
+    data.kind = values.kind;
+    data.options = { design: values.kind === 'feature' && Boolean(values.option_design), payments: values.kind === 'feature' && Boolean(values.option_payments) };
+  }
+  if (template !== 'new-app' && values.playApp) {
+    const [accountId, packageName] = String(values.playApp).split('|');
+    data.playLink = { accountId, packageName };
   }
   return data;
+}
+
+/** A passed diagnosis's candidates, each startable as its own improvement run. */
+export function candidateList(item) {
+  const node = item.nodes.find((entry) => entry.id === 'diagnose');
+  const candidates = node?.status === 'passed' ? node.report?.candidates ?? [] : [];
+  if (!candidates.length) return '';
+  return '<section class="card candidates"><h3>개선 후보 ' + candidates.length + '개</h3><ol>' + candidates.map((c, index) =>
+    '<li><strong>' + e(c.title) + '</strong> <span class="badge">' + e(KIND_NAMES[c.kind] ?? c.kind) + '</span>' +
+    '<dl><dt>문제</dt><dd>' + e(c.problem) + '</dd><dt>근거</dt><dd>' + e(c.evidence) + '</dd><dt>사용자 영향</dt><dd>' + e(c.impact) + '</dd><dt>변경 범위</dt><dd>' + e(c.scope) + '</dd><dt>검증 방법</dt><dd>' + e(c.verify) + '</dd></dl>' +
+    '<button type="button" class="button small primary" data-action="pick-candidate" data-run="' + e(item.id) + '" data-index="' + index + '">이 개선 시작</button></li>').join('') + '</ol></section>';
 }
 
 const TYPE_LABELS = { inapp: '일회성', subs: '구독' };

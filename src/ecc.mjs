@@ -170,7 +170,7 @@ export async function detectStack({ workspacePath, goal = '', io = fileIo } = {}
 const STAGE_NAMES = {
   research: '조사', brief: '기획', architecture: '구조 설계', design: '화면 설계', assets: '에셋', build: '구현',
   test: '테스트', policy: '정책 점검', listing: '스토어 자료', internal: '내부 테스트', release: '출시',
-  audit: '현황 진단', plan: '개선 기획', monetization: '결제 연동', catalog: '상품 등록 확인',
+  identity: '앱 정체성 확인', diagnose: '진단', reproduce: '증상 재현', measure: '성능 측정', plan: '개선 기획', monetization: '결제 연동', catalog: '상품 등록 확인',
 };
 const BUILD_WORDS = /build|compil|gradle|xcodebuild|cargo|tsc\b|analy[sz]|빌드|컴파일/i;
 const TEST_WORDS = /test|spec\b|e2e|테스트/i;
@@ -207,7 +207,8 @@ function stageRules(situation, profiles) {
       design: [['agents', 'a11y-architect', '화면 접근성 검토'], ['skills', 'accessibility', 'WCAG 기준']],
       policy: [['agents', 'security-reviewer', '권한·개인정보 판단 검토'], ['skills', 'security-review', '보안 점검 기준']],
       listing: [['agents', 'seo-specialist', '스토어 문구·검색 노출 검토'], ['skills', 'seo', '검색 노출 기준']],
-      audit: [['agents', 'code-reviewer', '진단의 빠진 위험 검토'], ['agents', 'silent-failure-hunter', '놓친 숨은 실패 점검']],
+      identity: [['agents', 'code-reviewer', '정체성 확인의 빠진 사실 검토'], ['agents', 'silent-failure-hunter', '놓친 숨은 실패 점검']],
+      diagnose: [['agents', 'planner', '후보의 근거와 범위 검토'], ['agents', 'code-reviewer', '근거가 코드와 맞는지 검토']],
       plan: [['agents', 'planner', '개선 범위와 회귀 보호 검토'], ['skills', 'product-lens', '제품 관점 점검']],
       monetization: [['agents', 'security-reviewer', '구매 검증·권한 저장 보안 검토'], ['agents', main.reviewer, main.label + ' 결제 코드 검토'],
         ['agents', 'silent-failure-hunter', '실패·취소·보류 구매 처리 누락 점검'], ['skills', 'security-review', '결제 보안 기준'], ['skills', 'verification-loop', '검증 근거 확인']],
@@ -234,7 +235,11 @@ function stageRules(situation, profiles) {
     policy: [['agents', 'security-reviewer', '권한·개인정보·보안 점검'], ['skills', 'security-review', '보안 점검 기준']],
     listing: [['agents', 'seo-specialist', '스토어 검색 노출'], ['agents', 'marketing-agent', '스토어 문구'],
       ['skills', 'seo', '검색 노출 기준'], ['skills', 'marketing-campaign', '출시 문구']],
-    audit: [['agents', 'code-reviewer', '기존 코드 진단'], ['agents', 'silent-failure-hunter', '숨은 실패·누락된 오류 처리 진단'],
+    diagnose: [['agents', 'code-reviewer', '개선 후보 찾기'], ['agents', 'silent-failure-hunter', '숨은 실패 찾기'], ['agents', 'performance-optimizer', '성능 후보 찾기'],
+      ['agents', main.reviewer, main.label + ' 코드 진단'], ['skills', 'product-lens', '사용자 영향 판단']],
+    reproduce: [['agents', 'e2e-runner', '증상 재현'], ['agents', main.reviewer, main.label + ' 원인 추적'], ['agents', 'tdd-guide', '실패하는 테스트로 고정'], ...skillsFor(testing, label + ' 테스트')],
+    measure: [['agents', 'performance-optimizer', '기준 성능 측정'], ['agents', main.reviewer, main.label + ' 병목 분석'], ['skills', 'benchmark-methodology', '측정 방법']],
+    identity: [['agents', 'code-reviewer', '기존 코드 진단'], ['agents', 'silent-failure-hunter', '숨은 실패·누락된 오류 처리 진단'],
       ...profiles.map((profile) => ['agents', profile.reviewer, profile.label + ' 코드 진단']), ['agents', main.resolver, main.label + ' 빌드 재현'],
       ...skillsFor(patterns, label + ' 기준'), ['skills', 'codebase-onboarding', '기존 코드베이스 파악']],
     plan: [['agents', 'planner', '개선 범위와 구현 순서'], ['skills', 'product-lens', '제품 관점 점검'], ['skills', 'blueprint', '변경 요구사항 구조화']],
