@@ -383,3 +383,58 @@ test('review follow-ups are kept as a short list of text; any other shape is a f
   assert.throws(() => applyReport(bad, 'o', result(bad, 'o', 'passed', { evidence: [artifact], followUps: 'one string' }), { now: NOW }), thrown('invalid_report'));
   assert.throws(() => applyReport(bad, 'o', result(bad, 'o', 'passed', { evidence: [artifact], followUps: Array(13).fill('x') }), { now: NOW }), thrown('invalid_report'));
 });
+
+// Flow templates: the new-app graph and the improvement graph for an existing, shipped app.
+import { templateGraph, IMPROVE_GRAPH, IMPROVEMENT_AREAS } from '../src/engine.mjs';
+const ids = (nodes) => nodes.map(node => node.id);
+const depsOf = (nodes, id) => nodes.find(node => node.id === id)?.deps;
+
+test('templates are a validated choice: new-app is the default graph, unknown names and areas are refused', () => {
+  assert.deepEqual(templateGraph('new-app'), DEFAULT_GRAPH);
+  assert.deepEqual(templateGraph(), DEFAULT_GRAPH);
+  assert.throws(() => templateGraph('rewrite'), thrown('invalid_input'));
+  assert.throws(() => templateGraph('improve', { areas: [] }), thrown('invalid_input'));
+  assert.throws(() => templateGraph('improve', { areas: ['design', 'design'] }), thrown('invalid_input'));
+  assert.throws(() => templateGraph('improve', { areas: ['crypto'] }), thrown('invalid_input'));
+  assert.deepEqual([...IMPROVEMENT_AREAS], ['design', 'features', 'payments']);
+});
+
+test('the improvement graph keeps design and payment stages only for the areas chosen', () => {
+  const features = templateGraph('improve', { areas: ['features'] });
+  assert.deepEqual(ids(features), ['audit', 'plan', 'build', 'test', 'policy', 'listing', 'internal', 'release']);
+  assert.deepEqual(depsOf(features, 'build'), ['plan']);
+  assert.deepEqual(depsOf(features, 'test'), ['build']);
+  assert.deepEqual(depsOf(features, 'internal'), ['listing']);
+  const all = templateGraph('improve', { areas: ['payments', 'design', 'features'] });
+  assert.deepEqual(ids(all), ids(IMPROVE_GRAPH));
+  assert.deepEqual(depsOf(all, 'build'), ['plan', 'assets']);
+  assert.deepEqual(depsOf(all, 'test'), ['build', 'monetization']);
+  assert.deepEqual(depsOf(all, 'internal'), ['listing', 'catalog']);
+  const payments = templateGraph('improve', { areas: ['payments'] });
+  assert.deepEqual(ids(payments), ['audit', 'plan', 'build', 'monetization', 'test', 'policy', 'listing', 'catalog', 'internal', 'release']);
+  for (const nodes of [features, all, payments]) {
+    const run = make({ nodes });
+    assert.equal(run.nodes.length, nodes.length, 'every gated graph is a valid run graph');
+  }
+});
+
+test('the product catalog stage is an approval only a person can give', () => {
+  const run = make({ nodes: templateGraph('improve', { areas: ['payments'] }) });
+  const catalog = run.nodes.find(node => node.id === 'catalog');
+  assert.equal(catalog.requiresApproval, true);
+  assert.equal(catalog.humanApproval, true);
+  assert.equal(run.nodes.find(node => node.id === 'internal').humanApproval, undefined);
+});
+
+test('a monetization report may carry the proposed Play products; their shape is checked', () => {
+  let run = make({ nodes: graph(['monetization']) });
+  run = claimNode(run, 'monetization', { nonce: nonce(), now: NOW });
+  const ok = applyReport(run, 'monetization', result(run, 'monetization', 'passed', { evidence: [{ kind: 'artifact', path: 'a.md' }],
+    products: [{ productId: 'premium_unlock', type: 'inapp', price: '₩3,900', title: '프리미엄' }, { productId: 'pro.monthly', type: 'subs', price: '₩2,900/월', basePlanId: 'monthly' }] }), { now: NOW });
+  assert.deepEqual(ok.nodes[0].report.products.map(item => item.productId), ['premium_unlock', 'pro.monthly']);
+  for (const products of ['premium', [{ productId: 'Premium', type: 'inapp', price: '1' }], [{ productId: 'a', type: 'consumable', price: '1' }],
+    [{ productId: 'a', type: 'inapp' }], [{ productId: 'a', type: 'inapp', price: '1' }, { productId: 'a', type: 'inapp', price: '2' }]]) {
+    assert.throws(() => applyReport(run, 'monetization', result(run, 'monetization', 'passed', { evidence: [{ kind: 'artifact', path: 'a.md' }], products }), { now: NOW }),
+      thrown('invalid_report'), JSON.stringify(products));
+  }
+});

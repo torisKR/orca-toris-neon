@@ -19,6 +19,41 @@ export const DEFAULT_GRAPH = [
   { id: 'release', title: '출시 제출', deps: ['internal'], write: true, requiresApproval: true },
 ];
 
+/** What an improvement of an existing app can cover; each brings its own stages into the graph. */
+export const IMPROVEMENT_AREAS = Object.freeze(['design', 'features', 'payments']);
+/**
+ * Improving an app that already ships. `when` names the area that brings a stage in; deps on a
+ * stage that is left out are dropped. `catalog` is the Play Console product setup: an approval only
+ * a person can give (humanApproval), never the plugin's autonomy.
+ */
+export const IMPROVE_GRAPH = [
+  { id: 'audit', title: '현황 진단', deps: [], write: false },
+  { id: 'plan', title: '개선 기획', deps: ['audit'], write: false },
+  { id: 'design', title: '디자인 개선', deps: ['plan'], write: false, when: 'design' },
+  { id: 'assets', title: '디자인 에셋', deps: ['design'], write: true, when: 'design' },
+  { id: 'build', title: '기능·디자인 구현', deps: ['plan', 'assets'], write: true },
+  { id: 'monetization', title: '결제 연동', deps: ['build'], write: true, when: 'payments' },
+  { id: 'test', title: '회귀·신규 기능 테스트', deps: ['build', 'monetization'], write: false },
+  { id: 'policy', title: 'Play 정책·결제 정책 점검', deps: ['test'], write: false },
+  { id: 'listing', title: '스토어 자료 업데이트', deps: ['test', 'policy'], write: false },
+  { id: 'catalog', title: 'Play 상품 등록(사용자)', deps: ['listing'], write: false, when: 'payments', requiresApproval: true, humanApproval: true },
+  { id: 'internal', title: '내부 테스트 제출', deps: ['listing', 'catalog'], write: true, requiresApproval: true },
+  { id: 'release', title: '업데이트 출시', deps: ['internal'], write: true, requiresApproval: true },
+];
+export const TEMPLATES = Object.freeze(['new-app', 'improve']);
+
+/** The graph of a named flow template; the only way the panel chooses stages. */
+export function templateGraph(template = 'new-app', { areas = [] } = {}) {
+  if (template === 'new-app') return copy(DEFAULT_GRAPH);
+  if (template !== 'improve') fail('invalid_input', '알 수 없는 흐름 종류입니다: ' + String(template).slice(0, 40));
+  if (!Array.isArray(areas) || !areas.length || new Set(areas).size !== areas.length || areas.some(area => !IMPROVEMENT_AREAS.includes(area))) {
+    fail('invalid_input', '개선 영역을 하나 이상, 중복 없이 고르세요: ' + IMPROVEMENT_AREAS.join(', '));
+  }
+  const kept = IMPROVE_GRAPH.filter(spec => !spec.when || areas.includes(spec.when));
+  const ids = new Set(kept.map(spec => spec.id));
+  return kept.map(({ when, ...spec }) => ({ ...copy(spec), deps: spec.deps.filter(dep => ids.has(dep)) }));
+}
+
 // A pinned ECC agent ends up inside an agent prompt: a namespaced slug only.
 export const ECC_AGENT_PATTERN = /^ecc:[a-z][a-z0-9-]{1,63}$/;
 
@@ -209,6 +244,7 @@ export function createRun(options = {}) {
         ...eccField(normalizeEccAgent([assignment.eccAgent, spec.eccAgent].find(value => value !== undefined))),
         write: Boolean(spec.write),
         requiresApproval: Boolean(spec.requiresApproval) || spec.id === 'internal' || spec.id === 'release',
+        ...(spec.humanApproval ? { humanApproval: true } : {}),
         status: 'pending',
         attempts: 0,
         reviewAttempts: 0,
@@ -327,6 +363,22 @@ function classifyFailedCommands(evidence) {
 }
 const exitCodeOf = (value) => typeof value === 'string' && /^-?\d{1,5}$/.test(value.trim()) ? Number(value) : value;
 const MAX_FOLLOW_UPS = 12;
+// Play product ids: lowercase letters, digits, '_' and '.', starting with a letter or digit.
+const PRODUCT_ID = /^[a-z0-9][a-z0-9._]{0,138}$/;
+const reportText = (value, label, max) => { try { return requiredText(value, label, max); } catch (error) { return fail('invalid_report', error.message); } };
+function productsOf(report) {
+  if (!Array.isArray(report.products) || report.products.length > 20) fail('invalid_report', 'products는 최대 20개의 상품 배열이어야 합니다.');
+  const products = report.products.map(item => {
+    if (!item || typeof item !== 'object') fail('invalid_report', '상품은 객체여야 합니다.');
+    const productId = reportText(item.productId, '상품 ID', 139);
+    if (!PRODUCT_ID.test(productId)) fail('invalid_report', '상품 ID ' + productId + '는 소문자·숫자·_·.만 쓸 수 있습니다.');
+    if (!['inapp', 'subs'].includes(item.type)) fail('invalid_report', '상품 type은 inapp(일회성) 또는 subs(구독)여야 합니다.');
+    return { productId, type: item.type, price: reportText(item.price, '상품 가격', 60),
+      ...(item.title ? { title: reportText(item.title, '상품 이름', 120) } : {}), ...(item.basePlanId ? { basePlanId: reportText(item.basePlanId, '기본 요금제 ID', 63) } : {}) };
+  });
+  if (new Set(products.map(item => item.productId)).size !== products.length) fail('invalid_report', '상품 ID가 중복됩니다.');
+  return products;
+}
 function followUpsOf(report) {
   if (report.followUps === undefined) return undefined;
   if (!Array.isArray(report.followUps) || report.followUps.length > MAX_FOLLOW_UPS) fail('invalid_report', 'followUps는 최대 ' + MAX_FOLLOW_UPS + '개의 문자열 배열이어야 합니다.');
@@ -368,6 +420,7 @@ function normalizeReport(run, nodeId, report) {
     phase: report.phase, outcome: report.outcome, summary, evidence,
     ...(report.next ? { next: requiredText(report.next, '다음 행동', 4000) } : {}),
     ...(report.followUps === undefined ? {} : { followUps: followUpsOf(report) }),
+    ...(report.products === undefined ? {} : { products: productsOf(report) }),
   };
 }
 

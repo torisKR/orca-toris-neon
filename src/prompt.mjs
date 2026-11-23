@@ -2,6 +2,7 @@ import path from 'node:path';
 import { AUTONOMY_BRIEF } from './autonomy.mjs';
 import { visualInstruction } from './visual.mjs';
 import { budgetInstruction, reviewInstruction, followUpsInstruction } from './proportion.mjs';
+import { IMPROVE_BRIEFS, improvementContext, billingSkillInstruction } from './improve.mjs';
 
 /** The assignment typed into a stage's agent: goal, scope, upstream results, report contract. */
 export const STAGE_BRIEFS = {
@@ -40,6 +41,7 @@ export function buildNodePrompt(run, node, job) {
     'Toris Neon 앱 개발 워크플로의 ' + (review ? '독립 검토자' : '담당 에이전트') + '입니다.',
     run.autonomous ? AUTONOMY_BRIEF : '',
     '목표: ' + run.goal,
+    improvementContext(run),
     '실행: ' + run.id + ' / 단계: ' + node.id + ' — ' + node.title,
     '프로젝트 작업 디렉터리: ' + run.workspacePath,
     '역할: ' + (node.role || node.id) + '; 담당 도구: ' + job.agent,
@@ -49,7 +51,7 @@ export function buildNodePrompt(run, node, job) {
       : (node.write
         ? '이 단계에 필요한 소스 변경만 수행하세요. 다른 에이전트의 작업을 덮어쓰지 말고, 정의된 목표와 선행 결과를 따르세요.'
         : '읽기·분석·검증 단계입니다. 프로젝트 소스는 변경하지 마세요. 보고서와 검증 자료는 아래 전용 결과 디렉터리에 기록하세요.'),
-    '실행 범위/완료 조건: ' + (node.instructions || node.description || STAGE_BRIEFS[node.id] || node.title),
+    '실행 범위/완료 조건: ' + (node.instructions || node.description || (run.template === 'improve' ? IMPROVE_BRIEFS : STAGE_BRIEFS)[node.id] || node.title),
     budgetInstruction(node, job.phase),
     review ? reviewInstruction(node) : followUpsInstruction(run, node),
     '선행 단계 결과:\n' + JSON.stringify(dependencyEvidence, null, 2).slice(0, 20_000),
@@ -72,6 +74,7 @@ export function buildNodePrompt(run, node, job) {
     'JSON 보고서는 다른 임시 파일에 먼저 쓴 후 위 경로로 원자적으로 교체하세요. 보고서를 저장한 뒤 작업을 종료하세요.',
     '다음 단계는 Toris Neon이 검증 후 배정합니다. 직접 다음 에이전트를 실행하지 마세요.',
     visualInstruction(job),
+    billingSkillInstruction(job),
     eccInstruction(job)
   ].filter(Boolean).join('\n\n');
 }

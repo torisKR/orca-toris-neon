@@ -76,3 +76,18 @@ test('a completed run is announced once, naming the submission that waits for th
   assert.match(complete.body, /제출/);
   assert.deepEqual(planAutonomy({ ...done, autonomy: { notified: ['completed'] } }), []);
 });
+
+test('an autonomous update run stops at the product catalog with one notice instead of approving it', () => {
+  const catalog = node('catalog', { status: 'awaiting-approval', requiresApproval: true, humanApproval: true, deps: ['listing'] });
+  const monetization = node('monetization', { status: 'passed', report: { outcome: 'passed', products: [{ productId: 'premium_unlock', type: 'inapp', price: '₩3,900' }] } });
+  const r = run([monetization, node('listing', { status: 'passed' }), catalog, node('internal', { deps: ['listing', 'catalog'], requiresApproval: true })],
+    { status: 'ready', template: 'improve' });
+  const actions = planAutonomy(r);
+  assert.deepEqual(types(actions), ['stop:catalog']);
+  assert.equal(actions[0].notify, true);
+  assert.match(actions[0].reason, /premium_unlock/);
+  assert.match(actions[0].reason, /Play Console/);
+  // A preparation gate next to it is still approved by autonomy; the human gate never is.
+  const prep = node('internal', { status: 'awaiting-approval', requiresApproval: true });
+  assert.deepEqual(types(planAutonomy(run([prep], { status: 'ready' }))), ['approve:internal']);
+});

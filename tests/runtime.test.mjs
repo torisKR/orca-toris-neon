@@ -146,6 +146,7 @@ function harness(options = {}) {
     receiptWrittenAt: options.receiptWrittenAt ?? (async () => null),
     ...(options.visualAdvisor ? { visualAdvisor: options.visualAdvisor } : {}),
     ...(options.launchOverrides ? { launchOverrides: options.launchOverrides } : {}),
+    ...(options.readPlayApp ? { readPlayApp: options.readPlayApp } : {}),
     ensureDirectory: async () => {},
     writeBrief: async (filename, text) => { briefs.set(filename, text); },
     readReceipt: async (filename) => {
@@ -2193,4 +2194,58 @@ test('a send that keeps being refused before writing is handled as undelivered: 
   assert.ok(h.calls.some((call) => call.name === 'terminal.close' && call.input.terminalId === jobs[0].terminalId));
   assert.equal(launchCalls(h).length, 2);
   assert.equal(jobs[1].promptRecovery.state, 'sent');
+});
+
+// Improving an existing, shipped app (src/improve.mjs, src/catalog.mjs).
+const improveInput = (extra = {}) => ({ template: 'improve', areas: ['features', 'payments'], goal: '알림 기능과 프리미엄 결제를 추가합니다.', projectId: 'p1', autonomous: false, ...extra });
+const linkedApp = { accountId: 'acc-1', accountName: 'Toris', packageName: 'com.example.water', status: 'published', tracks: [{ track: 'production', versionCodes: [42], state: 'published' }], observedAt: '2026-11-22T00:00:00.000Z' };
+
+test('an improvement flow is created from the gated template and records the areas and the linked Play app', async () => {
+  const h = harness({ readPlayApp: async ({ accountId, packageName }) => {
+    if (accountId !== 'acc-1' || packageName !== 'com.example.water') throw Object.assign(new Error('이 계정에 등록된 패키지가 아닙니다.'), { code: 'invalid_input' });
+    return linkedApp;
+  } });
+  await h.runtime.initialize();
+  const run = await h.runtime.handlers['runs.create'](improveInput({ playLink: { accountId: 'acc-1', packageName: 'com.example.water' } }));
+  assert.equal(run.template, 'improve');
+  assert.deepEqual(run.nodes.map((node) => node.id), ['audit', 'plan', 'build', 'monetization', 'test', 'policy', 'listing', 'catalog', 'internal', 'release']);
+  assert.deepEqual(run.improvement.areas, ['features', 'payments']);
+  assert.equal(run.improvement.playLink.packageName, 'com.example.water');
+  assert.equal(run.nodes.find((node) => node.id === 'catalog').humanApproval, true);
+  await assert.rejects(h.runtime.handlers['runs.create'](improveInput({ playLink: { accountId: 'acc-2', packageName: 'com.example.water' } })), /등록된 패키지/);
+  await assert.rejects(h.runtime.handlers['runs.create'](improveInput({ areas: [] })), /개선 영역/);
+  await assert.rejects(h.runtime.handlers['runs.create']({ ...improveInput(), template: 'rewrite' }), /흐름 종류/);
+  assert.equal(h.runtime.getState().runs.length, 1, 'refused inputs create nothing');
+});
+
+test('an improvement flow refuses a repository without commits', async () => {
+  const h = harness({ inspectRepository: async () => ({ hasCommit: false, hasBase: false }) });
+  await h.runtime.initialize();
+  await assert.rejects(h.runtime.handlers['runs.create'](improveInput()), /커밋/);
+  assert.equal(h.runtime.getState().runs.length, 0);
+});
+
+test('the product catalog is approved only by a person confirming every proposed product', async () => {
+  const h = harness();
+  await h.runtime.initialize();
+  const created = await h.runtime.handlers['runs.create'](improveInput({ autonomous: true }));
+  const saved = savedState(h.store);
+  const stored = saved.runs[0];
+  for (const node of stored.nodes) if (!['catalog', 'internal', 'release'].includes(node.id)) Object.assign(node, { status: 'passed', completedAt: '2026-11-23T00:00:00.000Z' });
+  stored.nodes.find((node) => node.id === 'monetization').report = { outcome: 'passed', summary: '결제', products: [{ productId: 'premium_unlock', type: 'inapp', price: '₩3,900' }] };
+  stored.nodes.find((node) => node.id === 'catalog').status = 'awaiting-approval';
+  stored.autonomy = { stopped: { at: '2026-11-23T00:00:00.000Z', reason: 'Play Console에서 상품을 만드세요.' }, notified: ['human-approval:catalog'] };
+  writeSaved(h.store, saved);
+  h.runtime.dispose();
+  const restarted = restartRuntime(h);
+  await restarted.initialize();
+  const base = { runId: created.id, nodeId: 'catalog', note: 'Play Console에 premium_unlock을 만들고 활성화했습니다.' };
+  await assert.rejects(restarted.handlers['runs.approve'](base), /상품/);
+  await assert.rejects(restarted.handlers['runs.approve']({ ...base, productCatalog: { confirmed: [] } }), /premium_unlock/);
+  await assert.rejects(restarted.handlers['runs.approve']({ ...base, nodeId: 'internal', productCatalog: { confirmed: ['premium_unlock'] } }), /상품 등록/);
+  const approved = await restarted.handlers['runs.approve']({ ...base, productCatalog: { confirmed: ['premium_unlock'] } });
+  const catalog = approved.nodes.find((node) => node.id === 'catalog');
+  assert.deepEqual(catalog.approval.productCatalog.products.map((item) => item.productId), ['premium_unlock']);
+  assert.equal(approved.autonomy.stopped, undefined, 'the person acted; autonomy may continue');
+  restarted.dispose();
 });

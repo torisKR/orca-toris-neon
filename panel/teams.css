@@ -54,6 +54,30 @@
   --team-motif:
     repeating-linear-gradient(135deg, transparent 0 12px, currentColor 12px 14px, transparent 14px 18px);
 }
+.team-money {
+  --team-glyph: "₩";
+  --team-field: light-dark(#f7e2ea, #3a1e2b);
+  --team-paper: light-dark(#fff7fa, #2a1520);
+  --team-accent: light-dark(#7d1f4a, #ffbfd9);
+  --team-header: light-dark(#f2b9d0, #6f2849);
+  --team-header-ink: light-dark(#5b1234, #fff0f6);
+  --team-shape: 16px 16px 4px 16px;
+  --team-mark-shape: 50%;
+  --team-head-rule: 3px solid;
+  --team-motif:
+    radial-gradient(circle at 78% 36%, transparent 0 9px, currentColor 9px 10px, transparent 10px) 0 0 / 34px 30px repeat,
+    radial-gradient(circle at 78% 36%, currentColor 0 2px, transparent 3px) 0 0 / 34px 30px repeat;
+}
+/* Flow type choice and improvement areas in the new-flow form (panel/newflow.mjs). */
+.flow-type { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin: 4px 0 14px; }
+.flow-type-option { display: grid; gap: 2px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, #8884); background: transparent; color: inherit; cursor: pointer; }
+.flow-type-option span { font-size: 12px; opacity: .75; }
+.flow-type-option[aria-pressed="true"] { border-color: var(--accent, #6b8cff); box-shadow: inset 0 0 0 1px var(--accent, #6b8cff); }
+.flow-type-option:focus-visible { outline: 2px solid var(--accent, #6b8cff); outline-offset: 2px; }
+.improve-areas { border: 0; padding: 0; margin: 10px 0; display: grid; gap: 6px; }
+.area-option span { display: grid; }
+.area-option small { opacity: .7; }
+.product-list { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 6px; }
 .team-qa {
   --team-glyph: "◎";
   --team-field: light-dark(#dcf1e8, #192f2a);

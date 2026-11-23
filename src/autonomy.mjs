@@ -4,6 +4,7 @@
  * runtime's own operations (retry, approve, notify) so the runtime's invariants stay in force.
  */
 import { approveNode } from './engine.mjs';
+import { catalogNotice } from './catalog.mjs';
 
 /** Bounds so a run can never loop or spend without limit. Shown in the run card. */
 export const AUTONOMY_LIMITS = {
@@ -63,10 +64,15 @@ export function planAutonomy(run) {
   if (run.status === 'completed') {
     if ((state.notified ?? []).includes('completed')) return [];
     const unsubmitted = run.nodes.some((node) => ['internal', 'release'].includes(node.id) && !node.approval?.submission);
-    return [{ type: 'complete', body: '앱을 만들고 검증했습니다.' + (unsubmitted ? ' Play 내부 테스트·출시 제출은 사용자가 계정과 대상을 지정해 승인해야 합니다.' : '') }];
+    return [{ type: 'complete', body: (run.template === 'improve' ? '앱 업데이트를 만들고 검증했습니다.' : '앱을 만들고 검증했습니다.') + (unsubmitted ? ' Play 내부 테스트·출시 제출은 사용자가 계정과 대상을 지정해 승인해야 합니다.' : '') }];
   }
   const actions = [];
   for (const node of run.nodes) {
+    if (node.status === 'awaiting-approval' && !node.approval && node.humanApproval) {
+      // Play Console products: only the person can act. One notice says exactly what to do.
+      actions.push({ type: 'stop', nodeId: node.id, notify: true, key: 'human-approval:' + node.id, reason: catalogNotice(run) });
+      continue;
+    }
     if (node.status === 'awaiting-approval' && !node.approval) {
       const evidence = run.nodes.filter((item) => node.deps.includes(item.id)).map((item) => item.id + (item.review?.summary ? ' (' + item.review.summary.slice(0, 80) + ')' : ''));
       actions.push({ type: 'approve', nodeId: node.id,

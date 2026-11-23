@@ -559,3 +559,18 @@ test("simultaneous rate limits retain the longest Retry-After delay", async () =
   h.tick(120000); limited = false;
   assert.equal((await h.service.check({ accountId: account.id, force: true })).error, null);
 });
+
+test("an app snapshot for an update run carries the linked package's store status and versions, nothing secret", async () => {
+  const h = harness();
+  const account = await h.account({ packages: ["com.example.app"] });
+  await h.service.check({ accountId: account.id });
+  const snapshot = await h.service.appSnapshot({ accountId: account.id, packageName: "com.example.app" });
+  assert.equal(snapshot.accountId, account.id);
+  assert.equal(snapshot.accountName, "Toris");
+  assert.equal(snapshot.packageName, "com.example.app");
+  assert.equal(snapshot.status, "published");
+  assert.ok(snapshot.tracks.some(track => track.track === "production" && track.versionCodes.includes(7)));
+  assert.equal(JSON.stringify(snapshot).includes("PRIVATE KEY"), false);
+  await assert.rejects(h.service.appSnapshot({ accountId: account.id, packageName: "com.other.app" }), /등록된 패키지/);
+  await assert.rejects(h.service.appSnapshot({ accountId: "missing", packageName: "com.example.app" }), /계정/);
+});

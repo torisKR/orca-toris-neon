@@ -351,6 +351,17 @@ export function createPlayService({ storage, secrets, fetch: fetcher = globalThi
       const accounts = await loadAccounts();
       return { version: 1, protection: await protection(), accounts: await Promise.all(accounts.map(async account => accountView(account, await loadCache(account.id)))) };
     },
+    /** What an update run records about its linked app: store status and released versions from the cache. */
+    async appSnapshot({ accountId, packageName } = {}) {
+      const account = (await this.list()).accounts.find(item => item.id === accountId);
+      if (!account) throw new PlayError("invalid_input", "Play 계정을 찾을 수 없습니다. Play Store 탭에서 계정을 확인해 주세요.");
+      if (!account.packages.includes(packageName)) throw new PlayError("invalid_input", "이 계정에 등록된 패키지가 아닙니다. Play Store 탭에서 패키지를 추가해 주세요.");
+      const app = account.apps.find(item => item.packageName === packageName);
+      const tracks = (app?.tracks ?? []).map(track => ({ track: track.track, state: track.releases?.[0]?.state ?? null,
+        versionCodes: [...new Set((track.releases ?? []).flatMap(release => release.versionCodes))].slice(0, 5) }));
+      const observedAt = (app?.tracks ?? []).map(track => track.observedAt).filter(Boolean).sort().at(-1) ?? null;
+      return { accountId: account.id, accountName: account.name, packageName, name: app?.name ?? null, status: app?.status ?? null, tracks, observedAt };
+    },
     async listSubmissionAccounts() {
       return (await loadAccounts()).filter(account => account.developerId && account.packages.length)
         .map(({ id, name, developerId }) => ({ id, name, developerId }));

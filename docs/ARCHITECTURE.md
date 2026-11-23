@@ -511,3 +511,44 @@ Orca의 `terminal.sendText`는 활성 작업 공간 확인, 터미널 목록 작
 - 그래도 거부되면 전달 기록을 지우고, '전달되지 않은 지시'와 같은 경로로 처리합니다. 터미널을 닫고 기존 한도 안에서 다시 배정합니다.
 
 시간 초과, 취소, 일반화된 오류, 표에 없는 오류는 쓰기 뒤에도 날 수 있으므로 `uncertain`으로 두고 자동으로 다시 보내지 않습니다.
+
+## 흐름 템플릿과 기존 앱 디벨롭 (`src/engine.mjs`, `src/improve.mjs`, `src/catalog.mjs`, `src/approval.mjs`)
+
+`runs.create`는 `template`으로 그래프를 고릅니다. `new-app`(기본, `DEFAULT_GRAPH`)과 `improve`(`IMPROVE_GRAPH`)가 있고, `templateGraph()`가 이름과 개선 영역을 검증합니다. 패널은 템플릿 이름만 보내고 단계 목록은 보내지 않습니다. `nodes`는 API 호환용으로만 남아 있습니다.
+
+`improve`는 이미 출시한 앱을 개선하는 흐름입니다. 영역(`design`·`features`·`payments`)에 따라 단계가 들어가고 빠집니다.
+
+| 단계 | 포함 조건 | 내용 |
+|---|---|---|
+| audit 현황 진단 | 항상 | 빌드·테스트 실행, 버전·패키지·서명·의존성 기준선, 깨뜨리면 안 되는 것 목록, 연결된 Play 앱의 상태와 배포 버전 |
+| plan 개선 기획 | 항상 | 영역별 범위·수용 조건·회귀 보호. 결제를 고르면 모델과 상품 제안(`products`) |
+| design / assets | 디자인 개선 | 현재 화면 스크린샷에서 출발. gpt-6.2-sol·high와 이미지·스프라이트·픽셀 스킬 규칙은 그대로 적용 |
+| build 기능·디자인 구현 | 항상 | 특성화 테스트를 먼저 쓴 뒤 계획 범위만 구현 |
+| monetization 결제 연동 | 결제 추가 | Play Billing(버전은 공식 문서로 확인), 확인·복원·보류 구매·권한 저장, 페이월. 테스트 상품으로 검증. 수익화팀 |
+| test / policy / listing | 항상 | 업데이트 기준(versionCode 증가, 패키지·서명 유지, 기존 데이터 읽기, 결제 정책·데이터 보안 양식) |
+| catalog Play 상품 등록(사용자) | 결제 추가 | 사람만 승인하는 단계(`humanApproval`) |
+| internal / release | 항상 | 업데이트 빌드와 릴리스 노트. 실제 제출은 이전과 같이 사람이 승인 |
+
+단계를 이렇게 나눈 이유는 다음과 같습니다.
+- 새 앱 흐름의 research·brief·architecture는 기존 앱에서 audit·plan으로 대체됩니다. 구조는 이미 있으므로 따로 설계하지 않고, 진단이 이를 기록합니다.
+- 결제는 구현과 검증 기준이 달라서(보안 검토, 테스트 상품) 별도 단계로 둡니다.
+- 상품 등록은 외부 작업이므로 사람의 단계로 분리합니다.
+
+모든 update 단계의 지시에는 `UPDATE_RULE`(동작하는 기능·사용자 데이터 보존, 계획 범위만 변경, 패키지·서명·판매한 구매 유지)과 개선 영역, 연결된 Play 정보가 들어갑니다. 플러그인은 Play 평점·리뷰를 수집하지 않으므로, 진단 지시에는 Play Console에서 확인할 항목으로 남기라고 적습니다.
+
+입력 검증(`prepareImprovement`)은 다음을 확인합니다.
+- 영역이 하나 이상인지.
+- 로컬 Git 프로젝트이고 커밋이 있는지.
+- 연결한 Play 패키지가 등록된 계정의 패키지인지(`play.appSnapshot`).
+
+상품 등록은 기존 승인 게이트를 확장해 처리합니다(`src/approval.mjs`). `runs.approve`의 범위는 `submission`(내부 테스트·출시의 실제 제출 대상)이거나 `productCatalog`(catalog 단계)입니다. catalog 단계는 `productCatalog: { confirmed: [productId…] }`와 10자 이상의 메모 없이는 승인할 수 없습니다. 결제 연동 보고서(없으면 기획 보고서)가 제안한 상품을 모두 확인해야 합니다.
+
+자율 진행은 이 단계를 승인하지 않습니다. 대신 한 번 알림을 보내고 멈춥니다. 알림에는 판매자 계정 확인, 상품 ID·유형·가격·기본 요금제, 광고를 골랐다면 AdMob 연결, 그리고 기다리는 단계가 적힙니다. 사람이 승인하면 멈춤 표시가 지워지고 내부 테스트 준비부터 이어갑니다. 플러그인은 Play Console이나 API로 상품을 만들거나 바꾸지 않고, 판매자 계정 활성화·AdMob 연결·업로드도 하지 않습니다.
+
+ECC 규칙은 다음과 같습니다(설치된 이름만).
+- audit: code-reviewer, silent-failure-hunter, 스택 검토자와 빌드 해결사.
+- plan: planner.
+- monetization: security-reviewer를 먼저 두고, 스택 검토자, 빌드 해결사, tdd-guide.
+- Flutter 앱이면 flutter-reviewer·dart-build-resolver가 들어갑니다.
+
+결제 스킬(play-billing-library-version-upgrade, paywalls, pricing)은 시작 시 설치 폴더에서 찾은 것만 지시에 넣습니다. 지금은 설치돼 있지 않으므로, 지시에는 공식 문서에서 버전을 확인하라고 적습니다.

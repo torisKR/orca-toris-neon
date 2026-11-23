@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import {
   createRun, nextActions, claimNode, recordLaunch, applyReport, approveNode,
   pauseRun, resumeRun, retryNode, blockNode, cancelRun, releaseClaim,
-  normalizeEccAgent
+  normalizeEccAgent, templateGraph
 } from './engine.mjs';
 import { AUTONOMY_LIMITS, DECIDE_PROMPT, createSupervisor } from './autonomy.mjs';
 import { launchSettings, normalizeModel, normalizeEffort, EFFORTS, VISUAL_STAGES, VISUAL_DEFAULT } from './visual.mjs';
@@ -15,6 +15,8 @@ import { createPersistence, archiveRun, retainArchives } from './store.mjs';
 import { createJobWatch, WATCH_INTERVAL_MS } from './watch.mjs';
 import { projectState } from './views.mjs';
 import { buildNodePrompt } from './prompt.mjs';
+import { prepareImprovement } from './improve.mjs';
+import { approvalScope } from './approval.mjs';
 import { stageBudget } from './proportion.mjs';
 import { createTerminalCleanup, cleanupRecorder, describeSweep, CLEANUP_INTERVAL_MS } from './cleanup.mjs';
 import { classifySendError, SEND_RETRY_DELAYS_MS } from './delivery.mjs';
@@ -231,7 +233,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   writeBrief = (file, text) => fs.writeFile(file, text, { mode: 0o600 }),
   inspectRepository = gitRepositoryState, eccAdvisor = null, visualAdvisor = null, launchOverrides = null,
   receiptWrittenAt = async (file) => (await fs.stat(file)).mtimeMs,
-  validateArtifact, resolvePlayAccount, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  validateArtifact, resolvePlayAccount, readPlayApp, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   watchIntervalMs = WATCH_INTERVAL_MS, cleanupIntervalMs = CLEANUP_INTERVAL_MS } = {}) {
   if (!orca?.host || !orca?.storage) throw new Error('Orca host and storage are required.');
   // Situational ECC agents and skills for this launch, kept on the job (prompt) and the stage
@@ -1086,12 +1088,17 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       if (state.runs.length >= MAX_RUNS) throw runtimeError('too_large', '최대 40개 실행을 보관합니다. 기존 실행을 완료한 뒤 보관 정리를 진행하세요.');
       const goal = requireString(input.goal, '앱 목표', 6000);
       const projectId = requireString(input.projectId, '프로젝트', 256);
+      // A named template (src/engine.mjs); an update of a shipped app is validated against the repository and Play.
+      const update = input.template === 'improve' ? await prepareImprovement(input, { call, inspectRepository, readPlayApp }) : null;
+      let graph;
+      try { graph = input.nodes ?? templateGraph(input.template ?? 'new-app', { areas: update?.areas }); } catch (error) { throw runtimeError('invalid_params', error.message); }
       const run = createRun({
         id: id(), goal, projectId, assignments: input.assignments || {},
         maxConcurrency: input.maxConcurrency ?? 2, maxAttempts: input.maxAttempts ?? 3,
         maxRepairLoops: input.maxRepairLoops ?? 3,
-        ...(input.nodes ? { nodes: input.nodes } : {}), now: now()
+        nodes: graph, now: now()
       });
+      if (update) Object.assign(run, { template: 'improve', improvement: update.improvement });
       run.isolate = input.isolate !== false;
       run.autonomous = input.autonomous !== false; // new runs go on without a person unless asked
       if (input.baseBranch) {
@@ -1181,25 +1188,10 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     'runs.approve': (input) => queue(async () => {
       const note = requireString(input.note || '사용자가 패널에서 단계 결과를 확인하고 승인했습니다.', '승인 근거', 2000);
       const original = getRun(input.runId);
-      let submission;
-      if (input.submission !== undefined) {
-        if (!['internal', 'release'].includes(input.nodeId)) throw runtimeError('invalid_params', '내부 테스트/출시 단계에서만 실제 제출 대상을 승인할 수 있습니다.');
-        const packageName = requireString(input.submission?.packageName, '제출 패키지', 200);
-        const track = requireString(input.submission?.track, '제출 트랙', 80);
-        const versionCode = String(input.submission?.versionCode ?? '');
-        if (!/^[A-Za-z]\w*(?:\.[A-Za-z]\w*)+$/.test(packageName) || !/^[1-9]\d{0,9}$/.test(versionCode) || Number(versionCode) > 2100000000) {
-          throw runtimeError('invalid_params', '정확한 Android 패키지명과 양의 versionCode가 필요합니다.');
-        }
-        if (track !== (input.nodeId === 'internal' ? 'internal' : 'production')) throw runtimeError('invalid_params', '이 단계의 승인 트랙은 ' + (input.nodeId === 'internal' ? 'internal' : 'production') + '입니다.');
-        if (!input.note || input.note.trim().length < 10) throw runtimeError('invalid_params', '실제 제출은 대상과 검증 결과를 확인한 명시적 승인 메모가 필요합니다.');
-        if (!resolvePlayAccount) throw runtimeError('unavailable', 'Play 개발자 계정 설정을 불러올 수 없습니다.');
-        const { accountId, developerId } = input.submission;
-        const account = await resolvePlayAccount({ accountId, developerId, packageName, track });
-        submission = { ...account, packageName, track, versionCode };
-      }
-      const approvedFingerprint = submission ? await fingerprint(original.workspacePath) : null;
+      const scope = await approvalScope(original, input, { resolvePlayAccount, fingerprint }); // submission or product catalog (src/approval.mjs)
       const run = approveNode(original, input.nodeId, { note, now: now() });
-      if (submission) findNode(run, input.nodeId).approval = { ...findNode(run, input.nodeId).approval, submission, sourceFingerprint: approvedFingerprint };
+      if (Object.keys(scope).length) findNode(run, input.nodeId).approval = { ...findNode(run, input.nodeId).approval, ...scope };
+      if (scope.productCatalog) delete run.autonomy?.stopped; // the person acted on what autonomy stopped for
       replaceRun(run); await persist(); schedulePump(); return clone(run);
     }),
     'runs.updateAssignments': (input) => queue(async () => {

@@ -8,6 +8,8 @@ import path from 'node:path';
 import { parseFrontmatter, oneLine, fileIo } from './ecc.mjs';
 
 export const VISUAL_STAGES = ['design', 'assets'];
+// Stages whose brief lists installed skills found at launch; only VISUAL_STAGES get the image model.
+const SKILL_STAGES = [...VISUAL_STAGES, 'monetization'];
 export const VISUAL_DEFAULT = { model: 'gpt-6.2-sol', effort: 'high' };
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const MODEL_PATTERN = /^[a-z0-9][a-z0-9._-]{1,63}$/i;
@@ -154,7 +156,14 @@ export async function detectArtDirection({ run, io = fileIo }) {
 }
 
 // [stage, pixel] → skills in order with why. 'codex image_gen' is Codex's built-in image tool.
+const BILLING_RULES = [
+  ['play-billing-library-version-upgrade', 'Play Billing Library 요구 버전 확인과 업그레이드'],
+  ['paywalls', '페이월 화면 설계'],
+  ['pricing', '가격·상품 구성'],
+];
 const RULES = {
+  'monetization:plain': BILLING_RULES,
+  'monetization:pixel': BILLING_RULES,
   'assets:pixel': [
     ['pixel-art-studio', '캐릭터·타일셋·HUD/UI 킷·애니메이션 프레임을 PNG 아틀라스로 (오프라인, Python+Pillow)'],
     ['sprite-gen', '애니메이션 스프라이트와 스프라이트 시트 생성·정리'],
@@ -211,7 +220,7 @@ export function visualInstruction(job) {
 export function createVisualAdvisor({ home = homedir(), io = fileIo } = {}) {
   return {
     async advise({ run, node, job }) {
-      if (!VISUAL_STAGES.includes(node.id) || job.phase !== 'work') return null;
+      if (!SKILL_STAGES.includes(node.id) || job.phase !== 'work') return null;
       const launch = launchSettings(node, job.agent);
       try {
         const [catalog, art] = await Promise.all([loadSkillCatalog({ dirs: skillDirsFor(job.agent, home), io }), detectArtDirection({ run, io })]);

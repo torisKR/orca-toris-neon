@@ -193,3 +193,20 @@ test('the advisor caches the catalog and never throws while advising', async () 
   assert.deepEqual([none.agents, none.skills], [[], []]);
   assert.match(none.error, /boom/);
 });
+
+test('update stages get their own shortlist: audit reviewers, a planner, a security-first monetization; Flutter tools included', async () => {
+  const catalog = await fullCatalog();
+  const pick = (id, phase = 'work', stacks = ['flutter']) => selectEcc({ catalog, stack: { stacks }, situation: situationOf({ id, attempts: 1, reviewAttempts: 1 }, { phase, attempt: 1 }) });
+  const audit = names(pick('audit').agents);
+  for (const name of ['ecc:code-reviewer', 'ecc:silent-failure-hunter', 'ecc:flutter-reviewer', 'ecc:dart-build-resolver']) assert.ok(audit.includes(name), 'audit ' + name);
+  assert.ok(names(pick('plan').agents).includes('ecc:planner'));
+  const money = names(pick('monetization').agents);
+  assert.equal(money[0], 'ecc:security-reviewer');
+  for (const name of ['ecc:flutter-reviewer', 'ecc:dart-build-resolver']) assert.ok(money.includes(name), 'monetization ' + name);
+  assert.equal(names(pick('monetization', 'review').agents)[0], 'ecc:security-reviewer', 'the payment review leads with security');
+  assert.ok(names(pick('audit', 'work', ['godot']).agents).includes('ecc:gdscript-reviewer'));
+  for (const id of ['audit', 'plan', 'monetization', 'catalog']) {
+    for (const item of [...pick(id).agents, ...pick(id).skills]) assert.ok(catalog.agents.concat(catalog.skills).some((entry) => entry.name === item.name), 'installed only: ' + item.name);
+  }
+  assert.match(situationOf({ id: 'monetization', attempts: 1 }, { phase: 'work' }).summary, /결제 연동/);
+});

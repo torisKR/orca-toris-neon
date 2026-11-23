@@ -28,7 +28,7 @@ export default async function activate(orca) {
   try { subscriptions.push(orca.hooks?.on?.('agent.launch.before', (event, next) => launchOverrides.handle(event, next))); }
   catch (error) { orca.log?.('Toris Neon: agent.launch.before hook unavailable: ' + String(error?.message ?? error)); }
   const runtime = createRuntime({
-    orca, resolvePlayAccount: play.submissionAccount, eccAdvisor: createEccAdvisor(),
+    orca, resolvePlayAccount: play.submissionAccount, readPlayApp: (input) => play.appSnapshot(input), eccAdvisor: createEccAdvisor(),
     visualAdvisor: createVisualAdvisor(), launchOverrides
   });
   activeRuntime = runtime;

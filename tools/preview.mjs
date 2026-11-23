@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { createRun, claimNode, recordLaunch, applyReport, pauseRun, resumeRun, cancelRun } from '../src/engine.mjs';
+import { createRun, claimNode, recordLaunch, applyReport, pauseRun, resumeRun, cancelRun, templateGraph } from '../src/engine.mjs';
 import { dayKey, previousDay } from '../src/today.mjs';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
@@ -204,7 +204,8 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts};
     if(name==='play.submissionAccounts')return accounts.map(({id,name,developerId})=>({id,name,developerId}));
     if(name==='runs.create') {
-      const run=createRun({...input,id:'preview-created-'+(++sequence),now:tick()});
+      const run=createRun({...input,nodes:templateGraph(input.template??'new-app',{areas:input.areas}),id:'preview-created-'+(++sequence),now:tick()});
+      if(input.template==='improve')Object.assign(run,{template:'improve',improvement:{areas:input.areas,projectName:input.projectId,playLink:null}});
       run.jobs=[];state.runs.unshift(run);return changed(run);
     }
     if(name==='runs.pause')return replace(pauseRun(lookup(input.runId),{now:tick()}));

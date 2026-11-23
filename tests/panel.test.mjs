@@ -161,6 +161,7 @@ test('creating an app graph sends assignments and numeric limits but never start
   assert.equal(input.maxRepairLoops,1);
   assert.equal(input.baseBranch,'main');
   assert.equal(Object.keys(input.assignments).length,11);
+  assert.equal(input.template,'new-app');
   assert.deepEqual(input.assignments.build,{agent:'cursor',reviewer:'claude'});
   assert.equal(h.requests('runs.start').length,0);
   assert.equal(h.requests('agent.launch').length,0);
@@ -831,4 +832,68 @@ test('the Auto App tab opens on a live run, not on a cancelled one listed first,
   assert.match(html,/<option value="run-live" selected>\[진행 중\] 진행 중 실행<\/option>/);
   assert.ok(html.indexOf('value="run-live"')<html.indexOf('value="run-old"'),'live runs are listed before cancelled ones');
   assert.match(html,/<option value="run-old" >\[취소\] 예전 실행<\/option>/);
+});
+
+// Flow types: a new app, or improving an app that already ships (panel/newflow.mjs).
+const playAccounts = {accounts:[{id:'acc-1',name:'Toris',developerId:'1000',packages:['com.example.water','com.example.quiz'],apps:[{packageName:'com.example.water',name:'물주기 정원',status:'published'}]}],protection:{status:'os-keyring'}};
+test('the new-flow form offers both flow types; the improvement type asks for project, areas and an optional Play package',async()=>{
+  const h=await harness({responses:{'play.list':()=>playAccounts}});
+  await h.click({action:'new-run'});await h.settle();
+  let html=h.app.innerHTML;
+  assert.match(html,/새 앱 만들기/);
+  assert.match(html,/기존 앱 디벨롭/);
+  assert.match(html,/data-action="flow-type" data-type="new-app" aria-pressed="true"/);
+  assert.doesNotMatch(html,/name="area_payments"/);
+  await h.click({action:'flow-type',type:'improve'});await h.settle();
+  html=h.app.innerHTML;
+  assert.match(html,/data-action="flow-type" data-type="improve" aria-pressed="true"/);
+  for(const area of ['area_design','area_features','area_payments'])assert.match(html,new RegExp('name="'+area+'"'));
+  assert.match(html,/디자인 개선/);assert.match(html,/결제 추가/);
+  assert.match(html,/<option value="acc-1\|com\.example\.water"\s*>물주기 정원 · com\.example\.water · Toris<\/option>/);
+  assert.match(html,/<option value="acc-1\|com\.example\.quiz"\s*>com\.example\.quiz · Toris<\/option>/);
+  assert.match(html,/커밋/);
+  assert.equal(h.requests('play.list').length,1);
+});
+
+test('an improvement flow is created from the template with the chosen areas and Play link, never raw stages',async()=>{
+  const h=await harness({responses:{'play.list':()=>playAccounts}});
+  await h.click({action:'new-run'});await h.click({action:'flow-type',type:'improve'});await h.settle();
+  await h.submit(h.form('new-run',{flowType:'improve',goal:'프리미엄 테마와 결제를 추가합니다.',projectId:'project-1',agent:'codex',reviewer:'claude',
+    maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'2',area_design:'on',area_payments:'on',playApp:'acc-1|com.example.water'}));
+  const input=h.requests('runs.create')[0].input;
+  assert.equal(input.template,'improve');
+  assert.deepEqual(input.areas,['design','payments']);
+  assert.deepEqual(input.playLink,{accountId:'acc-1',packageName:'com.example.water'});
+  assert.equal(input.nodes,undefined,'the panel names a template, not a node list');
+  assert.deepEqual(Object.keys(input.assignments).sort(),['assets','audit','build','catalog','design','internal','listing','monetization','plan','policy','release','test']);
+  assert.deepEqual(input.assignments.monetization,{agent:'codex',reviewer:'claude'});
+  await h.submit(h.form('new-run',{flowType:'improve',goal:'개선',projectId:'project-1',agent:'codex',reviewer:'codex',maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'2'}));
+  assert.equal(h.requests('runs.create').length,1,'no area chosen: nothing is sent');
+  assert.match(h.toast.textContent,/개선 영역/);
+});
+
+test('the panel\'s template stage lists match the engine\'s',async()=>{
+  const {TEMPLATE_STAGES}=await import('../panel/newflow.mjs');
+  const {DEFAULT_GRAPH,IMPROVE_GRAPH}=await import('../src/engine.mjs');
+  assert.deepEqual(TEMPLATE_STAGES['new-app'],DEFAULT_GRAPH.map(node=>node.id));
+  assert.deepEqual(TEMPLATE_STAGES.improve,IMPROVE_GRAPH.map(node=>node.id));
+});
+
+test('the product catalog stage asks the person to confirm each product created in Play Console',async()=>{
+  const state=baseState();const run=workflow();
+  run.template='improve';
+  run.nodes=[
+    {id:'monetization',title:'결제 연동',deps:[],agent:'codex',reviewer:'claude',status:'passed',attempts:1,reviewAttempts:1,active:null,
+      report:{outcome:'passed',summary:'결제 구현',products:[{productId:'premium_unlock',type:'inapp',price:'₩3,900',title:'프리미엄'}]}},
+    {id:'catalog',title:'Play 상품 등록(사용자)',deps:['monetization'],agent:'codex',reviewer:'claude',status:'awaiting-approval',requiresApproval:true,humanApproval:true,attempts:0,reviewAttempts:0,active:null},
+  ];
+  state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});await h.click({action:'select-node',node:'catalog'});
+  const html=h.app.innerHTML;
+  assert.match(html,/premium_unlock/);
+  assert.match(html,/₩3,900/);
+  assert.match(html,/name="confirm_premium_unlock"/);
+  await h.submit(h.form('catalog-approval',{note:'Play Console에 상품을 만들고 활성화했습니다.',confirm_premium_unlock:'on'},{run:'run-1',node:'catalog'}));
+  assert.deepEqual(h.requests('runs.approve')[0].input,{runId:'run-1',nodeId:'catalog',note:'Play Console에 상품을 만들고 활성화했습니다.',productCatalog:{confirmed:['premium_unlock']}});
 });

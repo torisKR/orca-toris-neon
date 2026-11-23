@@ -1,4 +1,5 @@
-import { e, statusNames, nodeNames, badge, localDate, todayDate, title, button, options, goalTitle } from './kit.mjs';
+import { e, statusNames, badge, localDate, todayDate, title, button, options, goalTitle } from './kit.mjs';
+import { flowTypeSwitch, improveFields, newRunPayload, catalogApprovalForm, catalogApprovalInput } from './newflow.mjs';
 import { transitions, snapshotStates, elapsed, eccOverride, stageState, STATE_LABELS } from './teams.mjs';
 import { collabStrip, relay, inspector, attachCard, people, assignmentForm, teamNavigator } from './flow.mjs';
 const app = document.querySelector('#app');
@@ -314,6 +315,7 @@ function autonomyLine(item) {
     (on&&state.stopped?'<div class="callout warning" role="status">'+e(state.stopped.reason)+'</div>':'');
 }
 function approvalForm(item,node) {
+  if(node.humanApproval)return catalogApprovalForm(item,node,{draft:(name,fallback)=>draft('catalog-approval',name,fallback)});
   const canSubmit=submissionAccounts.length>0;
   const actual=canSubmit&&draft('approval','actualSubmission',false);
   const required=actual?'required':'';
@@ -342,7 +344,8 @@ function approvalForm(item,node) {
 }
 function newRunForm() {
   const projects=(ui.state?.projects??[]).filter(p=>p.kind==='git'&&(!p.hostId||p.hostId==='local')).map(p=>({value:p.id,label:p.name}));
-  return '<section class="card accent"><div class="section-heading"><div><p class="eyebrow">NEW APP FLOW</p><h2>어떤 앱을 만들까요?</h2></div>'+button('닫기','close-new','','small')+'</div><form id="new-run"><label class="label" for="app-goal">앱 목표와 완료 기준</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" required maxlength="6000" placeholder="예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.</p><div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent">'+providerOptions(draft('new-run','agent','codex'))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer">'+providerOptions(draft('new-run','reviewer','codex'))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
+  const type=draft('new-run','flowType','new-app'),improve=type==='improve';
+  return '<section class="card accent"><div class="section-heading"><div><p class="eyebrow">'+(improve?'IMPROVE AN APP':'NEW APP FLOW')+'</p><h2>'+(improve?'어떤 앱을 디벨롭할까요?':'어떤 앱을 만들까요?')+'</h2></div>'+button('닫기','close-new','','small')+'</div>'+flowTypeSwitch(type)+'<form id="new-run"><input type="hidden" name="flowType" value="'+e(type)+'"><label class="label" for="app-goal">'+(improve?'개선 목표와 완료 기준':'앱 목표와 완료 기준')+'</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" required maxlength="6000" placeholder="'+(improve?'예: 물주기 앱의 홈 화면을 새 디자인으로 바꾸고, 알림 시간 설정과 광고 제거 결제를 추가하고 싶어요. 기존 사용자 기록은 그대로 유지해야 해요.':'예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.')+'">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">'+(improve?'이미 출시한 앱의 저장소를 고르세요. 커밋이 있어야 하며, 시작 시 별도 브랜치와 작업 공간에서 개선합니다.':'프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.')+'</p>'+(improve?improveFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):'')+'<div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent">'+providerOptions(draft('new-run','agent','codex'))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer">'+providerOptions(draft('new-run','reviewer','codex'))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
 }
 function selectedPlayAccount() {
   const accounts=ui.play?.accounts??[];
@@ -550,6 +553,7 @@ app.addEventListener('click',async event=>{
   }
   if(action==='open-run'){leaveView();ui.runId=target.dataset.run;ui.tab='studio';ui.newRun=false;ui.nodeId=null;ui.agentRole=null;clearDraft('assignments');clearDraft('approval');render();await loadSelectedDetail();return;}
   if(action==='new-run'){leaveView();ui.newRun=true;ui.tab='studio';render();return;}
+  if(action==='flow-type'){ui.drafts['new-run.flowType']=target.dataset.type;render();if(target.dataset.type==='improve'&&!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
   if(action==='close-new'){leaveView();ui.newRun=false;render();loadSelectedDetail();return;}
   if(action==='new-account'){leaveView();clearDraft('account');ui.newAccount=true;ui.tab='play';render();return;}
   if(action==='close-account'){leaveView();ui.newAccount=false;clearDraft('account');render();return;}
@@ -629,11 +633,9 @@ app.addEventListener('submit',async event=>{
   const values=Object.fromEntries(new FormData(form));
   try {
     if(form.id==='new-run') {
-      const assignments=Object.fromEntries(Object.keys(nodeNames).map(id=>[id,{agent:values.agent,reviewer:values.reviewer}]));
-      const data={goal:values.goal,projectId:values.projectId,assignments,maxConcurrency:Number(values.maxConcurrency),maxAttempts:Number(values.maxAttempts),maxRepairLoops:Number(values.maxRepairLoops)};
-      if(values.baseBranch?.trim())data.baseBranch=values.baseBranch.trim();
+      const data=newRunPayload(values); // a named template, never a stage list (panel/newflow.mjs)
       const created=await request('runs.create',data);
-      ui.runId=created.id;ui.newRun=false;ui.nodeId=null;clearDraft('new-run');toast('앱 제작 그래프를 만들었습니다. 배정을 확인하고 시작하세요.');
+      ui.runId=created.id;ui.newRun=false;ui.nodeId=null;clearDraft('new-run');toast(data.template==='improve'?'디벨롭 흐름을 만들었습니다. 현황 진단부터 시작합니다.':'앱 제작 그래프를 만들었습니다. 배정을 확인하고 시작하세요.');
     } else if(form.id==='assignments') {
       const item=run(),assignments=Object.fromEntries(item.nodes.filter(assignmentMutable).map(n=>[n.id,assignmentChange(n,values)]).filter(([,change])=>Object.keys(change).length));
       if(!Object.keys(assignments).length){toast('변경된 팀 배정이 없습니다.');return;}
@@ -647,6 +649,8 @@ app.addEventListener('submit',async event=>{
         input.submission={accountId:account.id,developerId:account.developerId,packageName:values.packageName.trim(),track:values.track.trim(),versionCode:Number(values.versionCode)};
       }
       await request('runs.approve',input);clearDraft('approval');toast(input.submission?'지정한 제출 범위로 승인했습니다.':'준비·검토 단계의 범위를 승인했습니다.');
+    } else if(form.id==='catalog-approval') {
+      await request('runs.approve',catalogApprovalInput(form,values));clearDraft('catalog-approval');toast('상품 등록을 확인했습니다. 내부 테스트 준비를 이어갑니다.');
     } else if(form.id==='attach-workspace') {
       await request('runs.attachWorkspace',{runId:form.dataset.run,workspaceId:values.workspaceId});
       toast('작업 공간을 연결했습니다. 배정을 확인한 뒤 재개해 주세요.');
