@@ -89,7 +89,7 @@
 | 브라우저 웹 클라이언트(`orca serve` 페어링) | 안 됨 | 안 됨 | 웹 클라이언트의 `window.api.plugins`는 업데이트 상태 등 세 함수만 있는 빈 구현이라 패널·명령이 없음 |
 | 알림 | Neon의 `notifications.show`는 맥북 데스크톱 알림과 함께 런타임 알림 흐름(`source: plugin`)으로 들어가며, 이 흐름이 모바일 `notifications.subscribe`·`getMissedSince`·푸시 등록에 쓰임. **휴대폰에 실제로 뜨는지는 확인하지 않음** | 같음 | main의 `dispatchPlugin` → `dispatch({type:'notification', source:'plugin'})` → `mobile-notification` 수신자 |
 
-결론: 지금 확인된 원격 경로는 "이 맥북에서 개발 폴더로 불러온 Neon + 셸의 `orca plugin dev request`"뿐입니다. 설치형으로 바꾸면 이 경로는 닫히고, 1.4.271에는 설치형 플러그인 명령을 인자와 함께 부르는 지원 CLI·봇·모바일 경로가 없습니다. 네트워크 서버나 자체 동기화는 만들지 않았습니다. OCI Hermes 연결은 같은 계약을 쓰는 별도 연결부로 남깁니다(개발안 15절).
+결론: 지금 확인된 원격 경로는 "이 맥북에서 개발 폴더로 불러온 Neon + 셸의 `orca plugin dev request`"뿐입니다. 설치형으로 바꾸면 이 경로는 닫히고, 1.4.271에는 설치형 플러그인 명령을 인자와 함께 부르는 지원 CLI·봇·모바일 경로가 없습니다. 네트워크 서버나 자체 동기화는 만들지 않았습니다. 외부 에이전트 서버 연결은 같은 계약을 쓰는 별도 연결부로 남깁니다(개발안 15절).
 
 ### 같은 Orca 계정의 다른 기기에서 Auto App을 공유하는가
 
