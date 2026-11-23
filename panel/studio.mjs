@@ -3,6 +3,7 @@ import { flowTypeSwitch, improveFields, diagnoseFields, resumeList, candidateLis
 import { transitions, snapshotStates, elapsed, eccOverride, stageState, STATE_LABELS } from './teams.mjs';
 import { collabStrip, relay, inspector, attachCard, people, assignmentForm, teamNavigator } from './flow.mjs';
 import { runResult, artifactId } from './result.mjs';
+import { runTokens } from './tokens.mjs';
 const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
 const bridge = window.orca;
@@ -46,6 +47,8 @@ const playAccountValue = account => account.id+':'+account.developerId;
 // Live runs first, newest first; finished and cancelled runs sink so the tab opens on work in progress.
 const FINISHED_RUN = new Set(['cancelled','completed']);
 const orderedRuns = () => [...(ui.state?.runs??[])].sort((a,b)=>FINISHED_RUN.has(a.status)-FINISHED_RUN.has(b.status)||String(b.updatedAt??'').localeCompare(String(a.updatedAt??'')));
+// The token summary rides on the summary runs; a loaded runs.get detail carries the raw ledger instead.
+const tokensOf = item => item?.tokenUsage ?? ui.state?.runs?.find(r=>r.id===item?.id)?.tokenUsage ?? null;
 const run = () => {
   const summary=ui.state?.runs?.find(item=>item.id===ui.runId)??orderedRuns()[0];
   const cached=details.get(summary?.id);
@@ -247,7 +250,7 @@ function renderStudio() {
   const item=run();
   if(!item) return html+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 여섯 팀, 11개 단계의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
   const nodes=item.nodes??[],selected=selectedNode(item),ctx=flowContext(item);
-  html+=runPicker(item)+'<div class="studio-overview">'+runSummaryCard(item,nodes)+collabStrip(item,ctx)+'</div>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError})+(item.template==='diagnose'?candidateList(item):'');
+  html+=runPicker(item)+'<div class="studio-overview">'+runSummaryCard(item,nodes)+collabStrip(item,ctx)+'</div>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError,tokens:tokensOf(item)})+(item.template==='diagnose'?candidateList(item):'');
   if(['completed','cancelled'].includes(item.status)&&!item.stopFailures?.length) html+='<div class="actions">'+button('완료된 실행 보관','archive-run','data-run="'+e(item.id)+'"','small')+'</div>';
   if(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId) html+=attachCard(item,ctx);
   html+=teamNavigator(item,ctx)+'<div class="studio-columns">'+relay(item,ctx)+inspector(item,selected,ctx)+'</div>';
@@ -267,7 +270,7 @@ function flowContext(item) {
   for(const [nodeId,kind] of changes)active.set(nodeId,{kind,at:now});
   announce(item,changes);
   stageSnapshots.set(item.id,snapshotStates(item));stageMotions.set(item.id,active);
-  return {state:ui.state,selectedId:ui.nodeId,selectedRole:ui.agentRole,providers:providers(),eccChoices:ui.state?.eccAgents??[],launchOptions:ui.state?.launchOptions,draft,approvalForm,now,motion:active,artifacts:ui.artifacts};
+  return {state:ui.state,selectedId:ui.nodeId,selectedRole:ui.agentRole,providers:providers(),eccChoices:ui.state?.eccAgents??[],launchOptions:ui.state?.launchOptions,draft,approvalForm,now,motion:active,artifacts:ui.artifacts,tokens:tokensOf(item)};
 }
 // One polite sentence per real transition, outside the re-rendered #app.
 function announce(item,changes) {
@@ -295,7 +298,7 @@ function runSummaryCard(item,nodes) {
   // A short title; the full goal (often thousands of characters) only on demand, here only.
   const short=goalTitle(item.goal);
   const goal='<div class="card-title goal-title">'+e(short)+'</div>'+(item.goal.trim()!==short?'<details class="goal-detail" data-disclosure="goal:'+e(item.id)+'"><summary>전체 목표 보기 · '+item.goal.length.toLocaleString('ko-KR')+'자</summary><p class="note-line goal-full">'+e(item.goal)+'</p></details>':'');
-  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(nodes.length,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+nodes.length+' 단계 통과</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div><div class="actions">'+
+  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(nodes.length,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+nodes.length+' 단계 통과</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+'<div class="actions">'+
     (startable?button(item.workspaceId?'계속 실행':'앱 제작 시작','start-run','data-run="'+e(item.id)+'"','primary'):'')+
     (!startable&&['paused','blocked'].includes(item.status)?button(item.status==='blocked'?'상태 확인 후 재개':'재개','resume-run','data-run="'+e(item.id)+'"','primary'):'')+
     (['running','ready','blocked'].includes(item.status)?button('새 배정 멈춤','pause-run','data-run="'+e(item.id)+'" title="새 단계 배정만 멈춥니다. 작업 중인 에이전트는 계속 작업합니다."'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+

@@ -5,6 +5,7 @@
  * more than the evidence: "published" only from Play's observed status for the approved target.
  */
 import { e, button, title, goalTitle, localDate } from './kit.mjs';
+import { runTokens } from './tokens.mjs';
 
 const ARTIFACT_LABELS = { screenshot: '실제 화면', mockup: '시안' };
 const MEDIA = /\.(png|jpe?g|webp|gif|mp4|webm)$/i;
@@ -100,7 +101,7 @@ function observedLine(run, play) {
 const chainLink = (item) => button(e(goalTitle(item.goal)), 'open-run', 'data-run="' + e(item.id) + '"', 'small link');
 
 /** The run's result: completion label, totals across passed stages, the improvement chain. */
-export function runResult(run, { runs, play, playError }) {
+export function runResult(run, { runs, play, playError, tokens = null }) {
   const label = completionLabel(run, play);
   const reports = run.nodes.filter((node) => node.status === 'passed' && node.report).map((node) => node.report);
   const criteriaAll = reports.flatMap((report) => report.criteria ?? []);
@@ -115,6 +116,8 @@ export function runResult(run, { runs, play, playError }) {
     (label === '프로덕션 게시 확인' ? observedLine(run, play) : '') +
     (criteriaAll.length ? '<p>완료 기준 ' + criteriaAll.filter((item) => item.met).length + ' / ' + criteriaAll.length + ' 충족</p>' : '') +
     (notVerified.length ? '<p class="hint">검증하지 못한 것 ' + notVerified.length + '개 · 각 단계 결과에서 확인하세요.</p>' : '') +
+    // Failed attempts, fixes and reviews included: the stored summary, never a fresh estimate.
+    (tokens && (tokens.counts?.sessions || tokens.counts?.unmapped || tokens.scope === 'unavailable') ? runTokens(tokens, { id: run.id, label: '집계된 토큰' }) : '') +
     (parent || children.length ? '<div class="result-chain"><h4>개선 이력</h4>' + (parent ? '<p>이전 결과: ' + chainLink(parent) + '</p>' : '') +
       (children.length ? '<p>이어서 개선: ' + children.map(chainLink).join(' ') + '</p>' : '') + '</div>' : '') +
     (label ? '<div class="actions">' + button('이 결과 더 개선하기', 'improve-result', 'data-run="' + e(run.id) + '"', 'small primary') + '</div>' : '') + '</section>';

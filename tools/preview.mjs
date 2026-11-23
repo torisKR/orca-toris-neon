@@ -56,6 +56,8 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
   sample=recordLaunch(sample,'build',{nonce:'preview-nonce',terminalId:'preview-terminal',workspaceId:'preview-workspace',now:liveAt-74000});
   sample.jobs=sample.nodes.filter(node=>node.status==='passed').map(node=>({nodeId:node.id,nonce:'preview-finished-'+node.id,terminalId:'preview-finished-'+node.id,state:'completed'}));
   sample.jobs.push({nodeId:'build',nonce:'preview-nonce',terminalId:'preview-terminal',state:'running',agent:'codex'});
+  sample.nodes.find(node=>node.id==='architecture').attempts=2; // the sample ledger has a retried architecture session
+  sample.usage=previewUsage(sample,liveAt);
 
   const archivedRuns=Array.from({length:3},(_,index)=>{
     const run=createRun({id:'preview-archive-'+(index+1),goal:projectsSample[index+1][1]+' · 이전 작업 샘플',
@@ -252,6 +254,16 @@ function previewArtifact(file) {
   if(/\.png$/.test(file)){const data=previewPng(/mock/.test(file)?'mockup':'screenshot');return {kind:'image',mime:'image/png',size:data.length,data:data.toString('base64')};}
   return {kind:'text',size:2048,text:'> Task :app:testDebugUnitTest\nNotificationSchedulerTest > schedulesOnce PASSED\nBUILD SUCCESSFUL in 41s (미리보기 로그)',truncated:false};
 }
+// Synthetic token ledger (src/usage.mjs shape): sample numbers only, not measured usage.
+function previewUsage(run,liveAt) {
+  const tokens={research:[182000,64000],brief:[96000,41000],architecture:[221000,88000],design:[164000,72000],assets:[58000,30000]};
+  const session=(nodeId,phase,attempt,agent,latest)=>({agent,sessionId:'preview-'+nodeId+'-'+phase+'-'+attempt,hostId:'local',baseline:0,latest,observedAt:iso(liveAt-30000),
+    owners:[{nonce:'preview-'+nodeId+'-'+phase+'-'+attempt,nodeId,phase,attempt,startedAt:iso(liveAt-3600000)}]});
+  const sessions=Object.entries(tokens).flatMap(([nodeId,[work,review]])=>[session(nodeId,'work',1,run.nodes.find(node=>node.id===nodeId).agent,work),session(nodeId,'review',1,'claude',review)]);
+  sessions.push(session('architecture','work',2,'codex',47000),session('build','work',1,'codex',312000));
+  return {source:'ok',checkedAt:iso(liveAt-30000),sessions,unmapped:[{nonce:'preview-nonce',nodeId:'build'}]};
+}
+
 function improvementSample(stamp) {
   const run=createRun({id:'preview-improve',goal:'초록 물주기 · 같은 알림이 두 번 울리는 문제 고치기',projectId:'preview-project-5',now:stamp-7200000,nodes:templateGraph('improve',{kind:'bugfix'})});
   Object.assign(run,{template:'improve',started:true,status:'completed',workspaceId:'preview-workspace-5',workspacePath:'/example/green-water',jobs:[],

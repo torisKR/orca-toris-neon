@@ -4,6 +4,7 @@
  */
 import { GLOBAL_LIMITS, globalCounts, waitReasons } from './scheduler.mjs';
 import { cleanupSummary } from './cleanup.mjs';
+import { usageSummary } from './usage.mjs';
 
 const invalidView = () => Object.assign(new Error('지원되지 않는 실행 조회 형식입니다.'), { code: 'invalid_params' });
 // Keep transport payloads small without changing the durable evidence record.
@@ -25,20 +26,20 @@ function nodeSummary(node) {
   };
 }
 function runSummary(run) {
-  const { events, acceptedReports, nodes, jobs, ...summary } = run;
+  const { events, acceptedReports, nodes, jobs, usage, ...summary } = run; // the ledger stays in runs.get
   const current = new Set(nodes.flatMap(node => [node.active?.nonce, node.pendingReceipt?.nonce]).filter(Boolean));
   return {
     ...summary, nodes: nodes.map(nodeSummary),
     ...(run.improvement?.parent ? { improvement: { ...run.improvement, parent: { runId: run.improvement.parent.runId } } } : {}),
     jobs: (jobs || []).filter(job => current.has(job.nonce)),
-    nodeCount: nodes.length, passedCount: nodes.filter(node => node.status === 'passed').length
+    nodeCount: nodes.length, passedCount: nodes.filter(node => node.status === 'passed').length, tokenUsage: usage ? usageSummary(usage) : null // runs from before token usage have none
   };
 }
 function archiveSummary(run) {
   return {
     id: run.id, goal: run.goal, status: run.status, projectId: run.projectId,
     archivedAt: run.archivedAt, createdAt: run.createdAt, updatedAt: run.updatedAt,
-    nodeCount: run.nodes.length, passedCount: run.nodes.filter(node => node.status === 'passed').length
+    nodeCount: run.nodes.length, passedCount: run.nodes.filter(node => node.status === 'passed').length, tokenUsage: run.usage ? usageSummary(run.usage) : null
   };
 }
 function timelineRun(run) {

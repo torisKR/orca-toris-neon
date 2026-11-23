@@ -10,6 +10,7 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 | [`runtime.mjs`](../src/runtime.mjs) | 작업 공간 생성, 에이전트 배정, 결과 파일 검증, 재시작 복구 | LLM 모델 호출 API 구현 |
 | [`store.mjs`](../src/store.mjs) | Orca storage의 실행별 저장, 크기 예산과 압축, 이전 단일 값 이전, 저장 실패 경고와 재시도 | 실행 상태 판단 |
 | [`watch.mjs`](../src/watch.mjs) | 활성 작업 주기 점검(놓친 상태 이벤트, 받지 않은 보고서, 오래 멈춘 에이전트) | 직접 배정·입력 |
+| [`usage.mjs`](../src/usage.mjs) | 배정에 연결된 세션의 토큰 누계 원장(`agent.listSessions`, 감시 주기에 붙음), 기준값·작은 값·누락 처리, 패널용 요약(`tokenUsage`) | 대화 기록 스캔·합계 추정·작업 실패 처리 |
 | [`cleanup.mjs`](../src/cleanup.mjs) | 끝난 작업의 에이전트 터미널 정리(유예 시간, 시작 점검) | 현재·불확실 배정이나 다른 터미널 종료 |
 | [`proportion.mjs`](../src/proportion.mjs), [`reportfix.mjs`](../src/reportfix.mjs) | 단계별 시간·분량 예산과 문서 검토 기준, 형식이 거부된 보고서 수정 요청 | 상태 변경 |
 | [`prompt.mjs`](../src/prompt.mjs), [`views.mjs`](../src/views.mjs) | 작업 지시 생성(결과 카드 필드·실패 분류 계약 포함), 패널·RPC용 상태 투영(summary·timeline) | 상태 변경 |
@@ -39,7 +40,7 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 
 `detail`이라는 `state.get` view는 없습니다. 실행 하나의 상세 요청 이름은 `runs.get`이며, 응답은 `{run: ...}`로 감싼 형태가 아닌 실행 객체입니다.
 
-summary에서는 노드의 `history`, 보고서의 `evidence`, 실행의 `events`·`acceptedReports`를 전송하지 않습니다. 대신 근거 개수·통과 단계 수와 현재 `active`/`pendingReceipt` nonce에 해당하는 배정 작업을 제공합니다. 결과 영수증에는 `path`, `at`, `phase`, `artifactCount`가 남습니다. 전체 근거는 `runs.get`과 full 응답으로 확인합니다.
+summary에서는 노드의 `history`, 보고서의 `evidence`, 실행의 `events`·`acceptedReports`를 전송하지 않습니다. 대신 근거 개수·통과 단계 수와 현재 `active`/`pendingReceipt` nonce에 해당하는 배정 작업을 제공합니다. 결과 영수증에는 `path`, `at`, `phase`, `artifactCount`가 남습니다. 전체 근거는 `runs.get`과 full 응답으로 확인합니다. 토큰 원장(`usage`)도 summary에서 빠지고, 대신 계산된 요약 `tokenUsage`(합계·재시도·단계 미분류·세션 누계·단계별 작업/검토·범위·마지막 확인)를 실행과 보관 실행마다 보냅니다.
 
 저장할 때 증가하는 `revision`을 포함한 summary를 `state.changed`로 알립니다. 관련 없는 에이전트 이벤트나 의미 없는 동일 상태 반복으로 전체 기록을 다시 저장하지 않습니다. 실행 시작 요청이 대기 중이어도 상태·상세 조회는 외부 실행 완료를 기다리지 않습니다.
 

@@ -133,3 +133,20 @@ test('"published" shows what Play was observed to show: track, version, state an
   assert.match(html, /관측 /);
   assert.match(html, /배포 비율[^<]*확인하지 않/);
 });
+
+test('the result card names the stored token total, failed attempts and reviews included, and never a number it lacks', () => {
+  // Arrange
+  const run = releaseRun();
+  pass(run, 'test');
+  const counts = { sessions: 4, counted: 4, waiting: 0, sessionOnly: 0, missing: 0, truncated: 0, lower: 0, corrected: 0, unmapped: 0 };
+  const tokens = { scope: 'complete', total: 1_300_000, retry: 180_000, unattributed: 0, sessionTotal: null, stages: {}, counts, checkedAt: NOW, failedAt: null, error: null };
+  // Act
+  const html = runResult(run, { runs: [run], play: null, tokens });
+  const none = runResult(run, { runs: [run], play: null, tokens: { ...tokens, total: null, scope: 'pending', counts: { ...counts, sessions: 0, counted: 0 } } });
+  const unavailable = runResult(run, { runs: [run], play: null, tokens: { ...tokens, total: null, scope: 'unavailable', counts: { ...counts, sessions: 0, counted: 0 } } });
+  // Assert
+  assert.match(html, /집계된 토큰 1\.3M/);
+  assert.match(html, /1,300,000 토큰/);
+  assert.doesNotMatch(none, /토큰/, 'nothing to report: no token line at all');
+  assert.match(unavailable, /토큰 집계 불가/);
+});

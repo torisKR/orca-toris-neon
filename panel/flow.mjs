@@ -4,6 +4,7 @@
  */
 import { e, badge, button, options, title, descriptions } from './kit.mjs';
 import { stageResult } from './result.mjs';
+import { stageTokens, memberTokens } from './tokens.mjs';
 import {
   stageView, relations, teamLanes, collaboration, agentRoster, teamOf,
   eccOverride, elapsed, LIVE_LABELS, STATE_LABELS, STATE_GLYPHS,
@@ -299,7 +300,7 @@ export function inspector(item, node, ctx) {
   let html = '<aside id="stage-inspector" class="details team-' + e(view.team.id) + '" tabindex="-1" aria-label="선택한 단계 상세"><div class="inspector-head">' + mark() +
     '<div class="grow"><p class="inspector-team">' + e(view.team.name) + '</p><h3>' + e(title(node)) + '</h3></div>' + stateTag(view.state, view.undelivered) + '</div>' +
     '<p class="muted inspector-desc">' + e(descriptions[node.id] ?? node.title) + '</p>' +
-    '<p class="meta">작업 시도 ' + (node.attempts ?? 0) + ' / ' + item.maxAttempts + ' · 검토 시도 ' + (node.reviewAttempts ?? 0) + '</p>';
+    '<p class="meta">작업 시도 ' + (node.attempts ?? 0) + ' / ' + item.maxAttempts + ' · 검토 시도 ' + (node.reviewAttempts ?? 0) + '</p>' + stageTokens(ctx.tokens, node, item.id);
   const submission = node.approval?.submission;
   if (submission?.developerId) html += '<div class="callout"><strong>' + e(submission.accountName) + ' · ' + e(submission.developerId) + '</strong><br>' + e(submission.packageName) + ' · ' + e(submission.track) + ' · v' + e(submission.versionCode) + '</div>';
   if (node.active) {
@@ -343,7 +344,7 @@ export function attachCard(item, ctx) {
 }
 
 // ---------- 에이전트 ----------
-function memberControl(member, transfer, selectedRole, now) {
+function memberControl(member, transfer, selectedRole, now, tokens) {
   const role = member.role === 'review' ? '검토' : '작업';
   const selected = selectedRole === member.role;
   const partner = selectedRole && !selected;
@@ -351,7 +352,7 @@ function memberControl(member, transfer, selectedRole, now) {
   const key = e(member.view.id) + '-' + member.role;
   return '<button type="button" class="member is-' + e(member.live) + (holder ? ' is-holder' : '') + (partner ? ' is-partner' : '') +
     '" id="member-' + key + '" data-action="select-agent" data-node="' + e(member.view.id) + '" data-role="' + member.role + '" aria-pressed="' + selected + '">' +
-    '<span class="member-role">' + role + '</span><strong class="member-name">' + e(member.agent) + '</strong>' +
+    '<span class="member-role">' + role + '</span><strong class="member-name">' + e(member.agent) + '</strong>' + memberTokens(tokens, member.view.id, member.role) +
     '<span class="live-tag is-' + e(member.live) + '">' + e(LIVE_LABELS[member.live]) + '</span>' +
     (holder ? '<span class="holder-label">' + (member.view.undelivered || !member.view.startedAt ? '다음 담당' : '현재 담당') + '</span>' : '') +
     (partner ? '<span class="member-selection">협업 상대</span>' : '') +
@@ -369,8 +370,8 @@ function pairCard(item, node, worker, reviewer, ctx, related, back) {
   return '<li class="pair' + (selected ? ' is-selected' : '') + (relation ? ' is-related is-' + relation : '') + pulseClass(ctx, node.id) + '" id="' + key +
     '" tabindex="-1" aria-labelledby="' + key + '-title"' + pulseOffset(ctx, node.id) + '>' +
     '<div class="pair-stage"><strong id="' + key + '-title">' + e(title(node)) + '</strong>' + stateTag(worker.view.state, worker.view.undelivered) + '</div>' +
-    '<div class="crew-track">' + memberControl(worker, transfer, role, ctx.now) + conduit(transfer.direction, transfer.label) +
-    memberControl(reviewer, transfer, role, ctx.now) + '</div>' +
+    '<div class="crew-track">' + memberControl(worker, transfer, role, ctx.now, ctx.tokens) + conduit(transfer.direction, transfer.label) +
+    memberControl(reviewer, transfer, role, ctx.now, ctx.tokens) + '</div>' + stageTokens(ctx.tokens, node, item.id, 'pair') +
     (relation || selected ? '<div class="stage-relations">' + (selected ? '<span class="relation-tag">선택한 단계</span>' : relationTag(relation)) + '</div>' : '') +
     (selected ? stageConnections(item, related) : '') +
     '<div class="stage-actions">' + button('흐름에서 보기', 'open-stage', 'data-node="' + e(node.id) + '"', 'small') +

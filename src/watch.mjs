@@ -54,9 +54,9 @@ export function planJobWatch({ jobs, agents, receipts, now }) {
  * `watched()` returns [{ runId, workspaceId, jobs }] for jobs that were typed and are still the
  * stage's current job; `receiptAt(job)` resolves to the report's write time, null when present with
  * an unknown time, or false when absent; `apply(runId, actions)` runs them. A failing agents.list
- * skips that run only.
+ * skips that run only. `afterPass` rides the same timer (token usage, src/usage.mjs); its failure is logged only.
  */
-export function createJobWatch({ watched, listAgents, receiptAt, apply, now = Date.now, log = () => {} }) {
+export function createJobWatch({ watched, listAgents, receiptAt, apply, afterPass = async () => {}, now = Date.now, log = () => {} }) {
   let running = null;
   let timer = null;
   const pass = async () => {
@@ -73,6 +73,7 @@ export function createJobWatch({ watched, listAgents, receiptAt, apply, now = Da
       const actions = planJobWatch({ jobs, agents, receipts, now: now() });
       if (actions.length) await apply(runId, actions);
     }
+    try { await afterPass(); } catch (error) { log('Toris Neon watch: ' + String(error?.message ?? error)); }
   };
   const tick = () => {
     running ??= pass().finally(() => { running = null; });

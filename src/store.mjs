@@ -7,6 +7,8 @@
  * file reads back as empty). Every value written here is compacted to a budget well under those
  * limits; full reports, evidence and long text stay on disk in the runs' receipt folders.
  */
+import { usageSummary } from './usage.mjs';
+
 export const ORCA_LIMITS = Object.freeze({ valueBytes: 262_144, keys: 1024, fileBytes: 5_242_880 });
 export const LEGACY_KEY = 'toris-neon.runtime.v1';
 export const INDEX_KEY = 'toris-neon.runtime.v2';
@@ -137,7 +139,8 @@ export function compactRun(run, level = 0) {
   const omitted = (run.eventsOmitted ?? 0) + events.length - keptEvents.length;
   return {
     ...rest,
-    ...(L.archive ? { goal: clip(run.goal, 500), acceptedReports: undefined } : {}),
+    // Archived runs keep only the computed token summary; nothing reads an archived run's sessions again.
+    ...(L.archive ? { goal: clip(run.goal, 500), acceptedReports: undefined, ...(run.usage ? { usage: { frozen: usageSummary(run.usage) } } : {}) } : {}),
     nodes: (run.nodes ?? []).map((node) => compactNode(node, L)),
     jobs: L.archive ? [] : compactJobs(run, L),
     events: keptEvents,

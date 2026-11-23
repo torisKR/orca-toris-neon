@@ -2360,3 +2360,42 @@ test('the summary shows the configured limits', async () => {
   const summary = projectState({ version: 1, revision: 1, runs: [], archivedRuns: [] }, 'summary', { activeJobs: 3, heavyJobs: 2 });
   assert.deepEqual(summary.limits, { activeJobs: 3, heavyJobs: 2, active: 0, heavy: 0 });
 });
+
+test('token usage: the watch reads agent.listSessions once per active workspace, keeps it across a restart, and never fails a job', async () => {
+  // Arrange: one live build job whose agent reported session s1.
+  let total = 120_000;
+  let failRead = false;
+  const host = async (name, input) => {
+    if (name !== 'agent.listSessions') return undefined;
+    if (failRead) throw new Error('history unavailable');
+    return { truncated: false, sessions: [
+      { sessionId: 's1', agent: 'codex', hostId: 'local', workspaceId: input.workspaceId, createdAt: NOW + 5, updatedAt: NOW + 60_000, totalTokens: total, running: true, title: 'x', branch: null, messageCount: 3 },
+      { sessionId: 'other', agent: 'codex', hostId: 'local', workspaceId: input.workspaceId, createdAt: NOW, updatedAt: NOW, totalTokens: 9_999_999, running: false, title: 'y', branch: null, messageCount: 1 },
+    ] };
+  };
+  const h = harness({ host });
+  await h.create(); await h.start();
+  await turn(h, 'working', NOW + 1);
+  // Act
+  await h.runtime.watchTick(); await h.runtime.drain();
+  // Assert
+  const reads = h.calls.filter((call) => call.name === 'agent.listSessions');
+  assert.deepEqual(reads.map((call) => call.input), [{ workspaceId: 'w1', limit: 200 }]);
+  const summary = () => h.runtime.getState({ view: 'summary' }).runs[0].tokenUsage;
+  assert.equal(summary().total, 120_000, 'only the job\'s own session counts');
+  assert.equal(summary().stages.build.work, 120_000);
+  assert.equal(savedState(h.store).runs[0].usage.sessions[0].latest, 120_000, 'persisted');
+
+  failRead = true;
+  await h.runtime.watchTick(); await h.runtime.drain();
+  assert.equal(summary().total, 120_000, 'a failed read keeps the stored total');
+  assert.equal(summary().scope, 'partial');
+  assert.equal(h.getRun().jobs[0].state, 'running', 'a usage failure never touches the job');
+
+  const restarted = harness({ store: h.store, host: async (name, input) => { if (name === 'agent.listSessions') { total = 150_000; failRead = false; } return host(name, input); } });
+  await restarted.runtime.initialize(); await restarted.runtime.drain();
+  assert.equal(restarted.runtime.getState({ view: 'summary' }).runs[0].tokenUsage.total, 120_000, 'restored from storage');
+  await restarted.runtime.watchTick(); await restarted.runtime.drain();
+  assert.equal(restarted.runtime.getState({ view: 'summary' }).runs[0].tokenUsage.total, 150_000, 'cumulative, not 120K + 150K');
+  h.runtime.dispose(); restarted.runtime.dispose();
+});

@@ -13,6 +13,7 @@ import { AUTONOMY_LIMITS, DECIDE_PROMPT, createSupervisor } from './autonomy.mjs
 import { launchSettings, normalizeModel, normalizeEffort, EFFORTS, VISUAL_STAGES, VISUAL_DEFAULT } from './visual.mjs';
 import { createPersistence, archiveRun, retainArchives } from './store.mjs';
 import { createJobWatch, WATCH_INTERVAL_MS } from './watch.mjs';
+import { runtimeUsageSync } from './usage.mjs';
 import { projectState } from './views.mjs';
 import { buildNodePrompt } from './prompt.mjs';
 import { planRunInput, requestKey } from './flows.mjs';
@@ -353,9 +354,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     catalog.set(method, entry);
     return entry.pending;
   };
-  const invalidateCatalog = (...methods) => {
-    for (const method of methods) catalog.delete(method);
-  };
+  const invalidateCatalog = (...methods) => methods.forEach((method) => catalog.delete(method));
   const getRun = (runId) => {
     const run = state.runs.find((item) => item.id === runId);
     if (!run) throw runtimeError('invalid_params', '실행을 찾을 수 없습니다.');
@@ -1413,7 +1412,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       schedulePump();
     }
   };
-  const watch = createJobWatch({
+  // Token usage rides the same timer: one agent.listSessions per active workspace (src/usage.mjs).
+  const watch = createJobWatch({ afterPass: runtimeUsageSync({ host: orca.host, runs: () => state.runs, queue, persist, at: () => nowIso(now), log: (line) => orca.log?.(line) }),
     now, log: (line) => orca.log?.(line), listAgents: (workspaceId) => listAgents(workspaceId),
     receiptAt: async (job) => { if (!(await receiptPresent(job))) return false; try { return await receiptWrittenAt(job.receiptPath); } catch { return null; } },
     apply: (runId, actions) => queue(() => applyWatch(runId, actions)),
