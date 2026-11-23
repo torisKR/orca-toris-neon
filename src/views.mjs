@@ -10,7 +10,7 @@ const invalidView = () => Object.assign(new Error('지원되지 않는 실행 �
 // Keep transport payloads small without changing the durable evidence record.
 function reportSummary(report) {
   if (!report || typeof report !== 'object') return report;
-  const { evidence, changes, criteria, beforeAfter, notVerified, ...summary } = report; // result-card fields come with runs.get
+  const { evidence, changes, criteria, beforeAfter, notVerified, comparison, measurement, releaseLink, ...summary } = report; // result-card fields come with runs.get
   return { ...summary, evidenceCount: Array.isArray(evidence) ? evidence.length : 0 };
 }
 function nodeSummary(node) {

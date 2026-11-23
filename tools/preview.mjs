@@ -75,7 +75,7 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     return run;
   });
   const improved=improvementSample(stamp),diagnosed=diagnosisSample(stamp);
-  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed],archivedRuns,projects,workspaces,
+  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed,...kindSamples(stamp)],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
     agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
@@ -283,6 +283,31 @@ function improvementSample(stamp) {
     evidence:[{kind:'command',command:'./gradlew testDebugUnitTest',exitCode:0},{kind:'command',command:'./gradlew testDebugUnitTest (수정 전)',exitCode:1,role:'history'},
       {kind:'artifact',path:dir+'/after.png',label:'screenshot'},{kind:'artifact',path:dir+'/mock-settings.png',label:'mockup'},{kind:'artifact',path:dir+'/build.log'}]});
   return run;
+}
+/** Design, performance and release improvements with their kind proof (src/kinds.mjs) for the run card. */
+function kindSamples(stamp) {
+  const make=(id,kind,goal,projectIndex,reports)=>{
+    const run=createRun({id,goal,projectId:'preview-project-'+projectIndex,now:stamp-3000000,nodes:templateGraph('improve',{kind})});
+    Object.assign(run,{template:'improve',started:true,status:'completed',workspaceId:'preview-workspace-'+projectIndex,workspacePath:'/example/'+projectsSample[projectIndex-1][0],jobs:[],
+      improvement:{kind,options:{design:false,payments:false},projectName:projectsSample[projectIndex-1][0],playLink:null}});
+    for(const node of run.nodes){node.agent='codex';node.reviewer='claude';fillPassed(node,stamp-1800000,'preview/'+id);Object.assign(node.report,reports[node.id]??{});}
+    return run;
+  };
+  const shot={device:'Pixel 7 에뮬레이터 · Android 14',size:'1080x2400 · 글꼴 100%',language:'ko-KR',data:'샘플 메모 12개'};
+  const design=make('preview-design','design','고요 메모 · 설정 화면 대비 개선',2,{design:{comparison:{before:shot}},test:{comparison:{after:{...shot,language:'en-US'}}}});
+  const timing=(values)=>({scenario:'콜드 스타트 → 메모 목록 표시',environment:'Pixel 6 · release · 메모 500개',samples:values.length,metrics:[{name:'첫 화면 표시',unit:'ms',better:'lower',values}]});
+  const performance=make('preview-performance','performance','고요 메모 · 첫 실행 3초 줄이기',2,{measure:{measurement:timing([3400,3350,3420,3380,3410])},test:{measurement:timing([1210,1190,1250,1220,1200])}});
+  Object.assign(performance,{parentRunId:'preview-diagnose'});
+  performance.jobs.push({nodeId:'build',phase:'work',nonce:'preview-performance-build',state:'completed',parentEvidence:{items:[
+    {nodeId:'identity',title:'앱 정체성 확인',freshness:'fresh'},{nodeId:'diagnose',title:'진단·개선 후보',freshness:'stale'}]}});
+  const release=make('preview-release','release','초록 물주기 · 1.4.0 업데이트 출시',5,{internal:{releaseLink:{commit:'4f2a9c1e7b3d5a6c8e9f0a1b2c3d4e5f6a7b8c9d',artifact:'app/build/outputs/bundle/release/app-release.aab',
+    sha256:'9e1c'.repeat(16),packageName:'com.example.greenwater',track:'internal',versionCode:'44'}}});
+  release.improvement.lastVerified={runId:'preview-improve',commit:'1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',at:iso(stamp-7200000)};
+  for(const id of ['release'])Object.assign(release.nodes.find(node=>node.id===id),{status:'awaiting-approval',report:null,review:null});
+  release.status='blocked';
+  release.nodes.find(node=>node.id==='internal').approval={at:iso(stamp-2000000),note:'내부 테스트 제출 승인 (미리보기)',
+    submission:{accountId:'preview-account',developerId:'1000000000000000000',packageName:'com.example.greenwater',track:'internal',versionCode:'45'}};
+  return [design,performance,release];
 }
 function diagnosisSample(stamp) {
   const run=createRun({id:'preview-diagnose',goal:'고요 메모 진단: 근거 있는 개선 후보 찾기',projectId:'preview-project-2',now:stamp-5400000,nodes:templateGraph('diagnose')});

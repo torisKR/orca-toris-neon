@@ -3,16 +3,18 @@
  * briefs, what an update run's prompts say about the app, and validation of the new-flow input.
  */
 import { templateGraph } from './engine.mjs';
+import { fileIo } from './ecc.mjs';
+import { projectPlatform, WEB_RELEASE_DONE, WEB_NOTE } from './kinds.mjs';
 
 export const KIND_LABELS = Object.freeze({ bugfix: '오류 수정', feature: '기능 추가', design: '디자인·에셋 개선', performance: '성능 최적화', maintenance: '유지보수', release: '출시 업데이트' });
 /** What "done" means for each kind; every brief of the run carries it. */
 export const KIND_DONE = Object.freeze({
   bugfix: '같은 증상이 수정 전에는 실패하고 수정 후에는 통과함을 근거와 함께 보여야 완료입니다.',
   feature: '새 동작과 영향을 받는 기존 동작이 모두 검증돼야 완료입니다.',
-  design: '실제 앱의 변경 전후 스크린샷이 있어야 하고, 시안은 시안으로 표시해야 완료입니다.',
-  performance: '측정 환경을 적고, 같은 조건에서 잰 실제 전후 수치가 있어야 완료입니다.',
+  design: '같은 기기·화면 크기·언어·데이터로 찍은 실제 앱의 변경 전후 스크린샷이 있어야 하고, 시안은 시안으로 표시해야 완료입니다.',
+  performance: '측정 시나리오·환경·표본 수를 적고, 같은 조건에서 잰 실제 전후 수치가 있어야 완료입니다. 개선율은 두 측정이 모두 있을 때만 계산합니다.',
   maintenance: '이 변경에 해당하는 검증을 실제로 실행해야 완료입니다.',
-  release: '소스·빌드·계정·패키지·트랙·버전이 서로 연결돼야 하며, 실제 제출은 사람이 승인합니다.',
+  release: '마지막 검증 이후 바뀐 것만 다시 검증하고, 소스·빌드·계정·패키지·트랙·버전이 서로 연결돼야 하며, 실제 제출은 사람이 승인합니다.',
 });
 export const UPDATE_RULE = '이것은 이미 출시된 기존 앱입니다. 동작하는 기능과 사용자 데이터를 보존하고, 개선 기획이 정한 범위만 바꾸세요. 패키지명, 서명 키, 이미 판매한 구매·구독, 저장된 사용자 데이터 형식은 바꾸거나 무효화하지 마세요.';
 const PACKAGE = /^[A-Za-z]\w*(?:\.[A-Za-z]\w*)+$/;
@@ -57,9 +59,10 @@ export function improvementContext(run) {
       (play.tracks?.length ? ' · ' + play.tracks.map((track) => track.track + ' versionCode ' + (track.versionCodes?.join('/') || '없음') + (track.state ? ' (' + track.state + ')' : '')).join(', ') : '') +
       (play.observedAt ? ' · 관측 ' + play.observedAt : '') + '. 평점·리뷰는 플러그인이 수집하지 않으니 필요하면 Play Console에서 확인할 항목으로 남기세요.'
     : 'Play 연결 없음: 패키지명과 배포 버전은 저장소와 빌드 설정에서 확인하세요.';
-  const kind = info.kind ? '개선 종류: ' + KIND_LABELS[info.kind] + (info.options?.payments ? ' + 결제' : '') + (info.options?.design ? ' + 디자인' : '') + '. ' + KIND_DONE[info.kind] : '진단만 하기: 개선 후보를 찾고 바꾸지는 않습니다.';
+  const done = info.platform === 'web' && info.kind === 'release' ? WEB_RELEASE_DONE : KIND_DONE[info.kind];
+  const kind = info.kind ? '개선 종류: ' + KIND_LABELS[info.kind] + (info.options?.payments ? ' + 결제' : '') + (info.options?.design ? ' + 디자인' : '') + '. ' + done : '진단만 하기: 개선 후보를 찾고 바꾸지는 않습니다.';
   const parent = info.parent ? '이전 결과(' + info.parent.runId + ')에서 이어서 개선합니다. 이전 보고서는 바꾸지 말고 새 결과로 남기세요:\n' + info.parent.summary : '';
-  return [UPDATE_RULE, '기존 앱: ' + (info.projectName ?? '프로젝트') + ' · ' + kind, store, identityInstruction(run), parent].filter(Boolean).join('\n');
+  return [UPDATE_RULE, '기존 앱: ' + (info.projectName ?? '프로젝트') + ' · ' + kind, info.platform === 'web' ? WEB_NOTE : store, identityInstruction(run), parent].filter(Boolean).join('\n');
 }
 
 /** Monetization: installed billing skills found at launch (src/visual.mjs), else the official docs. */
@@ -78,22 +81,27 @@ const invalid = (message) => Object.assign(new Error(message), { code: 'invalid_
 /**
  * Validates the new-flow input for an update (or a diagnosis, which needs no kind): a known kind and
  * options, an Orca project that is a local Git repository with commits, and an optional Play package
- * that belongs to a configured account.
+ * that belongs to a configured account. A web project (src/kinds.mjs projectPlatform) gets no Play stages,
+ * Play billing or Play link.
  */
-export async function prepareImprovement(input, { call, inspectRepository, readPlayApp }, { diagnose = false } = {}) {
+export async function prepareImprovement(input, { call, inspectRepository, readPlayApp, detectPlatform = (root) => projectPlatform(root, fileIo) }, { diagnose = false } = {}) {
   const kind = diagnose ? null : input?.kind;
   const options = { design: Boolean(input?.options?.design), payments: Boolean(input?.options?.payments) };
-  if (!diagnose) {
-    try { templateGraph('improve', { kind, ...options }); }
-    catch (error) { throw invalid(error.message); }
-  }
+  const graph = (web) => {
+    if (diagnose) return;
+    try { templateGraph('improve', { kind, ...options, web }); } catch (error) { throw invalid(error.message); }
+  };
+  graph(false);
   const { projects = [] } = await call('project.list', {});
   const project = projects.find((item) => item.id === input.projectId);
   if (!project) throw invalid('선택한 프로젝트를 찾을 수 없습니다.');
   if ((project.hostId && project.hostId !== 'local') || !project.path) throw invalid('로컬 Git 프로젝트만 개선할 수 있습니다.');
   if (!(await inspectRepository(project.path))?.hasCommit) throw invalid('기존 앱 개선에는 커밋이 있는 저장소가 필요합니다. 프로젝트의 기존 코드를 커밋한 뒤 다시 시도하세요.');
+  const platform = await detectPlatform(project.path);
+  graph(platform === 'web');
   let playLink = null;
   if (input.playLink !== undefined && input.playLink !== null) {
+    if (platform === 'web') throw invalid('웹 프로젝트에는 Play 앱을 연결하지 않습니다.');
     const { accountId, packageName } = input.playLink;
     if (typeof accountId !== 'string' || !accountId || accountId.length > 200) throw invalid('Play 계정을 선택하세요.');
     if (typeof packageName !== 'string' || !PACKAGE.test(packageName)) throw invalid('Play 패키지 이름 형식이 올바르지 않습니다.');
@@ -101,5 +109,5 @@ export async function prepareImprovement(input, { call, inspectRepository, readP
     try { playLink = await readPlayApp({ accountId, packageName }); }
     catch (error) { throw invalid(String(error?.message ?? error)); }
   }
-  return { kind, options, improvement: { kind, options, projectName: project.name ?? null, playLink } };
+  return { kind, options, improvement: { kind, options, projectName: project.name ?? null, playLink, platform } };
 }

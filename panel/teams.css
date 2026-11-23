@@ -375,7 +375,9 @@
 .result-card, .run-result { margin-top: 12px; }
 .result-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; background: var(--card); }
 .result-part { margin-top: 10px; }
-.result-part h5 { margin: 0 0 4px; font-size: 12px; color: var(--muted); }
+.result-part h4, .result-part h5 { margin: 0 0 4px; font-size: 12px; color: var(--muted); }
+.result-part .hint { font-size: 11px; color: var(--fg); }
+.result-part .callout.warning { color: var(--fg); }
 .result-part ul { margin: 0; padding-left: 18px; }
 .criteria { list-style: none; padding-left: 0 !important; }
 .criterion-state { display: inline-block; min-width: 3.5em; font-weight: 600; }
@@ -383,7 +385,7 @@
 .criteria .is-unmet .criterion-state { color: var(--amber); }
 .criterion-evidence { color: var(--muted); }
 .before-after { width: 100%; border-collapse: collapse; font-size: 13px; }
-.before-after th, .before-after td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+.before-after th, .before-after td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; overflow-wrap: anywhere; }
 .artifact { margin: 8px 0 0; }
 .artifact figcaption { font-size: 12px; margin-bottom: 4px; }
 .artifact-label { font-weight: 600; padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px; }

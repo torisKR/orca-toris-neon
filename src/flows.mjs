@@ -6,6 +6,7 @@
  */
 import { templateGraph } from './engine.mjs';
 import { prepareImprovement } from './improve.mjs';
+import { verifiedEvidence, lastVerifiedCommit } from './reuse.mjs';
 
 const invalid = (message) => Object.assign(new Error(message), { code: 'invalid_params' });
 const text = (value, label, max) => {
@@ -31,9 +32,10 @@ function fromDiagnosis({ runId, index }, runs) {
   const goal = [candidate.title, '문제: ' + candidate.problem, '근거: ' + candidate.evidence, '사용자 영향: ' + candidate.impact,
     '변경 범위: ' + candidate.scope, '검증 방법: ' + candidate.verify].join('\n');
   return {
-    goal, projectId: source.projectId, nodes: templateGraph('improve', { kind: candidate.kind }),
+    goal, projectId: source.projectId, nodes: templateGraph('improve', { kind: candidate.kind, web: source.improvement?.platform === 'web' }),
     extra: { template: 'improve', parentRunId: source.id,
-      improvement: { ...source.improvement, kind: candidate.kind, options: { design: false, payments: false }, diagnosis: { runId: source.id, index, title: candidate.title } } },
+      improvement: { ...source.improvement, kind: candidate.kind, options: { design: false, payments: false }, diagnosis: { runId: source.id, index, title: candidate.title },
+        parent: { runId: source.id, summary: resultSummary(source), evidence: verifiedEvidence(source) } } },
   };
 }
 
@@ -52,12 +54,19 @@ function withParent(plan, input, runs) {
   const parent = runs.find((run) => run.id === input.parentRunId);
   if (!parent) throw invalid('이어서 개선할 이전 실행을 찾을 수 없습니다.');
   if (parent.projectId !== plan.projectId) throw invalid('이전 실행과 같은 프로젝트에서만 이어서 개선할 수 있습니다.');
-  return { ...plan, extra: { ...plan.extra, parentRunId: parent.id, improvement: { ...plan.extra.improvement, parent: { runId: parent.id, summary: resultSummary(parent) } } } };
+  return { ...plan, extra: { ...plan.extra, parentRunId: parent.id,
+    improvement: { ...plan.extra.improvement, parent: { runId: parent.id, summary: resultSummary(parent), evidence: verifiedEvidence(parent) } } } };
+}
+/** A release update re-verifies only what changed since this project's last verified commit (src/reuse.mjs). */
+function withLastVerified(plan, runs) {
+  if (plan.extra.improvement?.kind !== 'release') return plan;
+  const lastVerified = lastVerifiedCommit(runs, plan.projectId);
+  return lastVerified ? { ...plan, extra: { ...plan.extra, improvement: { ...plan.extra.improvement, lastVerified } } } : plan;
 }
 
 /** { goal, projectId, nodes, extra } for runs.create; throws invalid_params with a person-readable reason. */
 export async function planRunInput(input, deps) {
-  return withParent(await planFlow(input, deps), input, deps.runs);
+  return withLastVerified(withParent(await planFlow(input, deps), input, deps.runs), deps.runs);
 }
 async function planFlow(input, deps) {
   if (input.fromDiagnosis) return fromDiagnosis(input.fromDiagnosis, deps.runs);
@@ -72,7 +81,8 @@ async function planFlow(input, deps) {
   const goal = text(input.goal, template === 'improve' ? '개선 목표' : '앱 목표', 6000);
   if (template === 'improve') {
     const prep = await prepareImprovement(input, deps);
-    return { goal, projectId, nodes: templateGraph('improve', { kind: prep.kind, ...prep.options }), extra: { template: 'improve', improvement: prep.improvement } };
+    const nodes = templateGraph('improve', { kind: prep.kind, ...prep.options, web: prep.improvement.platform === 'web' });
+    return { goal, projectId, nodes, extra: { template: 'improve', improvement: prep.improvement } };
   }
   let nodes;
   try { nodes = input.nodes ?? templateGraph(template); } catch (error) { throw invalid(error.message); }

@@ -6,6 +6,7 @@
  */
 import { e, button, title, goalTitle, localDate } from './kit.mjs';
 import { runTokens } from './tokens.mjs';
+import { kindResult } from './kindresult.mjs';
 
 const ARTIFACT_LABELS = { screenshot: '실제 화면', mockup: '시안' };
 const MEDIA = /\.(png|jpe?g|webp|gif|mp4|webm)$/i;
@@ -108,7 +109,8 @@ export function runResult(run, { runs, play, playError, tokens = null }) {
   const notVerified = reports.flatMap((report) => report.notVerified ?? []);
   const parent = run.parentRunId && runs.find((item) => item.id === run.parentRunId);
   const children = runs.filter((item) => item.parentRunId === run.id);
-  if (!label && !parent && !children.length) return '';
+  const kind = kindResult(run); // design conditions, measurements, release link, reused evidence
+  if (!label && !parent && !children.length && !kind) return '';
   return '<section class="card run-result" aria-labelledby="run-result-' + e(run.id) + '"><div class="section-heading"><h3 id="run-result-' + e(run.id) + '">실행 결과</h3>' +
     (label ? '<span class="completion-label">' + e(label) + '</span>' : '') + '</div>' +
     (label !== '프로덕션 게시 확인' && submissions(run).some((target) => /(^|:)production$/.test(target.track))
@@ -116,6 +118,7 @@ export function runResult(run, { runs, play, playError, tokens = null }) {
     (label === '프로덕션 게시 확인' ? observedLine(run, play) : '') +
     (criteriaAll.length ? '<p>완료 기준 ' + criteriaAll.filter((item) => item.met).length + ' / ' + criteriaAll.length + ' 충족</p>' : '') +
     (notVerified.length ? '<p class="hint">검증하지 못한 것 ' + notVerified.length + '개 · 각 단계 결과에서 확인하세요.</p>' : '') +
+    kind +
     // Failed attempts, fixes and reviews included: the stored summary, never a fresh estimate.
     (tokens && (tokens.counts?.sessions || tokens.counts?.unmapped || tokens.scope === 'unavailable') ? runTokens(tokens, { id: run.id, label: '집계된 토큰' }) : '') +
     (parent || children.length ? '<div class="result-chain"><h4>개선 이력</h4>' + (parent ? '<p>이전 결과: ' + chainLink(parent) + '</p>' : '') +

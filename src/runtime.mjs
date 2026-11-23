@@ -6,8 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   createRun, nextActions, claimNode, recordLaunch, applyReport, approveNode,
-  pauseRun, resumeRun, retryNode, blockNode, cancelRun, releaseClaim,
-  normalizeEccAgent
+  pauseRun, resumeRun, retryNode, blockNode, cancelRun, releaseClaim, normalizeEccAgent
 } from './engine.mjs';
 import { AUTONOMY_LIMITS, DECIDE_PROMPT, createSupervisor } from './autonomy.mjs';
 import { launchSettings, normalizeModel, normalizeEffort, EFFORTS, VISUAL_STAGES, VISUAL_DEFAULT } from './visual.mjs';
@@ -25,6 +24,7 @@ import { nextLaunch, readLimits, GLOBAL_LIMITS } from './scheduler.mjs';
 import { gitWorkingState, sourceProblem } from './commitcheck.mjs';
 import { buildLabel } from './buildinfo.mjs';
 import { artifactReader } from './artifacts.mjs';
+import { parentEvidenceOf } from './reuse.mjs';
 import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, isReportFormError, formError, reportFixPrompt } from './reportfix.mjs';
 
 export { buildNodePrompt };
@@ -581,10 +581,10 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       const git = claimed.write || action.phase === 'review' ? await readGit(run.workspacePath) : null;
       if (git && action.phase === 'work') job.startHead = git.head;
       if (action.phase === 'review') {
-        job.sourceFingerprint = await fingerprint(run.workspacePath);
-        claimed.active.sourceFingerprint = job.sourceFingerprint;
+        claimed.active.sourceFingerprint = job.sourceFingerprint = await fingerprint(run.workspacePath);
         if (git) job.sourceCommit = git.head;
       }
+      Object.assign(job, await parentEvidenceOf(run, () => job.sourceFingerprint ?? fingerprint(run.workspacePath))); // a follow-up run's parent evidence, fresh or stale (src/reuse.mjs)
       await persist({ durable: true }); // The nonce and intent must exist before the host can launch.
       hostRequested = true;
       // Never pass the prompt: Orca would type it too early, and twice once it fixes that.

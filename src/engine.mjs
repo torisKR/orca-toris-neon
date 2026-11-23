@@ -3,6 +3,7 @@
  * Every exported transition returns a new JSON-serializable run. No function starts
  * processes, reads files, or treats an agent's "done" status as verification.
  */
+import { kindFieldsOf, requireKindProof } from './kinds.mjs';
 export const RUN_VERSION = 1;
 export const DEFAULT_TIME_ZONE = 'Asia/Seoul';
 export const DEFAULT_GRAPH = [
@@ -53,6 +54,7 @@ export const IMPROVE_KINDS = Object.freeze({
   release: ['identity', 'test', 'policy', 'listing', 'internal', 'release'],
 });
 const OPTION_OF = { 'design?': 'design', 'assets?': 'design', 'monetization?': 'payments', 'catalog?': 'payments' };
+const PLAY_STAGES = new Set(['monetization', 'policy', 'listing', 'catalog', 'internal', 'release']); // a web project never gets these
 const KIND_TITLES = {
   bugfix: { build: '오류 수정', test: '수정 재검증' },
   feature: { build: '기능 구현', test: '새 기능·기존 기능 검증' },
@@ -66,14 +68,15 @@ const linear = (ids, titles = {}) => ids.map((id, index) => ({ id, title: titles
   write: IMPROVE_STAGES[id].write, ...(IMPROVE_STAGES[id].requiresApproval ? { requiresApproval: true } : {}), ...(IMPROVE_STAGES[id].humanApproval ? { humanApproval: true } : {}) }));
 
 /** The graph of a named flow template; the only way the panel chooses stages. */
-export function templateGraph(template = 'new-app', { kind, design = false, payments = false } = {}) {
+export function templateGraph(template = 'new-app', { kind, design = false, payments = false, web = false } = {}) {
   if (template === 'new-app') return copy(DEFAULT_GRAPH);
   if (template === 'diagnose') return linear(['identity', 'diagnose']);
   if (template !== 'improve') fail('invalid_input', '알 수 없는 흐름 종류입니다: ' + String(template).slice(0, 40));
   if (!Object.hasOwn(IMPROVE_KINDS, kind)) fail('invalid_input', '개선 종류를 고르세요: ' + Object.keys(IMPROVE_KINDS).join(', '));
   if (kind !== 'feature' && (design || payments)) fail('invalid_input', '디자인·결제 옵션은 기능 추가에서만 고를 수 있습니다.');
+  if (web && payments) fail('invalid_input', '웹 프로젝트에는 Play 결제 연동·상품 등록 단계를 만들지 않습니다.');
   const options = { design: Boolean(design), payments: Boolean(payments) };
-  const ids = IMPROVE_KINDS[kind].filter(id => !OPTION_OF[id] || options[OPTION_OF[id]]).map(id => id.replace('?', ''));
+  const ids = IMPROVE_KINDS[kind].filter(id => !OPTION_OF[id] || options[OPTION_OF[id]]).map(id => id.replace('?', '')).filter(id => !web || !PLAY_STAGES.has(id));
   return linear(ids, KIND_TITLES[kind]);
 }
 
@@ -500,7 +503,7 @@ function normalizeReport(run, nodeId, report) {
   });
   if (report.outcome === 'passed' && evidence.length === 0) fail('missing_evidence', '근거 없이 작업이나 검토를 통과시킬 수 없습니다.');
   if (report.outcome === 'passed') classifyFailedCommands(evidence);
-  return {
+  const clean = {
     ...copy(report), runId: run.id, nodeId, nonce: report.nonce,
     phase: report.phase, outcome: report.outcome, summary, evidence,
     ...(report.next ? { next: requiredText(report.next, '다음 행동', 4000) } : {}),
@@ -508,8 +511,10 @@ function normalizeReport(run, nodeId, report) {
     ...(report.products === undefined ? {} : { products: productsOf(report) }),
     ...(report.identity === undefined ? {} : { identity: identityOf(report.identity) }),
     ...resultFieldsOf(report),
-    ...(report.candidates === undefined ? {} : { candidates: candidatesOf(report.candidates) }),
+    ...(report.candidates === undefined ? {} : { candidates: candidatesOf(report.candidates) }), ...kindFieldsOf(report),
   };
+  requireKindProof(run, nodeId, clean); // design, performance and release proof (src/kinds.mjs)
+  return clean;
 }
 
 function repairAfterFailure(run, node, report, at) {
