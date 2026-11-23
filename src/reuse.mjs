@@ -6,13 +6,14 @@
  * re-verifies only what changed.
  */
 const MAX_ITEMS = 20;
-const reviewJob = (run, node) => (run.jobs ?? []).find((job) => job.nonce === node.review?.nonce);
+const reviewedCommit = (run, node) => (run.jobs ?? []).find((job) => job.nonce === node.review?.nonce)?.sourceCommit ??
+  (node.reviewCommit?.nonce === node.review?.nonce ? node.reviewCommit?.commit : null) ?? null;
 
 /** Each passed, reviewed stage of `run`: what it found and the source it was verified on. */
 export function verifiedEvidence(run) {
   return run.nodes.filter((node) => node.status === 'passed' && node.review?.outcome === 'passed').slice(0, MAX_ITEMS).map((node) => ({
     nodeId: node.id, title: node.title, summary: String(node.report?.summary ?? '').slice(0, 300),
-    fingerprint: node.review.sourceFingerprint ?? null, commit: reviewJob(run, node)?.sourceCommit ?? null, at: node.completedAt ?? null,
+    fingerprint: node.review.sourceFingerprint ?? null, commit: reviewedCommit(run, node), at: node.completedAt ?? null,
   }));
 }
 
@@ -51,7 +52,7 @@ export function reuseInstruction(job) {
 export function lastVerifiedCommit(runs, projectId) {
   const verified = runs.filter((run) => run.projectId === projectId).flatMap((run) => run.nodes
     .filter((node) => node.id === 'test' && node.status === 'passed' && node.completedAt)
-    .map((node) => ({ runId: run.id, commit: reviewJob(run, node)?.sourceCommit ?? null, at: node.completedAt })))
+    .map((node) => ({ runId: run.id, commit: reviewedCommit(run, node), at: node.completedAt })))
     .filter((item) => item.commit);
   return verified.sort((a, b) => b.at.localeCompare(a.at))[0] ?? null;
 }

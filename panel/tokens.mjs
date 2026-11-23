@@ -40,6 +40,7 @@ function reasons(usage) {
     c.waiting && '아직 기록이 없거나 0으로만 보고된 세션 ' + c.waiting + '개',
     c.missing && '목록에서 찾지 못한 세션 ' + c.missing + '개 · 마지막 확인값 유지',
     c.truncated && '조회 한도(최근 200개) 밖의 세션 ' + c.truncated + '개 · 마지막 확인값 유지',
+    usage.listTruncated && !c.truncated && 'Orca 세션 목록이 조회 한도에서 잘렸습니다.',
     c.invalid && 'Orca가 토큰 값을 정수로 주지 않은 세션 ' + c.invalid + '개 · 마지막 확인값 유지',
     c.lower && '이전보다 작은 값이 보고된 세션 ' + c.lower + '개 · 다시 확인될 때까지 마지막 값 유지',
     c.corrected && '기록 보정으로 값이 줄어든 세션 ' + c.corrected + '개',

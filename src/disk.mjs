@@ -8,12 +8,12 @@ import { promises as fs } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { reservesSlot } from './scheduler.mjs';
 
 /** Folders a Flutter, Gradle or Godot build regenerates, relative to the workspace. */
 export const BUILD_OUTPUTS = Object.freeze(['build', '.dart_tool', '.gradle', 'app/build', 'android/.gradle', 'android/app/build', '.godot']);
 const MAX_ENTRIES = 50_000; // per tree; a larger tree is reported as partial (at least this much)
 const SIGNING = /\.(jks|p12|pfx|pem|p8|mobileprovision)$|keystore|key\.properties|signing/i; // by name only: a partial walk is protected anyway
-const LIVE_JOB_STATES = new Set(['launching', 'running', 'awaiting-report', 'uncertain']);
 const FINISHED_RUNS = new Set(['completed', 'cancelled']);
 const execFileAsync = promisify(execFile);
 const inside = (root, file) => { const relative = path.relative(root, file); return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative); };
@@ -51,7 +51,14 @@ function referencedPaths(runs) {
     if (!value || typeof value !== 'object') return;
     for (const [key, item] of Object.entries(value)) if (key !== 'jobs') visit(item);
   };
-  visit(runs);
+  for (const run of runs) {
+    visit(run);
+    if (!run.workspacePath) continue;
+    for (const node of run.nodes ?? []) {
+      const artifact = node.report?.releaseLink?.artifact;
+      if (typeof artifact === 'string' && artifact) found.add(path.resolve(run.workspacePath, artifact));
+    }
+  }
   return [...found];
 }
 
@@ -65,9 +72,10 @@ const protection = (size, fallback = null) => size.truncated ? 'unreadable' : si
 // A compacted (saved or archived) job keeps only its receipt file path; its folder is that file's.
 const jobFolder = (job) => typeof job.receiptDirectory === 'string' ? path.resolve(job.receiptDirectory) : typeof job.receiptPath === 'string' ? path.dirname(path.resolve(job.receiptPath)) : null;
 
-async function receiptJobs(run, runRoot, runs, maxEntries) {
+const isReferenced = (dir, references) => references.some((file) => file === dir || inside(dir, file));
+
+async function receiptJobs(run, runRoot, references, maxEntries) {
   const current = new Set((run.nodes ?? []).flatMap((node) => [node.active?.nonce, node.pendingReceipt?.nonce]).filter(Boolean));
-  const references = referencedPaths(runs);
   const out = [], seen = new Set();
   for (const job of run.jobs ?? []) {
     const dir = jobFolder(job);
@@ -76,8 +84,7 @@ async function receiptJobs(run, runRoot, runs, maxEntries) {
     const size = await measureTree(dir, { maxEntries });
     if (!size.exists) continue;
     const reason = protection(size);
-    const kind = current.has(job.nonce) || LIVE_JOB_STATES.has(job.state) ? 'live'
-      : references.some((file) => file === dir || inside(dir, file)) ? 'referenced' : reason ? 'protected' : 'candidate';
+    const kind = current.has(job.nonce) || reservesSlot(job) ? 'live' : isReferenced(dir, references) ? 'referenced' : reason ? 'protected' : 'candidate';
     out.push({ nodeId: job.nodeId, path: dir, kind, ...(kind === 'protected' ? { reason } : {}), bytes: size.bytes, files: size.files, truncated: size.truncated });
   }
   return out;
@@ -92,10 +99,11 @@ async function tracked(workspacePath, relative) {
 }
 
 // Another unfinished run on the same workspace may still use its build outputs.
-const workspaceLive = (run, runs) => !FINISHED_RUNS.has(run.status) || runs.some((other) => other.id !== run.id && !FINISHED_RUNS.has(other.status) &&
+const runLive = (run) => !FINISHED_RUNS.has(run.status) || (run.jobs ?? []).some(reservesSlot);
+const workspaceLive = (run, runs) => runLive(run) || runs.some((other) => other.id !== run.id && runLive(other) &&
   ((run.workspaceId && other.workspaceId === run.workspaceId) || (other.workspacePath && path.resolve(other.workspacePath) === path.resolve(run.workspacePath))));
 
-async function buildOutputs(run, runs, maxEntries) {
+async function buildOutputs(run, runs, references, maxEntries) {
   if (run.isolate === false || run.workspaceCreation?.state !== 'created') return { builds: [], note: 'Neon이 만든 작업 공간이 아니라 빌드 출력을 세지 않습니다.' };
   if (!run.workspacePath) return { builds: [], note: '작업 공간이 아직 없습니다.' };
   const builds = [];
@@ -106,7 +114,7 @@ async function buildOutputs(run, runs, maxEntries) {
     if (!(await directlyInside(run.workspacePath, dir))) continue; // reached through a symlinked parent: outside the workspace
     const size = await measureTree(dir, { maxEntries });
     const reason = protection(size, await tracked(run.workspacePath, relative) ? 'tracked' : null);
-    const kind = workspaceLive(run, runs) ? 'live' : reason ? 'protected' : 'candidate';
+    const kind = workspaceLive(run, runs) ? 'live' : isReferenced(dir, references) ? 'referenced' : reason ? 'protected' : 'candidate';
     builds.push({ relative, path: dir, kind, ...(kind === 'protected' ? { reason } : {}), bytes: size.bytes, files: size.files, truncated: size.truncated });
   }
   return { builds, note: null };
@@ -116,8 +124,9 @@ async function buildOutputs(run, runs, maxEntries) {
 export async function runDisk({ run, runs, receiptRoot, now = Date.now, maxEntries = MAX_ENTRIES }) {
   const runRoot = path.join(receiptRoot, run.id);
   const total = await measureTree(runRoot, { maxEntries });
-  const jobs = await receiptJobs(run, runRoot, runs, maxEntries);
-  const { builds, note } = await buildOutputs(run, runs, maxEntries);
+  const references = referencedPaths(runs);
+  const jobs = total.exists ? await receiptJobs(run, runRoot, references, maxEntries) : [];
+  const { builds, note } = await buildOutputs(run, runs, references, maxEntries);
   const candidates = [...jobs, ...builds].filter((item) => item.kind === 'candidate');
   return {
     runId: run.id, at: new Date(now()).toISOString(),

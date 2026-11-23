@@ -2361,6 +2361,23 @@ test('remote requests through the real runs.create: one run per request, conflic
   assert.equal(first.run.kind, 'feature');
 });
 
+test('a direct runs.create requestId still identifies a cancelled run after restart', async () => {
+  const h = harness();
+  await h.runtime.initialize();
+  const input = { goal: '앱', projectId: 'p1', requestId: 'req-cancelled', autonomous: false };
+  const first = await h.runtime.handlers['runs.create'](input);
+  await h.runtime.handlers['runs.cancel']({ runId: first.id });
+  h.runtime.dispose();
+  const restarted = restartRuntime(h);
+  await restarted.initialize();
+
+  const replay = await restarted.handlers['runs.create'](input);
+
+  assert.deepEqual([replay.id, replay.status], [first.id, 'cancelled']);
+  assert.equal(restarted.getState().runs.length, 1);
+  restarted.dispose();
+});
+
 test('picking a diagnosis candidate creates one linked improvement run of the candidate\'s kind', async () => {
   const h = harness();
   await h.runtime.initialize();

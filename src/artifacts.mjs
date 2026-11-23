@@ -44,6 +44,8 @@ export function artifactReader({ runs, receiptRoot }) {
     const run = typeof runId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(runId) ? runs().find((item) => item.id === runId) : null;
     if (!run) throw refuse('실행을 찾을 수 없습니다.');
     if (!recorded(run, file)) throw refuse('보고서에 산출물로 기록된 파일만 열 수 있습니다.');
-    return readArtifact({ file, roots: [path.join(receiptRoot, run.id), run.workspacePath] });
+    const receiptDirectory = path.join(receiptRoot, run.id);
+    const owned = await fs.lstat(receiptDirectory).then((stat) => stat.isDirectory(), () => false);
+    return readArtifact({ file, roots: [owned ? receiptDirectory : null, run.workspacePath] });
   };
 }

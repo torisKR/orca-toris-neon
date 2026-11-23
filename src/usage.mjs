@@ -18,8 +18,6 @@ export const LOWER_CONFIRMATIONS = 2;
 export const FINAL_FAILURES = 5;
 /** A listSessions read that has not answered by then is a failed read; the job watch shares the pass. */
 export const READ_TIMEOUT_MS = 15_000;
-/** A session created this close before the job started is still the job's own. */
-const FRESH_SKEW_MS = 5_000;
 const FINISHED = new Set(['completed', 'cancelled']);
 const UNSUPPORTED_CODES = new Set(['unknown_method', 'not_permitted']);
 
@@ -53,7 +51,7 @@ export function registerJobs(usage = { sessions: [], unmapped: [] }, jobs = []) 
 // was typed; null (a session total only) when neither is known. Decided once.
 function baselineFor(entry, row, value, typed) {
   const started = Math.min(...entry.owners.map((owner) => Date.parse(owner.startedAt ?? '')).filter(Number.isFinite));
-  if (Number.isFinite(row.createdAt) && Number.isFinite(started) && row.createdAt >= started - FRESH_SKEW_MS) return 0;
+  if (Number.isFinite(row.createdAt) && Number.isFinite(started) && row.createdAt >= started) return 0;
   if (value > 0 && entry.owners.every((owner) => !typed.has(owner.nonce))) return value;
   return value > 0 ? null : undefined; // a bare 0 decides nothing yet
 }
@@ -84,7 +82,8 @@ function observeOne(entry, rows, { truncated, workspaceId, at, typed }) {
 /** One successful listSessions read applied to the ledger; `typed` holds jobs whose prompt went in. */
 export function observeSessions(usage, { rows, truncated = false, workspaceId, at, typed = new Set() }) {
   const sessions = (usage.sessions ?? []).map((entry) => observeOne(entry, rows, { truncated, workspaceId, at, typed }));
-  return { ...without(usage, 'error', 'failedAt', 'source'), source: 'ok', checkedAt: at, sessions };
+  return { ...without(usage, 'error', 'failedAt', 'source', 'listTruncated'), source: 'ok', checkedAt: at, sessions,
+    ...(truncated ? { listTruncated: true } : {}) };
 }
 
 /** A read that failed or an Orca without the API: stored totals stay, the scope narrows. */
@@ -223,12 +222,13 @@ function summarize(usage) {
   }
   for (const { nodeId } of usage?.unmapped ?? []) stageFor(stages, nodeId).uncertain++; // a launched job Orca has not named a session for
   const failed = usage?.source === 'error' || usage?.source === 'unsupported';
-  const incomplete = failed || counts.waiting || counts.sessionOnly || counts.missing || counts.truncated || counts.invalid || counts.lower || counts.unmapped;
+  const incomplete = failed || usage?.listTruncated || counts.waiting || counts.sessionOnly || counts.truncated || counts.missing || counts.invalid || counts.lower || counts.unmapped;
   const scope = usage?.source === 'unsupported' ? 'unavailable'
     : !counts.counted ? (failed || counts.invalid ? 'unavailable' : counts.sessionOnly ? 'session' : 'pending')
       : incomplete ? 'partial' : 'complete';
   return {
     scope, total: counts.counted && scope !== 'unavailable' ? total : null, retry, unattributed,
+    ...(usage?.listTruncated ? { listTruncated: true } : {}),
     sessionTotal: counts.sessionOnly ? sessionTotal : null, stages, counts,
     checkedAt: usage?.checkedAt ?? null, failedAt: usage?.failedAt ?? null, error: usage?.error ?? null,
   };

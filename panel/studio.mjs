@@ -2,7 +2,7 @@ import { e, statusNames, badge, localDate, todayDate, title, button, options, go
 import { flowTypeSwitch, improveFields, diagnoseFields, resumeList, candidateList, newRunPayload, catalogApprovalForm, catalogApprovalInput } from './newflow.mjs';
 import { transitions, snapshotStates, elapsed, eccOverride, stageState, STATE_LABELS } from './teams.mjs';
 import { collabStrip, relay, inspector, attachCard, people, assignmentForm, teamNavigator } from './flow.mjs';
-import { runResult, artifactId } from './result.mjs';
+import { runResult, artifactCacheKey, artifactId } from './result.mjs';
 import { runTokens } from './tokens.mjs';
 import { preflightBlock, preflightSummary } from './preflight.mjs';
 import { todayRunCard, noteAction } from './todayactions.mjs';
@@ -400,14 +400,15 @@ function parentNotice() {
 const ARTIFACT_CACHE=8;
 // One artifact at a time, only when asked; never part of a state push (src/artifacts.mjs).
 async function loadArtifact(runId,path) {
-  const known=ui.artifacts.get(path);if(known&&!known.error)return;
+  const key=artifactCacheKey(runId,path);
+  const known=ui.artifacts.get(key);if(known&&!known.error)return;
   const announcer=document.querySelector('#announcer'),say=text=>{if(announcer)announcer.textContent=text;};
-  ui.artifacts.set(path,{loading:true});render();say('결과 파일을 불러오는 중입니다.');
-  try{ui.artifacts.set(path,await request('artifacts.read',{runId,path}));say('결과 파일을 불러왔습니다.');}
-  catch(err){ui.artifacts.set(path,{error:'불러오지 못했습니다: '+err.message});say('결과 파일을 불러오지 못했습니다: '+err.message);}
+  ui.artifacts.set(key,{loading:true});render();say('결과 파일을 불러오는 중입니다.');
+  try{ui.artifacts.set(key,await request('artifacts.read',{runId,path}));say('결과 파일을 불러왔습니다.');}
+  catch(err){ui.artifacts.set(key,{error:'불러오지 못했습니다: '+err.message});say('결과 파일을 불러오지 못했습니다: '+err.message);}
   while(ui.artifacts.size>ARTIFACT_CACHE)ui.artifacts.delete(ui.artifacts.keys().next().value);
   render();
-  document.querySelector('#'+artifactId(path))?.focus?.(); // the pressed button is replaced; keep the place
+  document.querySelector('#'+artifactId(runId,path))?.focus?.(); // the pressed button is replaced; keep the place
 }
 function newRunForm() {
   const projects=(ui.state?.projects??[]).filter(p=>p.kind==='git'&&(!p.hostId||p.hostId==='local')).map(p=>({value:p.id,label:p.name}));

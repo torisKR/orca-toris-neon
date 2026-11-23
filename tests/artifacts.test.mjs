@@ -52,3 +52,14 @@ test('the panel request resolves the run and reads only inside its receipt folde
   await fs.writeFile(path.join(f.workspace, 'google-services.json'), '{}');
   await assert.rejects(read({ runId: 'r1', path: path.join(f.workspace, 'google-services.json') }), /보고서/, 'only files a report recorded as artifacts');
 });
+
+test('a receipt directory must still be a directory owned by the run when its artifact is read', async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.receipts, 'after.png');
+  const runs = [{ id: 'r1', workspacePath: f.workspace, nodes: [{ report: { evidence: [{ kind: 'artifact', path: file }] } }] }];
+  const read = artifactReader({ runs: () => runs, receiptRoot: path.dirname(f.receipts) });
+  await fs.rename(f.receipts, f.receipts + '-moved');
+  await fs.symlink(f.receipts + '-moved', f.receipts);
+
+  await assert.rejects(read({ runId: 'r1', path: file }), /실행 결과 폴더나 작업 공간 밖/);
+});

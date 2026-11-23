@@ -25,16 +25,21 @@ export async function readLimits(settings) {
 export const HEAVY_STAGES = new Set(['build', 'test', 'internal', 'monetization', 'reproduce', 'measure']);
 export const isHeavy = (nodeId) => HEAVY_STAGES.has(nodeId);
 const LIVE_JOB_STATES = new Set(['launching', 'running', 'awaiting-report', 'uncertain']);
+export const reservesSlot = (job) => LIVE_JOB_STATES.has(job.state);
 
 export function globalCounts(runs) {
-  const active = runs.flatMap((run) => run.nodes.filter((node) => node.active));
-  return { active: active.length, heavy: active.filter((node) => isHeavy(node.id)).length };
+  const assignments = runs.flatMap((run) => {
+    const reserved = new Map((run.jobs ?? []).filter(reservesSlot).map((job) => [job.nonce, job.nodeId]));
+    for (const node of run.nodes) if (node.active) reserved.set(node.active.nonce, node.id);
+    return [...reserved.values()];
+  });
+  return { active: assignments.length, heavy: assignments.filter(isHeavy).length };
 }
 
 const blocked = (run) => run.nodes.some((node) => ['blocked', 'failed'].includes(node.status)) ||
   (run.jobs ?? []).some((job) => ['uncertain', 'awaiting-report'].includes(job.state));
 const sharedBusy = (run, runs) => runs.some((other) => other.id !== run.id && other.workspaceId === run.workspaceId &&
-  (other.jobs ?? []).some((job) => LIVE_JOB_STATES.has(job.state)));
+  (other.jobs ?? []).some(reservesSlot));
 const runnable = (run, runs) => run.started && ['ready', 'running'].includes(run.status) && run.workspaceId && run.workspacePath &&
   !blocked(run) && !sharedBusy(run, runs);
 

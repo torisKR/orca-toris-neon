@@ -22,6 +22,24 @@ test('active and heavy assignments are counted across every run', () => {
   assert.deepEqual(globalCounts([a, b]), { active: 2, heavy: 1 });
 });
 
+test('uncertain and unconfirmed cancelled jobs occupy their slots after the node claim is cleared', () => {
+  const blocked = run('a', graph('build'), { status: 'blocked', jobs: [{ nonce: 'n1', nodeId: 'build', state: 'uncertain' }] });
+  const cancelled = run('b', graph('brief'), { status: 'cancelled', jobs: [{ nonce: 'n2', nodeId: 'brief', state: 'running' }] });
+  const ready = run('c', graph('test', 'research'));
+
+  assert.deepEqual(globalCounts([blocked, cancelled]), { active: 2, heavy: 1 });
+  assert.equal(nextLaunch([blocked, cancelled, ready]), null);
+  assert.equal(nextLaunch([blocked, ready]).action.nodeId, 'research');
+  assert.equal(nextLaunch([ready]).action.nodeId, 'test');
+});
+
+test('a live ledger job and its active node claim occupy only one slot', () => {
+  const active = claim(run('a', graph('build')), 'build');
+  active.jobs = [{ nonce: 'abuild', nodeId: 'build', state: 'running' }, { nonce: 'older', nodeId: 'build', state: 'complete' }];
+
+  assert.deepEqual(globalCounts([active]), { active: 1, heavy: 1 });
+});
+
 test('runs take turns: the next launch goes to the run after the one served last', () => {
   const runs = [run('a', graph('a1', 'a2')), run('b', graph('b1', 'b2')), run('c', graph('c1'))];
   const first = nextLaunch(runs, { cursor: 0 });

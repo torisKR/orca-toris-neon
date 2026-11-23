@@ -86,6 +86,7 @@ test('the performance card shows no rate when the conditions or a metric differ'
   const units = improveRun('performance', { measure: { measurement: measurement([1000]) },
     test: { measurement: { ...measurement([1]), metrics: [{ name: '첫 화면', unit: 's', better: 'lower', values: [1] }] } } });
   assert.doesNotMatch(text(kindResult(units)), /\d%/, 'different units never give a rate');
+  assert.match(text(kindResult(units)), /비교할 수 있는 지표가 없습니다/);
 });
 
 test('the release card links commit, artifact, account, package, track and versionCode and flags what differs from the approval', () => {

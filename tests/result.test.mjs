@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { completionLabel, stageResult, runResult } from '../panel/result.mjs';
+import { artifactCacheKey, completionLabel, stageResult, runResult } from '../panel/result.mjs';
 import { createRun, templateGraph } from '../src/engine.mjs';
 
 const NOW = '2026-11-23T01:00:00.000Z';
@@ -78,15 +78,28 @@ test('a stage result card reads in order: changed, criteria, before/after, check
 
 test('a loaded artifact shows inline with alt text; a log shows a bounded excerpt; an error is said', () => {
   const artifacts = new Map([
-    ['/r/r1/build/after.png', { kind: 'image', mime: 'image/png', data: 'AAAA' }],
-    ['/r/r1/build/build.log', { kind: 'text', text: 'BUILD SUCCESSFUL', truncated: true }],
-    ['/r/r1/build/mock.webp', { error: '파일 크기가 너무 큽니다' }],
+    [artifactCacheKey('r1', '/r/r1/build/after.png'), { kind: 'image', mime: 'image/png', data: 'AAAA' }],
+    [artifactCacheKey('r1', '/r/r1/build/build.log'), { kind: 'text', text: 'BUILD SUCCESSFUL', truncated: true }],
+    [artifactCacheKey('r1', '/r/r1/build/mock.webp'), { error: '파일 크기가 너무 큽니다' }],
   ]);
   const html = stageResult({ id: 'r1' }, { id: 'build', report }, { artifacts });
   assert.match(html, /<img[^>]+src="data:image\/png;base64,AAAA"[^>]+alt="실제 화면[^"]*after\.png"/);
   assert.match(html, /BUILD SUCCESSFUL/);
   assert.match(html, /앞부분만/);
   assert.match(html, /파일 크기가 너무 큽니다/);
+});
+
+test('the same artifact path in another run still requires its own read', () => {
+  const file = '/shared/build/after.png';
+  const node = { id: 'build', report: { ...report, evidence: [{ kind: 'artifact', path: file }] } };
+  const artifacts = new Map([[artifactCacheKey('r1', file), { kind: 'image', mime: 'image/png', data: 'AAAA' }]]);
+
+  const first = stageResult({ id: 'r1' }, node, { artifacts });
+  const second = stageResult({ id: 'r2' }, node, { artifacts });
+
+  assert.match(first, /data:image/);
+  assert.doesNotMatch(second, /data:image/);
+  assert.match(second, /data-action="load-artifact" data-run="r2"/);
 });
 
 test('a report without result fields shows no empty card', () => {
@@ -107,10 +120,10 @@ test('the run result gives the completion label, totals, the chain and the impro
 
 test('a failed load keeps a retry button; the load button\'s name starts with its visible text; a description becomes the alt', () => {
   const item = { ...report, evidence: [{ kind: 'artifact', path: '/r/r1/build/after.png', label: 'screenshot', description: '알림 설정 화면, 토글 하나' }] };
-  const failed = stageResult({ id: 'r1' }, { id: 'build', report: item }, { artifacts: new Map([['/r/r1/build/after.png', { error: '불러오지 못했습니다: 시간 초과' }]]) });
+  const failed = stageResult({ id: 'r1' }, { id: 'build', report: item }, { artifacts: new Map([[artifactCacheKey('r1', '/r/r1/build/after.png'), { error: '불러오지 못했습니다: 시간 초과' }]]) });
   assert.match(failed, /시간 초과[\s\S]*data-action="load-artifact"/);
   assert.match(failed, /aria-label="보기: 실제 화면 after\.png"/);
-  const shown = stageResult({ id: 'r1' }, { id: 'build', report: item }, { artifacts: new Map([['/r/r1/build/after.png', { kind: 'image', mime: 'image/png', data: 'AA' }]]) });
+  const shown = stageResult({ id: 'r1' }, { id: 'build', report: item }, { artifacts: new Map([[artifactCacheKey('r1', '/r/r1/build/after.png'), { kind: 'image', mime: 'image/png', data: 'AA' }]]) });
   assert.match(shown, /alt="실제 화면: 알림 설정 화면, 토글 하나"/);
   assert.match(stageResult({ id: 'r1' }, { id: 'build', report: { ...item, evidence: [{ kind: 'artifact', path: '/x/a.png', label: 'constructor' }] } }, { artifacts: new Map() }), /구분 없음/);
 });

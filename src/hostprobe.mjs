@@ -112,7 +112,7 @@ export async function probeHostTools({ exec = defaultExec, io = hostIo, env = pr
 
 const RELEASE_NAME = /create\(\s*["']release["']\s*\)|register\(\s*["']release["']\s*\)|getByName\(\s*["']release["']\s*\)|\brelease\s*\{/;
 const RELEASE_ANYWHERE = /signingConfigs\.(?:create|register)\(\s*["']release["']|signingConfig\s*=?\s*signingConfigs\.(?:getByName\(\s*["']release["']\s*\)|release\b)/;
-const DEBUG_SIGNING = /signingConfig\s*=?\s*signingConfigs\.(?:getByName\(\s*["']debug["']\s*\)|debug\b)/;
+const SIGNING_ASSIGNMENT = /\bsigningConfig\s*=?\s*signingConfigs\.(?:getByName\(\s*["']([^"']+)["']\s*\)|([A-Za-z_]\w*))/g;
 /** File text, null when it does not exist; any other read error is thrown so it is not taken as "no file". */
 async function readText(io, file) {
   try { return await io.readHead(file, HEAD_BYTES); }
@@ -132,16 +132,20 @@ function block(text, opener) {
 /** present, debug (the release build type is signed with the debug key), missing, or unknown. */
 export function gradleSigningState(gradle) {
   const source = withoutComments(gradle);
-  if (RELEASE_NAME.test(block(source, /signingConfigs\s*\{/)) || RELEASE_ANYWHERE.test(source)) return 'present';
   const release = block(block(source, /buildTypes\s*\{/), /(?:\brelease|getByName\(\s*["']release["']\s*\))\s*\{/);
-  return DEBUG_SIGNING.test(release) ? 'debug' : 'missing';
+  const last = [...release.matchAll(SIGNING_ASSIGNMENT)].at(-1);
+  if (last) return (last[1] ?? last[2]) === 'debug' ? 'debug' : 'present';
+  return RELEASE_NAME.test(block(source, /signingConfigs\s*\{/)) || RELEASE_ANYWHERE.test(source) ? 'present' : 'missing';
 }
 async function gradleSigning(io, moduleDir, keyFiles) {
-  for (const file of keyFiles) if (await io.exists(file) === true) return 'present'; // existence only: these hold passwords
+  let state = 'unknown';
   try {
     const gradle = await readText(io, path.join(moduleDir, 'build.gradle.kts')) ?? await readText(io, path.join(moduleDir, 'build.gradle'));
-    return gradle === null ? 'unknown' : gradleSigningState(gradle);
-  } catch { return 'unknown'; }
+    if (gradle !== null) state = gradleSigningState(gradle);
+  } catch { /* an unreadable build file leaves the signing configuration unknown */ }
+  if (state === 'debug' || state === 'present') return state;
+  for (const file of keyFiles) if (await io.exists(file) === true) return 'present'; // existence only: these hold passwords
+  return state;
 }
 
 /**

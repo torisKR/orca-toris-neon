@@ -1085,7 +1085,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       (() => { throw runtimeError('invalid_params', '실행을 찾을 수 없습니다.'); })(),
     'runs.create': (input = {}) => queue(async () => {
       const key = requestKey(input); // the same requestId or diagnosis candidate returns the run it already made
-      const existing = key && [...state.runs, ...state.archivedRuns].find((item) => item.requestId === key && item.status !== 'cancelled');
+      const existing = key && [...state.runs, ...state.archivedRuns].find((item) => item.requestId === key && (key.startsWith('req:') || item.status !== 'cancelled'));
       if (existing) return clone(existing);
       if (state.runs.length >= MAX_RUNS) throw runtimeError('too_large', '최대 40개 실행을 보관합니다. 기존 실행을 완료한 뒤 보관 정리를 진행하세요.');
       const plan = await planRunInput(input, { call, inspectRepository, readPlayApp, runs: [...state.runs, ...state.archivedRuns] });

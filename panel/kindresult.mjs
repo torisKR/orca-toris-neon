@@ -56,17 +56,21 @@ function performanceBlock(run) {
   if (!before && !after) return '';
   const same = before && after && sameText(before.scenario, after.scenario) && sameText(before.environment, after.environment) && before.samples === after.samples;
   const names = [...new Set([...(before?.metrics ?? []), ...(after?.metrics ?? [])].map((metric) => metric.name))];
+  let hasRate = false;
   const rows = names.map((name) => {
     const was = before?.metrics.find((metric) => metric.name === name), now = after?.metrics.find((metric) => metric.name === name);
     const comparable = same && was && now && was.unit === now.unit && was.better === now.better;
-    const change = comparable ? rateText(improvementRate(median(was.values), median(now.values), was.better)) : '계산 안 함';
+    const rate = comparable ? improvementRate(median(was.values), median(now.values), was.better) : null;
+    if (rate !== null) hasRate = true;
+    const change = comparable ? rateText(rate) : '계산 안 함';
     return [name, value(was, before?.samples), value(now, after?.samples), change];
   });
   const conditions = (label, item) => item ? hint(label + ': 시나리오 ' + e(item.scenario) + ' · 환경 ' + e(item.environment) + ' · 표본 ' + e(item.samples) + '회') : '';
   const verdict = !after ? hint('수정 후 측정이 없어 개선율을 표시하지 않습니다.')
     : !before ? warn('기준 측정이 없어 개선율을 표시하지 않습니다.')
       : !same ? warn('측정 조건이 달라 개선율을 계산하지 않았습니다. 같은 시나리오·환경·표본 수로 다시 재야 비교할 수 있습니다.')
-        : hint('개선율은 같은 조건에서 잰 두 측정의 중앙값으로 계산했습니다.');
+        : hasRate ? hint('변화율은 비교 가능한 지표의 중앙값으로 계산했습니다.')
+          : hint('변화율을 계산할 수 있는 기준값이나 비교할 수 있는 지표가 없습니다.');
   return part('측정 비교', conditions('기준 측정', before) + conditions('재측정', after) + table('성능 측정 비교', ['지표', '개선 전', '개선 후', '변화'], rows) + verdict);
 }
 

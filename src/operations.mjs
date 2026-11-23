@@ -3,6 +3,8 @@
  * last moved, and which kind of stop it is in. An execution error, a wait for the person and an
  * unclear delivery are kept apart. Read from the jobs ledger only; nothing is estimated.
  */
+import { reservesSlot } from './scheduler.mjs';
+
 const FAILED_OUTCOMES = new Set(['failure', 'cancellation', 'superseded', 'interruption']); // as src/runtime.mjs
 
 /**
@@ -33,15 +35,23 @@ export function lastProgressAt(job) {
   return times.length ? new Date(Math.max(...times)).toISOString() : null;
 }
 
-/** Each stage's current jobs (active, awaiting its report), for the panel. A job with no record reads as unclear. */
+/** Current stage jobs and detached reservations, including unconfirmed stops. */
 export function runOperations(run) {
   const jobs = new Map((run.jobs ?? []).map((job) => [job.nonce, job]));
-  return (run.nodes ?? []).flatMap((node) => [...new Set([node.active, node.pendingReceipt].filter((item) => item?.nonce).map((item) => item.nonce))].map((nonce) => {
-    const holder = node.active?.nonce === nonce ? node.active : node.pendingReceipt;
-    const job = jobs.get(nonce) ?? { ...holder, state: 'uncertain', startedAt: null, promptRecovery: undefined, lastAgentEventAt: undefined, readyAt: undefined, failedAt: undefined };
+  const current = new Map();
+  for (const node of run.nodes ?? []) {
+    for (const holder of [node.pendingReceipt, node.active]) {
+      if (!holder?.nonce) continue;
+      const job = jobs.get(holder.nonce);
+      if (run.status === 'cancelled' && job && !reservesSlot(job)) continue;
+      current.set(holder.nonce, job ?? { ...holder, nodeId: node.id, state: 'uncertain', startedAt: null, promptRecovery: undefined, lastAgentEventAt: undefined, readyAt: undefined, failedAt: undefined });
+    }
+  }
+  for (const job of jobs.values()) if (reservesSlot(job) && !current.has(job.nonce)) current.set(job.nonce, job);
+  return [...current.values()].map((job) => {
     return {
-      nodeId: node.id, phase: job.phase ?? null, agent: job.agent ?? null, attempt: job.attempt ?? null, terminalId: job.terminalId ?? null,
-      condition: jobCondition(job), lastProgressAt: lastProgressAt(job)
+      nodeId: job.nodeId, phase: job.phase ?? null, agent: job.agent ?? null, attempt: job.attempt ?? null, terminalId: job.terminalId ?? null,
+      condition: run.status === 'cancelled' ? 'unclear' : jobCondition(job), lastProgressAt: lastProgressAt(job)
     };
-  }));
+  });
 }

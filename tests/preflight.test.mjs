@@ -267,6 +267,16 @@ test('debug signing is read only from the release build type and never from comm
   assert.equal(gradleSigningState('android { }\nandroid.signingConfigs.create("release") { }'), 'present');
 });
 
+test('a release configured to sign with the debug key is flagged even with upload key material present', async () => {
+  const script = 'android { signingConfigs { create("release") {} } buildTypes { release { signingConfig = signingConfigs.debug } } }';
+  const files = { '/w/android/app/build.gradle.kts': script, '/w/android/key.properties': '' };
+
+  const project = await readProjectFacts({ root: '/w', stacks: ['flutter'], io: projectIo(files) });
+
+  assert.equal(project.signing, 'debug');
+  assert.equal(gradleSigningState(script.replace('signingConfigs.debug', 'signingConfigs.debug\n signingConfig = signingConfigs.getByName("release")')), 'present');
+});
+
 test('an unreadable Godot preset is unknown, never "no preset" and never ready', async () => {
   const io = { exists: async () => false, readHead: async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } };
   const project = await readProjectFacts({ root: '/g', stacks: ['godot'], io });

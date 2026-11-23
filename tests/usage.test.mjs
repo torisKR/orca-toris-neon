@@ -65,6 +65,23 @@ test('a session with no creation time is not assumed new', () => {
   assert.equal(usageSummary(usage).scope, 'session');
 });
 
+test('a session created just before this job cannot count its prior tokens against this run', () => {
+  const usage = observed(ledger([job()]), [row({ createdAt: START - 2_000, totalTokens: 42_000 })]);
+  const summary = usageSummary(usage);
+
+  assert.equal(summary.total, null);
+  assert.equal(summary.sessionTotal, 42_000);
+});
+
+test('a truncated list stays partial even when it contains every currently linked session', () => {
+  const usage = observed(ledger([job()]), [row({ totalTokens: 42_000 })], { truncated: true });
+  const summary = usageSummary(usage);
+
+  assert.equal(summary.total, 42_000);
+  assert.equal(summary.scope, 'partial');
+  assert.equal(summary.counts.truncated, 0, 'zero linked sessions missing is not a complete list');
+});
+
 test('failed, cancelled and retried attempts keep their tokens and the retry part is not added again', () => {
   // Arrange: attempt 1 failed (s1), attempt 2 retried (s2), then a review (s3).
   const jobs = [

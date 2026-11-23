@@ -67,7 +67,8 @@ function compactReport(report, L) {
   if (!report || typeof report !== 'object') return report;
   const { evidence, ...rest } = report;
   const out = L.archive
-    ? { nonce: rest.nonce, phase: rest.phase, outcome: rest.outcome, summary: clip(rest.summary, L.summary) }
+    ? { nonce: rest.nonce, phase: rest.phase, outcome: rest.outcome, summary: clip(rest.summary, L.summary),
+      sourceFingerprint: rest.sourceFingerprint, releaseLink: rest.releaseLink }
     : { ...rest, summary: clip(rest.summary, L.summary), ...(typeof rest.next === 'string' ? { next: clip(rest.next, L.summary) } : {}) };
   if (Array.isArray(rest.followUps)) {
     const kept = rest.followUps.slice(0, L.followUps).map((item) => clip(item, L.followUpText));
@@ -95,8 +96,10 @@ const withoutJobCopies = (record) => {
   return rest;
 };
 
-function compactNode(node, L) {
+function compactNode(node, L, reviewCommits) {
   const out = { ...node };
+  const reviewedCommit = reviewCommits.get(node.review?.nonce);
+  if (reviewedCommit) out.reviewCommit = { nonce: node.review.nonce, commit: reviewedCommit };
   if (Array.isArray(node.history)) {
     out.history = L.history ? node.history.slice(-L.history).map((entry) => ({
       nonce: entry.nonce, phase: entry.phase, outcome: entry.outcome, attempt: entry.attempt, receivedAt: entry.receivedAt,
@@ -137,11 +140,12 @@ export function compactRun(run, level = 0) {
   const events = run.events ?? [];
   const keptEvents = events.slice(-L.events).map((item) => clipFields(item, L.eventText));
   const omitted = (run.eventsOmitted ?? 0) + events.length - keptEvents.length;
+  const reviewCommits = new Map((run.jobs ?? []).filter((job) => job.phase === 'review' && job.sourceCommit).map((job) => [job.nonce, job.sourceCommit]));
   return {
     ...rest,
     // Archived runs keep only the computed token summary; nothing reads an archived run's sessions again.
     ...(L.archive ? { goal: clip(run.goal, 500), acceptedReports: undefined, ...(run.usage ? { usage: { frozen: usageSummary(run.usage) } } : {}) } : {}),
-    nodes: (run.nodes ?? []).map((node) => compactNode(node, L)),
+    nodes: (run.nodes ?? []).map((node) => compactNode(node, L, reviewCommits)),
     jobs: L.archive ? [] : compactJobs(run, L),
     events: keptEvents,
     ...(omitted ? { eventsOmitted: omitted } : {}),

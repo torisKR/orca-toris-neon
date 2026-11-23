@@ -46,11 +46,12 @@ const checks = (evidence) => {
 };
 
 /** Stable element id for an artifact, so focus can land on it after it loads. */
-export const artifactId = (file) => 'artifact-' + [...String(file)].reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 7).toString(36);
+export const artifactCacheKey = (runId, file) => JSON.stringify([runId, file]);
+export const artifactId = (runId, file) => 'artifact-' + [...artifactCacheKey(runId, file)].reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 7).toString(36);
 
 function artifactView(runId, item, artifacts) {
   const name = fileName(item.path), label = Object.hasOwn(ARTIFACT_LABELS, item.label) ? ARTIFACT_LABELS[item.label] : MEDIA.test(name) ? '구분 없음' : '로그';
-  const what = label + ': ' + (item.description ?? name), loaded = artifacts.get(item.path);
+  const what = label + ': ' + (item.description ?? name), loaded = artifacts.get(artifactCacheKey(runId, item.path));
   const head = '<figcaption><span class="artifact-label is-' + e(item.label ?? 'none') + '">' + e(label) + '</span> <span class="mono">' + e(name) + '</span>' +
     (item.description ? ' · ' + e(item.description) : '') + '</figcaption>';
   const verb = MEDIA.test(name) ? '보기' : '내용 보기';
@@ -62,7 +63,7 @@ function artifactView(runId, item, artifacts) {
   else if (loaded.kind === 'image') body = '<img src="data:' + e(loaded.mime) + ';base64,' + e(loaded.data) + '" alt="' + e(what) + '">';
   else if (loaded.kind === 'video') body = '<video controls muted src="data:' + e(loaded.mime) + ';base64,' + e(loaded.data) + '" aria-label="' + e(what) + '"></video>';
   else body = '<pre class="artifact-text" tabindex="0" role="region" aria-label="' + e(name) + '">' + e(loaded.text) + '</pre>' + (loaded.truncated ? '<p class="hint">앞부분만 표시했습니다.</p>' : '');
-  return '<figure class="artifact" id="' + artifactId(item.path) + '" tabindex="-1">' + head + body + '</figure>';
+  return '<figure class="artifact" id="' + artifactId(runId, item.path) + '" tabindex="-1">' + head + body + '</figure>';
 }
 
 /** One stage's result card; empty for reports written before the result fields existed. */

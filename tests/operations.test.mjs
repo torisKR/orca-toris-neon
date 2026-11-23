@@ -74,6 +74,14 @@ test('run operations list only the current job of each stage with phase, agent, 
   assert.equal(list[0].lastProgressAt, iso(NOW - 590_000));
 });
 
+test('a cancelled run still shows a reserved job whose terminal closure is unconfirmed', () => {
+  const run = { id: 'r1', status: 'cancelled', nodes: [{ id: 'build', active: null }], jobs: [job()] };
+
+  const list = runOperations(run);
+
+  assert.deepEqual(list.map((item) => [item.nodeId, item.condition, item.terminalId]), [['build', 'unclear', 't-1']]);
+});
+
 test('CPU and memory are reported as not measured, with the reason, never as zero', () => {
   assert.equal(RESOURCE_MEASUREMENT.measured, false);
   assert.match(RESOURCE_MEASUREMENT.reason, /프로세스 ID/);

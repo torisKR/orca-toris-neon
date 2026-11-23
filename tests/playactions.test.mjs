@@ -70,7 +70,7 @@ test('a link with a problem, an unknown action or a bad agent starts nothing', (
 test('pressing an action again returns its open run; only after that run completes does a new one get a new id', () => {
   const first = actionRequestId('release', link, []);
   assert.equal(actionRequestId('release', link, []), first, 'two clicks before the run exists share one id');
-  const open = [{ id: 'r1', status: 'running', requestId: 'req:' + first }];
+  const open = [{ id: 'r1', status: 'running', projectId: link.projectId, requestId: 'req:' + first }];
   assert.equal(actionRequestId('release', link, open), first);
   assert.notEqual(actionRequestId('listing', link, open), first, 'another action is another run');
   assert.notEqual(actionRequestId('release', { ...link, accountId: 'acc-b' }, open), first, 'the same package in another account is another app');
@@ -80,6 +80,17 @@ test('pressing an action again returns its open run; only after that run complet
   const archivedGap = [{ id: 'r2', status: 'completed', requestId: 'req:' + second }];
   assert.notEqual(actionRequestId('release', link, archivedGap), second, 'an older run trimmed from the archive never reopens a finished id');
   assert.ok(first.length <= 100 && /^[\w.:-]+$/.test(first));
+});
+
+test('relinking a Play app to another project does not reuse the former project plan', () => {
+  const previous = actionRequestId('release', link, []);
+  const open = [{ id: 'r1', status: 'ready', projectId: link.projectId, requestId: 'req:' + previous }];
+  const relinked = { ...link, projectId: 'p-other' };
+
+  const plan = playActionRequest({ action: 'release', link: relinked, app: appView(), runs: open });
+
+  assert.equal(plan.projectId, 'p-other');
+  assert.notEqual(plan.requestId, previous);
 });
 
 test('the internal test check confirms only the version a run built for this package and track, and says when the value is old', () => {
@@ -112,6 +123,7 @@ test('never-observed tracks count as old, and an unknown approval state tells th
     app: appView('published', [track('production', [41]), { track: 'internal', releases: [], observedAt: null, stale: true, error: null }]) }).goal;
   assert.match(missing, /internal 관측 없음/);
   assert.match(missing, /오래된 관측값은/);
+  assert.match(missing, /승인 상태를 확인하지 못했습니다/);
   for (const app of [null, appView('unknown')]) {
     const goal = playActionRequest({ action: 'listing', link, app, runs: [] }).goal;
     assert.match(goal, /승인 상태를 확인하지 못했습니다/);

@@ -4,6 +4,7 @@ import { createRun, templateGraph } from '../src/engine.mjs';
 import { verifiedEvidence, markFreshness, reuseInstruction, lastVerifiedCommit, parentEvidenceOf } from '../src/reuse.mjs';
 import { planRunInput } from '../src/flows.mjs';
 import { buildNodePrompt } from '../src/prompt.mjs';
+import { archiveRun, compactRun } from '../src/store.mjs';
 
 const NOW = '2026-11-23T01:00:00.000Z';
 const LATER = '2026-11-23T05:00:00.000Z';
@@ -98,6 +99,17 @@ test('the last verified commit is the newest passed test of the same project', (
   // Assert
   assert.deepEqual(last, { runId: 'new', commit: 'b'.repeat(40), at: LATER });
   assert.equal(lastVerifiedCommit(runs, 'p9'), null);
+});
+
+test('the reviewed source remains available when compaction removes the finished job', () => {
+  const parent = finishedRun('parent', { commit: 'a'.repeat(40) });
+  parent.jobs.forEach((job) => { job.state = 'complete'; });
+
+  for (const stored of [archiveRun(parent, LATER), compactRun(parent, 2)]) {
+    assert.equal(stored.jobs.length, 0);
+    assert.deepEqual(lastVerifiedCommit([stored], 'p1'), { runId: 'parent', commit: 'a'.repeat(40), at: NOW });
+    assert.equal(verifiedEvidence(stored).find((item) => item.nodeId === 'test').fingerprint, 'fp-a');
+  }
 });
 
 test('a follow-up plan records the parent evidence; a release plan records the last verified commit', async () => {

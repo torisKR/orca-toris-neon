@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { measureTree, runDisk, diskHandlers, BUILD_OUTPUTS } from '../src/disk.mjs';
+import { archiveRun } from '../src/store.mjs';
 
 async function scratch() { return fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'neon-disk-'))); }
 async function gitWorkspace() { const dir = await scratch(); execFileSync('git', ['init', '-q', dir]); return dir; }
@@ -186,6 +187,35 @@ test('a finished run\'s build outputs stay in use while another unfinished run s
   const disk = await runDisk({ run, runs: [run, other], receiptRoot });
   assert.equal(disk.builds[0].kind, 'live');
   assert.deepEqual(disk.candidates, { count: 0, bytes: 0 });
+});
+
+test('a build remains in use when the cancelled run has an unresolved job', async (t) => {
+  const receiptRoot = await scratch();
+  const workspacePath = await gitWorkspace();
+  t.after(() => Promise.all([receiptRoot, workspacePath].map((dir) => fs.rm(dir, { recursive: true, force: true }))));
+  const run = fixtureRun({ receiptRoot, workspacePath, status: 'cancelled' });
+  run.jobs[0].state = 'uncertain';
+  await write(path.join(workspacePath, 'build', 'app.aab'), 40);
+
+  const disk = await runDisk({ run, runs: [run], receiptRoot });
+
+  assert.equal(disk.builds[0].kind, 'live');
+  assert.equal(disk.candidates.count, 0);
+});
+
+test('an output linked by a retained release report stays referenced after the run ends', async (t) => {
+  const receiptRoot = await scratch();
+  const workspacePath = await gitWorkspace();
+  t.after(() => Promise.all([receiptRoot, workspacePath].map((dir) => fs.rm(dir, { recursive: true, force: true }))));
+  const run = fixtureRun({ receiptRoot, workspacePath });
+  await write(path.join(workspacePath, 'build', 'app.aab'), 40);
+  run.nodes[0].report.releaseLink = { artifact: 'build/app.aab' };
+
+  const archived = archiveRun(run);
+  const disk = await runDisk({ run: archived, runs: [archived], receiptRoot });
+
+  assert.equal(disk.builds[0].kind, 'referenced');
+  assert.equal(disk.candidates.count, 0);
 });
 
 test('a saved job that kept only its receipt file path is still classified by that file\'s folder', async () => {
