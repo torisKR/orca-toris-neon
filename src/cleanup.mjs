@@ -102,12 +102,14 @@ export function describeSweep(summary) {
     summary.kept.map((item) => ' · 남김 ' + item.terminalId + ' (' + item.state + ')').join('') + summary.failed.map((item) => ' · 실패 ' + item.terminalId + ': ' + item.error).join('');
 }
 
-/** Per run, for the run card: terminals closed, already gone, failed to close (why), kept (why). */
+/** Per run, for the run card: terminals waiting to close, closed, already gone, failed to close (why), kept (why). */
 export function cleanupSummary(run) {
   const jobs = run.jobs ?? [];
+  // Waiting for a sweep (grace included); a kept or failed terminal is counted under its own heading.
+  const pending = closeCandidates(run, { now: Infinity, graceMs: 0 }).filter((job) => !job.terminalKept && !job.closeAttempts).length;
   const closed = jobs.filter((job) => job.terminalClosed && !job.terminalClosed.gone).length;
   const gone = jobs.filter((job) => job.terminalClosed?.gone).length;
   const failed = jobs.filter((job) => !job.terminalClosed && job.closeAttempts).map((job) => ({ terminalId: job.terminalId, attempts: job.closeAttempts, error: job.closeError ?? null }));
   const kept = jobs.filter((job) => !job.terminalClosed && job.terminalKept).map((job) => ({ terminalId: job.terminalId, state: job.terminalKept.state }));
-  return closed || gone || failed.length || kept.length ? { closed, gone, failed, kept } : null;
+  return pending || closed || gone || failed.length || kept.length ? { pending, closed, gone, failed, kept } : null;
 }

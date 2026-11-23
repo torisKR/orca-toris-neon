@@ -1073,3 +1073,35 @@ test('a Play app is linked by an explicit account, package and project, and its 
   await h.click({action:'play-internal',account:'acc-a',package:'com.example.water'});
   assert.deepEqual(h.requests('play.internalCheck')[0].input,{accountId:'acc-a',packageName:'com.example.water'});
 });
+
+// Operations view (plan 5.4, 6.5): managed jobs by condition on the agents tab; disk use on the run card, on request only.
+test('the agents tab shows each managed job with its condition, last progress, cleanup and unmeasured CPU/RAM',async()=>{
+  const state=baseState();const run=liveRun();
+  run.operations=[{nodeId:'build',phase:'work',agent:'claude',attempt:1,terminalId:'term-1',condition:'needs-user',lastProgressAt:NOW}];
+  run.cleanup={pending:1,closed:0,gone:0,failed:[],kept:[]};
+  state.runs=[run];state.limits={activeJobs:2,heavyJobs:1,active:1,heavy:0};state.resources={measured:false,reason:'프로세스 ID를 주지 않습니다'};
+  const h=await harness({state});
+  await h.click({action:'tab',tab:'agents'});
+  const html=h.app.innerHTML;
+  assert.match(html,/운영 현황/);
+  assert.match(html,/사용자 응답 대기/);
+  assert.match(html,/마지막 진행 <time data-since="2026-11-19T01:00:00\.000Z"/);
+  assert.match(html,/정리 대기 1/);
+  assert.match(html,/CPU·메모리 미측정/);
+});
+
+test('the run card reads disk use only when asked and shows the cleanup preview without a delete control',async()=>{
+  const state=baseState();state.runs=[liveRun()];
+  const value={runId:'run-1',at:NOW,receipts:{path:'/Users/me/.toris-neon/runs/run-1',exists:true,bytes:4096,files:3,truncated:false,jobs:[]},
+    builds:[{relative:'build',path:'/Users/me/ws/build',kind:'live',bytes:2048,files:2,truncated:false}],buildsNote:null,candidates:{count:0,bytes:0}};
+  const h=await harness({state,responses:{'runs.disk':()=>value}});
+  await h.click({action:'open-run',run:'run-1'});
+  assert.equal(h.requests('runs.disk').length,0,'nothing is measured before the person asks');
+  await h.click({action:'check-disk',run:'run-1'});await h.settle();
+  assert.deepEqual(h.requests('runs.disk')[0].input,{runId:'run-1'});
+  const html=h.app.innerHTML;
+  assert.match(html,/\/Users\/me\/\.toris-neon\/runs\/run-1/);
+  assert.match(html,/4\.0 KB/);
+  assert.match(html,/정리 후보 0개/);
+  assert.doesNotMatch(html,/data-action="(delete|remove|clean)[^"]*"/);
+});

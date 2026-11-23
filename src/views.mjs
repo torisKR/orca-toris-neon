@@ -5,6 +5,7 @@
 import { GLOBAL_LIMITS, globalCounts, waitReasons } from './scheduler.mjs';
 import { cleanupSummary } from './cleanup.mjs';
 import { usageSummary } from './usage.mjs';
+import { runOperations, RESOURCE_MEASUREMENT } from './operations.mjs';
 
 const invalidView = () => Object.assign(new Error('지원되지 않는 실행 조회 형식입니다.'), { code: 'invalid_params' });
 // Keep transport payloads small without changing the durable evidence record.
@@ -50,7 +51,8 @@ export function projectState(state, view = 'full', limits = GLOBAL_LIMITS) {
   if (view === 'summary') return {
     version: state.version, revision: state.revision, view, build: state.build ?? null,
     limits: { ...limits, ...globalCounts(state.runs) },
-    runs: state.runs.map((run) => ({ ...runSummary(run), waiting: waitReasons(run, state.runs, limits), cleanup: cleanupSummary(run) })),
+    resources: RESOURCE_MEASUREMENT, // CPU·RAM: 미측정 and why (src/operations.mjs)
+    runs: state.runs.map((run) => ({ ...runSummary(run), waiting: waitReasons(run, state.runs, limits), cleanup: cleanupSummary(run), operations: runOperations(run) })),
     archivedRuns: state.archivedRuns.map(archiveSummary)
   };
   if (view === 'timeline') return {

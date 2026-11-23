@@ -99,6 +99,6 @@ test('a run says how many finished terminals were closed, which failed and why, 
   const { cleanupSummary } = await import('../src/cleanup.mjs');
   const r = run([job('a', { terminalClosed: { at: iso(NOW), sessionId: 's-a' } }), job('b', { terminalClosed: { at: iso(NOW), gone: true } }),
     job('c', { closeAttempts: 2, closeError: 'Orca could not complete this action' }), job('d', { terminalKept: { state: 'working', at: iso(NOW) } }), job('e')]);
-  assert.deepEqual(cleanupSummary(r), { closed: 1, gone: 1, failed: [{ terminalId: 't-c', attempts: 2, error: 'Orca could not complete this action' }], kept: [{ terminalId: 't-d', state: 'working' }] });
-  assert.equal(cleanupSummary(run([job('z')])), null);
+  assert.deepEqual(cleanupSummary(r), { pending: 1, closed: 1, gone: 1, failed: [{ terminalId: 't-c', attempts: 2, error: 'Orca could not complete this action' }], kept: [{ terminalId: 't-d', state: 'working' }] });
+  assert.equal(cleanupSummary(run([job('z', { state: 'running' })])), null);
 });

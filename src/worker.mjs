@@ -9,6 +9,7 @@ import { createPreflight, preflightHandlers } from './preflight.mjs';
 import { createPlayLinks } from './playlinks.mjs';
 import { playLinkHandlers } from './playactions.mjs';
 import { createRemoteControl } from './remote.mjs';
+import { diskHandlers } from './disk.mjs';
 
 let activeRuntime;
 const subscriptions = [];
@@ -56,6 +57,7 @@ export default async function activate(orca) {
     ...runtime.handlers,
     ...preflightHandlers({ preflight, start: runtime.handlers['runs.start'], log: (line) => orca.log?.(line) }),
     ...playLinkHandlers({ play, links, getRuns: allRuns, createRun: runtime.handlers['runs.create'] }),
+    ...diskHandlers({ getRuns: allRuns, receiptRoot: runtime.receiptRoot }), // per-run disk use and cleanup preview (src/disk.mjs), on request only
     'play.submissionAccounts': () => play.listSubmissionAccounts(),
     'play.account.save': (input) => play.saveAccount(input),
     'play.account.remove': (input) => play.removeAccount(input),

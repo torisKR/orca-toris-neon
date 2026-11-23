@@ -56,7 +56,7 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
   sample=claimNode(sample,'build',{phase:'work',nonce:'preview-nonce',now:liveAt-74000});
   sample=recordLaunch(sample,'build',{nonce:'preview-nonce',terminalId:'preview-terminal',workspaceId:'preview-workspace',now:liveAt-74000});
   sample.jobs=sample.nodes.filter(node=>node.status==='passed').map(node=>({nodeId:node.id,nonce:'preview-finished-'+node.id,terminalId:'preview-finished-'+node.id,state:'completed'}));
-  sample.jobs.push({nodeId:'build',nonce:'preview-nonce',terminalId:'preview-terminal',state:'running',agent:'codex'});
+  sample.jobs.push({nodeId:'build',nonce:'preview-nonce',terminalId:'preview-terminal',state:'running',agent:'codex',phase:'work',attempt:1,startedAt:iso(liveAt-74000),agentState:'waiting',lastAgentEventAt:liveAt-30000});
   sample.nodes.find(node=>node.id==='architecture').attempts=2; // the sample ledger has a retried architecture session
   sample.usage=previewUsage(sample,liveAt);
 
@@ -201,6 +201,12 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     }
     if(name==='play.submissionAccounts')return accounts.map(({id,name,developerId})=>({id,name,developerId}));
     if(name==='artifacts.read')return previewArtifact(input.path);
+    // Synthetic disk use (no file system read): receipt folders by kind and one live build output.
+    if(name==='runs.disk'){const root='/example/.toris-neon/runs/'+input.runId,job=(dir,kind,bytes)=>({nodeId:dir.split('/')[0],path:root+'/'+dir,kind,bytes,files:3,truncated:false});
+      const jobs=[job('research/1-review-a','referenced',48_000),job('build/1-work-b','candidate',2_400_000),job('build/2-work-c','live',96_000)];
+      return {runId:input.runId,at:iso(stamp),receipts:{path:root,exists:true,bytes:2_544_000,files:9,truncated:false,jobs},
+        builds:[{relative:'build',path:'/example/moon-habit/build',kind:'live',bytes:182_000_000,files:4200,truncated:false},{relative:'.dart_tool',path:'/example/moon-habit/.dart_tool',kind:'live',bytes:61_000_000,files:900,truncated:false}],
+        buildsNote:null,candidates:{count:1,bytes:2_400_000}};}
     // Synthetic preflight facts (no host probe): a Flutter app missing the Android SDK, debug-signed, no Play account.
     if(name==='runs.preflight')return {runId:input.runId,at:iso(stamp),...classifyStages(lookup(input.runId,true),{repository:{state:'ok'},
       stack:{stacks:['flutter'],label:'Flutter/Dart',source:'files'},tools:{conclusive:true,flutter:'/example/flutter/bin/flutter',jdk:'/example/jdk',androidSdk:null,fastlane:null,bundletool:null},

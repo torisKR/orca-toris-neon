@@ -406,3 +406,17 @@
 .token-detail p { margin: 0; }
 .token-stage { margin-top: 6px; }
 .member-tokens { color: var(--flow-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* Operations view (panel/operations.mjs): the condition is in words, colour only repeats it. */
+.ops-counts { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.ops-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ops-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.ops-row p { margin: 0; overflow-wrap: anywhere; }
+.ops-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 10px 0 6px; font-size: 12px; }
+.ops-facts dt { color: var(--muted); }
+.ops-facts dd { margin: 0; overflow-wrap: anywhere; }
+.ops-run-line { margin: 8px 0 0; font-size: 12px; }
+.disk { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; }
+.disk p { margin: 4px 0; overflow-wrap: anywhere; }
+.disk ul { margin: 4px 0; padding-left: 18px; }
+.disk li { overflow-wrap: anywhere; }
+.disk-subhead { font-size: 12px; font-weight: 600; margin: 8px 0 4px; letter-spacing: 0; }

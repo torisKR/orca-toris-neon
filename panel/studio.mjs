@@ -7,6 +7,7 @@ import { runTokens } from './tokens.mjs';
 import { preflightBlock, preflightSummary } from './preflight.mjs';
 import { todayRunCard, noteAction } from './todayactions.mjs';
 import { playLinkBlock, linkKey } from './playlinks.mjs';
+import { operationsOverview, runOperationsLine, diskBlock, diskSummary } from './operations.mjs';
 const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
 const bridge = window.orca;
@@ -15,6 +16,7 @@ const playFilters = {query:'',status:'all'};
 let submissionAccounts = [];
 const details = new Map();
 const preflights = new Map(); // runId -> {loading, value, error}: 실행 전 점검 (panel/preflight.mjs)
+const disks = new Map(); // runId -> {loading, value, error}: 디스크 사용량, fetched only when asked (panel/operations.mjs)
 let preflightShown = null;
 const detailRequests = new Map();
 const dirtyForms = new Set();
@@ -114,6 +116,10 @@ function loadPreflight(id,force=false,{announce=false}={}) {
       focusRecheck(id);
     });
 }
+// Operations fields ride on the summary run; a loaded runs.get detail lacks them. The disk is read only on request.
+const summaryOf = item => ui.state?.runs?.find(r=>r.id===item.id)??item;
+// Focus returns to the button only if it was there (or nowhere); the result is announced once.
+function loadDisk(id){const entry=disks.get(id);if(entry?.loading)return;disks.set(id,{value:entry?.value,loading:true});request('runs.disk',{runId:id}).then(value=>disks.set(id,{value}),error=>disks.set(id,{value:entry?.value,error:error.message??String(error)})).finally(()=>{const button=()=>[...app.querySelectorAll('[data-action="check-disk"]')].find(item=>item.dataset.run===id),active=document.activeElement,refocus=!active||active===document.body||active.dataset?.action==='check-disk';render();if(refocus)button()?.focus?.();const announcer=document.querySelector('#announcer');if(announcer)announcer.textContent=diskSummary(disks.get(id));});}
 function preflightSection(item) {
   if(FINISHED_RUN.has(item.status))return '';
   if(preflightShown!==item.id||!preflights.has(item.id)){preflightShown=item.id;Promise.resolve().then(()=>loadPreflight(item.id));}
@@ -327,7 +333,7 @@ function runSummaryCard(item,nodes) {
     (!startable&&['paused','blocked'].includes(item.status)?button(item.status==='blocked'?'상태 확인 후 재개':'재개','resume-run','data-run="'+e(item.id)+'"','primary'):'')+
     (['running','ready','blocked'].includes(item.status)?button('새 배정 멈춤','pause-run','data-run="'+e(item.id)+'" title="새 단계 배정만 멈춥니다. 작업 중인 에이전트는 계속 작업합니다."'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+
     (item.workspaceId?button('작업 공간 열기','open-workspace','data-workspace="'+e(item.workspaceId)+'"'):'')+(!['cancelled','completed'].includes(item.status)?button('실행 취소','cancel-run','data-run="'+e(item.id)+'"','danger'):'')+'</div>'+
-    autonomyLine(item)+cleanupLine(item)+cleanupResult(item)+storageLine(item)+
+    autonomyLine(item)+cleanupLine(item)+cleanupResult(summaryOf(item))+runOperationsLine(summaryOf(item))+storageLine(item)+diskBlock(disks.get(item.id),{runId:item.id})+
     (item.status==='paused'?'<p class="hint spacer">새 단계 배정만 멈췄습니다. 이미 작업 중인 에이전트는 계속 작업하고 완료 보고서를 남길 수 있습니다. 모두 멈추려면 실행 취소를 누르세요.</p>':'')+(item.runtimeMessage?'<div class="callout error" role="status">'+e(item.runtimeMessage)+'</div>':'')+
     (item.stopFailures?.length?'<div class="callout error"><strong>일부 에이전트의 종료를 확인하지 못했습니다.</strong>'+item.stopFailures.map(f=>'<p>'+e(f.message)+'</p>'+(f.terminalId?button('해당 에이전트 확인','focus-terminal','data-terminal="'+e(f.terminalId)+'"','small'):button('Orca 작업 공간 확인','open-workspace','data-workspace="'+e(item.workspaceId)+'"','small'))).join('')+'</div>':'')+'</div>';
 }
@@ -538,7 +544,7 @@ function accountForm() {
 function renderAgents() {
   const agents=ui.state?.agents??[],item=run();
   const limits=ui.state?.limits;
-  let html='<section class="hero flow-tab"><h1>팀별 에이전트</h1>'+(limits?'<p class="limits-line"><strong>작업 '+e(limits.active)+' / '+e(limits.activeJobs)+'</strong> · 빌드·테스트 '+e(limits.heavy)+' / '+e(limits.heavyJobs)+'<span class="hint"> Neon이 배정하는 작업에만 적용됩니다. 직접 실행한 다른 에이전트는 세지 않습니다. 한도는 플러그인 설정에서 바꿀 수 있습니다.</span></p>':'')+'</section>';
+  let html='<section class="hero flow-tab"><h1>팀별 에이전트</h1>'+(limits?'<p class="limits-line"><strong>작업 '+e(limits.active)+' / '+e(limits.activeJobs)+'</strong> · 빌드·테스트 '+e(limits.heavy)+' / '+e(limits.heavyJobs)+'<span class="hint"> Neon이 배정하는 작업에만 적용됩니다. 직접 실행한 다른 에이전트는 세지 않습니다. 한도는 플러그인 설정에서 바꿀 수 있습니다.</span></p>':'')+'</section>'+operationsOverview({runs:ui.state?.runs??[],limits,resources:ui.state?.resources,now:Date.now()});
   if(item) {
     selectedNode(item);const ctx=flowContext(item);
     html+='<div class="agent-overview">'+runPicker(item)+collabStrip(item,ctx)+teamNavigator(item,ctx)+'</div><div class="people">'+people(item,ctx)+'</div>';
@@ -648,6 +654,7 @@ app.addEventListener('click',async event=>{
     return;
   }
   if(action==='refresh'){await refresh({forceHost:true});return;}
+  if(action==='check-disk'){const id=target.dataset.run;loadDisk(id);render();[...app.querySelectorAll('[data-action="check-disk"]')].find(item=>item.dataset.run===id)?.focus?.();return;}
   if(action==='recheck-preflight'){loadPreflight(target.dataset.run,true,{announce:true});render();focusRecheck(target.dataset.run);return;}
   target.disabled=true;
   try {

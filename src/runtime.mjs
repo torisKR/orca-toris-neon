@@ -1474,7 +1474,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     return api;
   }
   const api = {
-    initialize,
+    initialize, receiptRoot,
     handlers: Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, async (input) => jsonValue(await handler(input))])),
     getState: (input = {}) => jsonValue(projectState(state, input.view, limits)),
     drain: async () => {
