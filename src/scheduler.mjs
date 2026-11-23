@@ -22,7 +22,7 @@ export async function readLimits(settings) {
   return { activeJobs, heavyJobs };
 }
 /** Stages that build the app or drive a device or emulator. */
-export const HEAVY_STAGES = new Set(['build', 'test', 'internal', 'monetization', 'reproduce', 'measure']);
+export const HEAVY_STAGES = new Set(['build', 'test', 'internal', 'monetization', 'reproduce', 'measure', 'identity']);
 export const isHeavy = (nodeId) => HEAVY_STAGES.has(nodeId);
 const LIVE_JOB_STATES = new Set(['launching', 'running', 'awaiting-report', 'uncertain']);
 export const reservesSlot = (job) => LIVE_JOB_STATES.has(job.state);

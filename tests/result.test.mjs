@@ -10,7 +10,7 @@ function releaseRun() {
 }
 const pass = (run, id, extra = {}) => Object.assign(run.nodes.find((node) => node.id === id), { status: 'passed', report: { outcome: 'passed', summary: id + ' 완료', evidence: [] } }, extra);
 const submission = { accountId: 'acc-1', developerId: '123', packageName: 'com.example.water', track: 'production', versionCode: '43' };
-const play = (state, overrides = {}) => ({ accounts: [{ id: 'acc-1', apps: [{ packageName: 'com.example.water',
+const play = (state, overrides = {}) => ({ accounts: [{ id: 'acc-1', developerId: submission.developerId, apps: [{ packageName: 'com.example.water',
   tracks: [{ track: 'production', observedAt: NOW, stale: false, releases: [{ versionCodes: [43], state }] }] }], ...overrides }] });
 
 test('the completion label climbs only on evidence: built, verified, ready, submitted, then observed published', () => {
@@ -24,10 +24,10 @@ test('the completion label climbs only on evidence: built, verified, ready, subm
   pass(run, 'test'); pass(run, 'release');
   assert.equal(completionLabel(run, null), '출시 준비 완료');
   pass(run, 'internal', { approval: { submission: { ...submission, track: 'internal' } } });
-  assert.equal(completionLabel(run, null), '내부 테스트 제출 확인');
+  assert.equal(completionLabel(run, null), '내부 테스트 제출 승인 완료');
   pass(run, 'release', { approval: { submission } });
-  assert.equal(completionLabel(run, null), '내부 테스트 제출 확인', 'an approved production submission alone is not "published"');
-  assert.equal(completionLabel(run, play('in_review')), '내부 테스트 제출 확인');
+  assert.equal(completionLabel(run, null), '내부 테스트 제출 승인 완료', 'an approved production submission alone is not "published"');
+  assert.equal(completionLabel(run, play('in_review')), '내부 테스트 제출 승인 완료');
   assert.equal(completionLabel(run, play('published')), '프로덕션 게시 확인');
 });
 
@@ -38,6 +38,7 @@ test('"published" needs the same account, package, track and version, freshly ob
     'a production submission not yet seen on Play is not an internal-test submission either');
   const wrong = (mutate) => { const data = play('published'); mutate(data.accounts[0]); return completionLabel(run, data); };
   assert.notEqual(wrong((account) => { account.id = 'acc-2'; }), '프로덕션 게시 확인');
+  assert.notEqual(wrong((account) => { account.developerId = '456'; }), '프로덕션 게시 확인');
   assert.notEqual(wrong((account) => { account.apps[0].packageName = 'com.other'; }), '프로덕션 게시 확인');
   assert.notEqual(wrong((account) => { account.apps[0].tracks[0].track = 'beta'; }), '프로덕션 게시 확인');
   assert.notEqual(wrong((account) => { account.apps[0].tracks[0].releases[0].versionCodes = [42]; }), '프로덕션 게시 확인');

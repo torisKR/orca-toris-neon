@@ -59,6 +59,14 @@ test('nothing launches past two active assignments or a second heavy one, whatev
   assert.equal(pick.action.nodeId, 'brief', 'the light stage goes; the heavy one waits');
 });
 
+test('existing app identity checks wait for the heavy slot because they run a build and tests', () => {
+  const building = claim(run('a', graph('build')), 'build');
+  const improving = run('b', graph('identity'));
+
+  assert.equal(nextLaunch([building, improving], { cursor: 1 }), null);
+  assert.equal(waitReasons(improving, [building, improving]).identity, '빌드 작업 완료 대기');
+});
+
 test('launch candidates keep the run rules: started, unblocked, writer exclusivity, no shared workspace busy', () => {
   const paused = run('a', graph('x'), { status: 'paused' });
   assert.deepEqual(launchCandidates(paused, [paused]), []);

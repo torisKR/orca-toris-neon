@@ -15,11 +15,12 @@ const fileName = (file) => String(file).split('/').pop();
 const passed = (run, id) => run.nodes.some((node) => node.id === id && node.status === 'passed');
 const submissions = (run) => run.nodes.filter((node) => ['internal', 'release'].includes(node.id) && node.status === 'passed' && node.approval?.submission?.developerId)
   .map((node) => node.approval.submission);
+const approvedAccount = (target, play) => (play?.accounts ?? []).find((account) => account.id === target.accountId && account.developerId === target.developerId);
+const approvedTrack = (target, account) => account?.apps?.find((item) => item.packageName === target.packageName)?.tracks?.find((item) => item.track === target.track);
 
 /** Play shows this exact version published on the approved account, package and track, freshly observed. */
 function observedPublished(target, play) {
-  const app = (play?.accounts ?? []).find((account) => account.id === target.accountId)?.apps?.find((item) => item.packageName === target.packageName);
-  const track = app?.tracks?.find((item) => item.track === target.track);
+  const track = approvedTrack(target, approvedAccount(target, play));
   return Boolean(track && track.observedAt && !track.stale && !track.error &&
     track.releases?.some((release) => release.state === 'published' && release.versionCodes?.map(String).includes(String(target.versionCode))));
 }
@@ -27,7 +28,7 @@ function observedPublished(target, play) {
 export function completionLabel(run, play) {
   const sent = submissions(run), production = (target) => /(^|:)production$/.test(target.track);
   if (sent.some((target) => production(target) && observedPublished(target, play))) return '프로덕션 게시 확인';
-  if (sent.some((target) => !production(target))) return '내부 테스트 제출 확인';
+  if (sent.some((target) => !production(target))) return '내부 테스트 제출 승인 완료';
   if (passed(run, 'release')) return '출시 준비 완료';
   if (passed(run, 'test')) return '검증 완료';
   if (run.nodes.some((node) => node.write && node.status === 'passed')) return '구현 결과 생성';
@@ -85,8 +86,8 @@ export function stageResult(run, node, { artifacts }) {
 function publishNote(run, play, playError) {
   if (!play) return 'Play 상태를 읽지 못해 게시 여부는 표시하지 않았습니다' + (playError ? ' (' + e(playError) + ')' : '') + '.';
   const target = submissions(run).find((item) => /(^|:)production$/.test(item.track));
-  const account = (play.accounts ?? []).find((item) => item.id === target.accountId);
-  const track = account?.apps?.find((item) => item.packageName === target.packageName)?.tracks?.find((item) => item.track === target.track);
+  const account = approvedAccount(target, play);
+  const track = approvedTrack(target, account);
   if (!track) return 'Play에서 ' + e(target.packageName) + '의 ' + e(target.track) + ' 트랙 상태를 읽지 못했습니다' + (account?.error ? ' (' + e(account.error.message ?? account.error) + ')' : '') + '.';
   if (track.error || track.stale) return 'Play 관측값이 오래됐거나 오류가 있어 게시 여부를 확인하지 않았습니다. Play 탭에서 다시 확인하세요.';
   return 'Play에서 승인한 버전(' + e(target.versionCode) + ')의 프로덕션 게시를 아직 확인하지 못했습니다. 단계적 출시 비율은 Play Console에서 확인하세요.';
@@ -95,7 +96,7 @@ function publishNote(run, play, playError) {
 /** Exactly what was observed; Play's "published" is not a 100% rollout. */
 function observedLine(run, play) {
   const target = submissions(run).find((item) => /(^|:)production$/.test(item.track) && observedPublished(item, play));
-  const track = play.accounts.find((item) => item.id === target.accountId).apps.find((item) => item.packageName === target.packageName).tracks.find((item) => item.track === target.track);
+  const track = approvedTrack(target, approvedAccount(target, play));
   return '<p class="hint">Play 관측: ' + e(target.track) + ' · versionCode ' + e(target.versionCode) + ' · 게시됨 · 관측 ' + e(localDate(track.observedAt)) +
     '. 게시됨은 모든 사용자 배포를 뜻하지 않습니다. 단계적 출시의 배포 비율은 Neon이 확인하지 않으니 Play Console에서 보세요.</p>';
 }
