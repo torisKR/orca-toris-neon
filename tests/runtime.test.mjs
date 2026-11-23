@@ -11,6 +11,7 @@ import { createLaunchOverrides } from '../src/visual.mjs';
 import { AUTONOMY_BRIEF, DECIDE_PROMPT } from '../src/autonomy.mjs';
 import { INDEX_KEY, LEGACY_KEY, runKey, archiveKey } from '../src/store.mjs';
 import { STAGE_BUDGETS } from '../src/proportion.mjs';
+import { createRemoteControl } from '../src/remote.mjs';
 
 const NOW = Date.parse('2026-11-19T05:00:00Z');
 const exec = promisify(execFile);
@@ -1900,7 +1901,9 @@ test('a finished autonomous run is announced once; a permission prompt is announ
   h.report(); await h.done(); h.report(); await h.done();
   assert.equal(h.getRun().status, 'completed');
   await h.runtime.handlers['runs.refresh']({ runId: h.getRun().id }); await h.runtime.drain();
-  assert.equal(notices(h).filter((call) => /완성/.test(call.input.title)).length, 1);
+  const finished = notices(h).filter((call) => /실행 완료/.test(call.input.title));
+  assert.equal(finished.length, 1);
+  assert.match(finished[0].input.body, /구현 완료/, 'the notice names what actually finished');
 });
 
 // Storage: one value per run (src/store.mjs); a failed write never stops the run.
@@ -2331,6 +2334,31 @@ test('the same request returns the run it already made, never a second one', asy
   assert.equal(again.requestId, 'req:bot-req-7');
   assert.equal(h.runtime.getState().runs.length, 1);
   await assert.rejects(h.runtime.handlers['runs.create']({ goal: '앱', projectId: 'p1', requestId: 'bad id!' }), /requestId/);
+});
+
+test('remote requests through the real runs.create: one run per request, conflicts and goal-only twins kept apart', async () => {
+  // Arrange
+  const h = harness();
+  await h.runtime.initialize();
+  const handlers = h.runtime.handlers;
+  const remote = createRemoteControl({ getRuns: () => { const state = h.runtime.getState(); return [...state.runs, ...state.archivedRuns]; },
+    createRun: handlers['runs.create'], startRun: handlers['runs.start'], resumeRun: handlers['runs.resume'] });
+  const longest = { action: 'create', requestId: 'b'.repeat(70), mode: 'improve', kind: 'feature', projectId: 'p1', goal: '알림 기능을 추가합니다.' };
+
+  // Act
+  const first = await remote.request(longest);
+  const again = await remote.request(longest);
+  const twin = await remote.request({ ...longest, requestId: 'other-request' });
+  await handlers['runs.cancel']({ runId: first.run.runId });
+  const afterCancel = await remote.request(longest);
+
+  // Assert
+  assert.equal(again.run.runId, first.run.runId, 'the longest requestId still fits the runs.create key');
+  assert.notEqual(twin.run.runId, first.run.runId);
+  assert.equal(afterCancel.run.status, 'cancelled', 'a redelivery after cancelling does not make a new run');
+  await assert.rejects(remote.request({ ...longest, goal: '결제를 추가합니다.' }), { code: 'conflict' });
+  assert.equal(h.runtime.getState().runs.length, 2);
+  assert.equal(first.run.kind, 'feature');
 });
 
 test('picking a diagnosis candidate creates one linked improvement run of the candidate\'s kind', async () => {

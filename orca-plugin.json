@@ -77,6 +77,10 @@
       {
         "id": "neon.play",
         "title": "Toris Neon: Play Store 점검 상태"
+      },
+      {
+        "id": "neon.remote",
+        "title": "Toris Neon: 원격 제어(봇) 안내"
       }
     ],
     "events": [

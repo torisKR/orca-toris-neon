@@ -77,6 +77,19 @@ test('a completed run is announced once, naming the submission that waits for th
   assert.deepEqual(planAutonomy({ ...done, autonomy: { notified: ['completed'] } }), []);
 });
 
+test('the completion notice says which of implementation, verification and submission actually finished', () => {
+  // Arrange
+  const done = run([node('build', { status: 'passed', write: true }), node('test', { status: 'passed' }), node('internal', { status: 'passed', write: true, approval: {} })],
+    { status: 'completed', template: 'improve' });
+
+  // Act
+  const [complete] = planAutonomy(done);
+
+  // Assert
+  assert.match(complete.body, /^앱 업데이트 실행을 마쳤습니다\. 구현 완료 · 검증 완료 · 제출 안 함/);
+  assert.doesNotMatch(complete.body, /게시했습니다|출시했습니다/, 'a finished run never claims a Play publication');
+});
+
 test('an autonomous update run stops at the product catalog with one notice instead of approving it', () => {
   const catalog = node('catalog', { status: 'awaiting-approval', requiresApproval: true, humanApproval: true, deps: ['listing'] });
   const monetization = node('monetization', { status: 'passed', report: { outcome: 'passed', products: [{ productId: 'premium_unlock', type: 'inapp', price: '₩3,900' }] } });

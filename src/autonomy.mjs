@@ -5,6 +5,7 @@
  */
 import { approveNode } from './engine.mjs';
 import { catalogNotice } from './catalog.mjs';
+import { milestoneText } from './milestones.mjs';
 
 /** Bounds so a run can never loop or spend without limit. Shown in the run card. */
 export const AUTONOMY_LIMITS = {
@@ -64,8 +65,8 @@ export function planAutonomy(run) {
   const state = run.autonomy ?? {};
   if (run.status === 'completed') {
     if ((state.notified ?? []).includes('completed')) return [];
-    const unsubmitted = run.nodes.some((node) => ['internal', 'release'].includes(node.id) && !node.approval?.submission);
-    return [{ type: 'complete', body: (run.template === 'improve' ? '앱 업데이트를 만들고 검증했습니다.' : '앱을 만들고 검증했습니다.') + (unsubmitted ? ' Play 내부 테스트·출시 제출은 사용자가 계정과 대상을 지정해 승인해야 합니다.' : '') }];
+    // What actually finished (src/milestones.mjs), so "완료" never stands for a submission that did not happen.
+    return [{ type: 'complete', body: (run.template === 'improve' ? '앱 업데이트 실행을 마쳤습니다. ' : '앱 제작 실행을 마쳤습니다. ') + milestoneText(run) }];
   }
   const actions = [];
   for (const node of run.nodes) {
@@ -154,7 +155,7 @@ export function createSupervisor(ops) {
           state(run).stopped = { at: new Date(ops.now()).toISOString(), reason: action.reason };
           ops.appendEvent(run, '자율 진행을 멈췄습니다: ' + action.reason, { nodeId: action.nodeId });
         } else if (action.type === 'complete') {
-          if (!notifyOnce(run, 'completed', 'Toris Neon: 앱 완성', action.body)) continue;
+          if (!notifyOnce(run, 'completed', 'Toris Neon: 실행 완료', action.body)) continue;
           ops.appendEvent(run, '자율 진행 완료: ' + action.body, {});
         }
         ops.replaceRun(run);

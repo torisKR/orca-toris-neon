@@ -388,6 +388,7 @@ await window.orca.plugin.request("runs.approve", {
 | `today.snapshot` | date?, workspaceId?, noteOffset?, noteLimit? | 날짜별 기록·인계 페이지·notesPage·기존 세션·경고 |
 | `today.save` | workspaceId, state, next, why?, hold?, verified? | 인계 메모 추가 |
 | `today.resume` | workspaceId, agent?, sessionId? | 새 인계 세션 또는 확인된 기존 세션 시작 |
+| `remote.request` | action(create·followUp·get·resume), requestId, … (`src/remote.mjs`) | 봇·원격 계약. 명령 `neon.remote`의 args와 같음. 같은 requestId+같은 내용은 기존 실행, 다른 내용은 `[conflict]`. 경로별 지원 범위는 ROADMAP 8묶음 |
 
 ## 권한과 신뢰
 

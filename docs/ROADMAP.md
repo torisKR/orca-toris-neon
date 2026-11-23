@@ -1,6 +1,6 @@
 # Toris Neon 로드맵
 
-기준: [개발안](Toris_Neon_Development_Plan_2026-11-23.md)(원문은 고치지 않음). 개발안의 PR 1·3·4(이 저장소의 1~3묶음)와 PR 2(4묶음, 토큰 사용량), 6.4절 실행 전 점검(5묶음)은 구현과 테스트를 마쳤습니다. 나머지는 아래 순서로 진행합니다.
+기준: [개발안](Toris_Neon_Development_Plan_2026-11-23.md)(원문은 고치지 않음). 개발안의 PR 1·3·4(이 저장소의 1~3묶음)와 PR 2(4묶음, 토큰 사용량), 6.4절 실행 전 점검(5묶음), PR 5·6(6·7묶음), PR 7 봇·원격 제어 계약(8묶음)은 구현과 테스트를 마쳤습니다. 나머지는 아래 순서로 진행합니다.
 
 ## 1묶음: 실행 한도·버전 (구현)
 
@@ -64,10 +64,46 @@
 - **내부 테스트 결과 확인**: 계정을 다시 점검한 뒤 internal 트랙 관측값과, 이 프로젝트에서 검토를 통과한 단계가 기록한 최신 internal `releaseLink`의 versionCode를 제출된 릴리스(심사 중·승인·게시)와 비교해 제출 확인·아직 보이지 않음·오래된 관측·기록된 빌드 없음을 표시합니다. 테스터 의견과 사전 출시 보고서는 읽지 않습니다.
 - 한계: 이미 열린 Play 작업 실행이 있을 때 반려 사유를 바꿔 다시 누르면 기존 실행이 열리고 새 사유는 반영되지 않습니다(그 실행을 취소한 뒤 다시 시작). 붙여 넣은 반려 사유는 화면을 다시 그리면 지워집니다. 재검증은 인계 메모(작업 공간)에만 있고, 완료된 실행의 근거 신선도는 후속 개선 실행이 시작될 때 확인합니다(6묶음). Play 작업의 담당은 기본값(작업 codex, 검토 claude)이며 실행 카드에서 바꿉니다.
 
+## 8묶음: 봇·원격 제어 계약 (개발안 PR 7, 10절, 구현)
+
+- 하나의 계약을 두 입구로 받습니다: 명령 `neon.remote`(인자 `args`)와 패널 핸들러 `remote.request`(입력 `input`). 둘 다 `src/remote.mjs`의 같은 함수로 갑니다. 인자 없이(명령 팔레트) 부르면 사용법만 돌려줍니다.
+- `create`(mode `new-app`·`improve`·`diagnose`, projectId, goal, kind), `followUp`(parentRunId, kind, goal: 이전 실행의 프로젝트에서 `parentRunId`로 연결한 개선), `get`(requestId 또는 runId), `resume`(시작하지 않은 실행은 실행 전 점검을 거친 `runs.start`, 시작한 실행은 `runs.resume`; `expectedRevision`을 주면 실행의 `updatedAt`과 다를 때 충돌). 만들기는 계획만 만들고 시작하지 않습니다. 모르는 항목은 무시하지 않고 거부합니다.
+- 중복 방지: 같은 requestId + 같은 내용(모드·프로젝트·목표·종류·이전 실행)은 이미 만든 실행을 돌려주고, 같은 requestId + 다른 내용은 `[conflict]`로 거부하며 기존 runId를 알려 줍니다. 목표 문장만 같은 다른 requestId는 새 실행입니다. 취소된 실행도 돌려주므로 재전달된 메시지가 취소한 작업을 다시 만들지 않습니다. 내용 지문은 `runs.create`의 requestId 키(`remote.<requestId>.<지문 16자>`)에 들어가 재시작·보관 뒤에도 남고, 별도 저장소를 두지 않습니다. 요청은 하나씩 처리해 동시에 온 두 전달이 둘 다 만들지 않습니다. 한계: 보관 한도(최대 100개, 합계 1MiB)에서 밀려 지워진 실행의 requestId는 기억하지 않으므로, 그 뒤의 재전달은 새 실행을 만듭니다. 패널 양식과 Play 작업 버튼은 지금처럼 "같은 키는 같은 실행"을 유지합니다(키가 양식·열린 작업마다 따로 생김).
+- 응답의 실행 요약에는 상태, 통과 단계 수, 실제로 끝난 것이 들어갑니다(`src/milestones.mjs`): 구현(제출 단계를 뺀 쓰기 단계), 검증(test 단계), 제출(internal/release 단계가 승인된 Play 대상과 함께 통과; 구조화된 값은 `done`이 아니라 `approved`). 그래프에 없는 단계는 빼고, 제출은 Play 게시가 아니라 승인된 제출까지만 뜻합니다. 자율 실행의 완료 알림도 같은 문장을 씁니다(제목 `실행 완료`, 예: `구현 완료 · 검증 완료 · 제출 안 함(…)`). 알림은 실행마다 한 번입니다.
+- `resume` 결과에는 `action: started|resumed`가 있고, 완료·취소된 실행은 `[conflict]`로 거부합니다. 실행 전 점검 실패는 패널과 같이 시작을 막지 않습니다(점검 결과는 실행 카드에 남음). `expectedRevision` 비교는 최선 노력이며 비교와 재개 사이의 변경까지 막지는 않습니다.
+- Orca 브리지는 자기가 아는 코드(실측: `conflict`)는 넘기지만 모르는 코드(실측: `not_found`)는 `action_failed`로 바꾸므로, 메시지가 항상 `[conflict]`·`[not_found]`·`[invalid_params]`처럼 코드로 시작합니다. runtime이 던진 오류도 같은 형태로 바꿉니다.
+
+### Orca 1.4.271에서 어디서 되는가 (확인한 것만)
+
+근거는 설치된 `/Applications/Orca.app`의 app.asar 1.4.271(압축 해제 후 메서드 이름·오류 문구로 검색)과 이 맥북에서 실행한 읽기 전용 명령입니다.
+
+| 경로 | 개발 폴더로 불러온 Neon (지금 사용자 설정) | 설치형 Neon (태그·카탈로그 설치) | 근거 |
+|---|---|---|---|
+| 이 맥북의 Orca 화면: 패널 버튼, 명령 팔레트·상태 표시줄의 `neon.remote` | 패널은 됨. 명령은 인자 없이만 실행됨(사용법 표시) | 같음 | 렌더러가 `window.api.plugins.invokeCommand({pluginKey, commandId})`로 **args 없이** 부름 → IPC `plugins:invokeCommand` → 자기 기기의 플러그인 서비스 |
+| 이 맥북의 셸·에이전트 터미널에서 `orca plugin dev request local.toris-neon remote.request --data '{…}'` | **됨(실측)**: 도움말, 없는 requestId 조회(`[not_found]`), 완료된 실제 실행 `get`(`구현 완료 · 검증 완료 · 제출 안 함`)을 읽기 전용으로 확인 | **안 됨**: `dev request only reaches development plugins` | RPC `plugins.devRequest`(권한 host-admin) → 개발 플러그인만 대상 |
+| CLI로 설치형 플러그인 명령 실행 | — | **지원 경로 없음** | `orca plugin` 하위 명령에 명령 실행이 없음. RPC `plugins.invokeCommand`(host-admin, args 전달, 결과 반환)는 런타임에 있지만 1.4.271의 CLI·봇·모바일 어디에서도 부르지 않음 |
+| Orca Bots | 봇 에이전트가 이 맥북의 셸에서 위 `dev request`를 실행하면 닿을 것으로 보이나 **봇 세션에서는 확인하지 않음**(확인한 것은 Orca 오케스트레이션 작업자 세션) | 지원 경로 없음 | 런타임의 `bots.*` 메서드 139개 중 플러그인 명령·핸들러를 부르는 것이 없고, 봇 코드에서 `plugins.invokeCommand`·`plugins.devRequest`를 부르지 않음 |
+| 모바일(휴대폰) | **안 됨** | **안 됨** | 런타임이 모바일 클라이언트에 허용 목록 밖 메서드를 `Method '…' is not available to mobile clients`로 거부하고, 목록에 `plugins.*`가 없음 |
+| 다른 컴퓨터의 Orca 데스크톱(이 맥북과 페어링) | 그 컴퓨터의 패널은 **그 컴퓨터에 설치된 플러그인과 그 컴퓨터의 저장소**로 그림. 이 맥북의 Neon 실행 상태는 보이지 않음 | 같음 | 데스크톱 렌더러의 패널·명령 호출(`readPanelEntry`·`panelAction`·`invokeCommand`)은 IPC로 자기 main 프로세스의 플러그인 서비스로 감(원격 런타임으로 넘기지 않음) |
+| 다른 컴퓨터의 `orca` CLI(`--environment`/`--pairing-code`로 이 맥북에 연결) | 코드상 가능: 페어링한 데스크톱 클라이언트는 host-admin 메서드를 부를 수 있음. **확인하지 않음**(이 맥북은 다른 Orca 서버의 클라이언트로만 페어링돼 있고, 이 맥북을 서버로 페어링한 기기가 없음) | 안 됨(dev request 제한) | `orca plugin dev request --help`의 `--environment`·`--pairing-code`; 런타임 권한 검사에서 workspace·host-admin 등은 페어링 클라이언트에 기본 허용 |
+| 브라우저 웹 클라이언트(`orca serve` 페어링) | 안 됨 | 안 됨 | 웹 클라이언트의 `window.api.plugins`는 업데이트 상태 등 세 함수만 있는 빈 구현이라 패널·명령이 없음 |
+| 알림 | Neon의 `notifications.show`는 맥북 데스크톱 알림과 함께 런타임 알림 흐름(`source: plugin`)으로 들어가며, 이 흐름이 모바일 `notifications.subscribe`·`getMissedSince`·푸시 등록에 쓰임. **휴대폰에 실제로 뜨는지는 확인하지 않음** | 같음 | main의 `dispatchPlugin` → `dispatch({type:'notification', source:'plugin'})` → `mobile-notification` 수신자 |
+
+결론: 지금 확인된 원격 경로는 "이 맥북에서 개발 폴더로 불러온 Neon + 셸의 `orca plugin dev request`"뿐입니다. 설치형으로 바꾸면 이 경로는 닫히고, 1.4.271에는 설치형 플러그인 명령을 인자와 함께 부르는 지원 CLI·봇·모바일 경로가 없습니다. 네트워크 서버나 자체 동기화는 만들지 않았습니다. OCI Hermes 연결은 같은 계약을 쓰는 별도 연결부로 남깁니다(개발안 15절).
+
+### 같은 Orca 계정의 다른 기기에서 Auto App을 공유하는가
+
+공유되지 않습니다(1.4.271 코드 기준).
+
+- Neon의 실행 상태는 Orca 호스트의 플러그인 저장 파일(`<Orca 사용자 데이터>/plugins-data/<pluginKey>/storage.json`, 맥에서는 `~/Library/Application Support/orca/plugins-data/local.toris-neon/`)에만 있습니다. 런타임의 `storage.get/set`이 이 파일을 직접 읽고 씁니다.
+- Orca 계정 로그인(`orcaAccount.*`)이 쓰이는 곳은 코드에서 Orca Relay(휴대폰 페어링 중계)와 봇 소유자 확인이었고, 플러그인이나 `plugins-data`를 동기화하는 코드는 찾지 못했습니다. `orca account`는 에이전트(Claude/Codex) 로그인 관리입니다.
+- 다른 기기의 데스크톱은 자기 기기의 플러그인 목록·저장소로 패널을 그립니다(위 표). 그 기기에 Neon을 설치하면 빈 Auto App이 따로 생깁니다. 휴대폰과 웹 클라이언트에는 플러그인 패널이 없습니다.
+- 다른 기기에서 이 맥북의 Neon을 다루는 유일한 길은 이 맥북을 서버로 페어링한 뒤 CLI로 `dev request`를 보내는 것이며(개발 폴더 모드에서만), 이것도 실측하지 않았습니다.
+
 ## 다음 (미구현, 순서대로)
 
-1. **봇 제어 (PR 7)**: 외부 봇이 `requestId`로 실행을 만들고 상태를 조회합니다. `requestId`는 이미 받습니다.
-2. **산출물 용량 (6.5절), 운영 지표 (PR 8)**.
+1. **산출물 용량 (6.5절), 운영 지표 (PR 8)**.
+2. **설치형 원격 경로**: Orca가 설치형 플러그인 명령을 인자와 함께 부르는 CLI·봇 경로를 내면 `neon.remote`를 그대로 연결합니다(지금 계약 변경 없음).
 
 ## 실제 실행으로만 확인할 수 있는 것
 
@@ -80,4 +116,5 @@
 - 실행 전 점검: 사용자 맥북의 Orca 워커에서 로그인 셸 환경 읽기가 5초 안에 끝나는지, Flutter·Godot·Android 프로젝트에서 표시가 실제 설치 상태와 맞는지, 실제 실행에서 `해당 단계 불가`로 표시된 단계가 실제로 그 이유로 실패하는지
 - 토큰: 실제 Claude·Codex 세션 각 하나가 `agent.listSessions`에서 같은 `agent` 이름과 `sessionId`로 잡혀 배정과 연결되는지, `createdAt`이 채워져 새 세션으로 판정되는지, 완료 직후 늦게 기록되는 값이 마지막 두 번의 확인 안에 반영되는지, 메인 세션 합계에 하위 에이전트 사용량이 들어 있는지
 - 개선 템플릿: 실제 에이전트가 `comparison`·`measurement`·`releaseLink`를 지시대로 적는지, 거절된 보고서를 보고서 수정 요청으로 고치는지, 후속 실행의 새 작업 공간 fingerprint가 이전 실행과 언제 같아지는지(이전 실행 브랜치가 기준 브랜치에 합쳐졌을 때), 마지막 검증 커밋이 새 작업 공간에서 `git diff`로 찾아지는지, 실제 웹 프로젝트가 웹으로 판정되는지
+- 봇·원격: 실제 봇 세션의 셸에서 `orca plugin dev request`가 같은 권한으로 되는지, 명령 팔레트의 `neon.remote`가 사용법 문자열을 그대로 보여 주는지, 플러그인 알림이 페어링한 휴대폰에 뜨는지, 다른 기기에서 `--environment`로 이 맥북의 Neon에 닿는지(이 맥북을 서버로 페어링한 뒤)
 - 오늘·Play 연계: 실제 Orca에서 재검증 에이전트가 범위 안의 검증만 다시 실행하고 저장된 인계를 그대로 두는지, 실제 Play 계정의 internal 트랙에 실행이 만든 versionCode가 관측되는지, 연결한 프로젝트로 만든 다음 버전 준비 실행이 실행 전 점검과 Play 연결을 정상으로 보는지

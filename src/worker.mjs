@@ -8,6 +8,7 @@ import { createVisualAdvisor, createLaunchOverrides } from './visual.mjs';
 import { createPreflight, preflightHandlers } from './preflight.mjs';
 import { createPlayLinks } from './playlinks.mjs';
 import { playLinkHandlers } from './playactions.mjs';
+import { createRemoteControl } from './remote.mjs';
 
 let activeRuntime;
 const subscriptions = [];
@@ -51,7 +52,7 @@ export default async function activate(orca) {
   // Play Store tab: a Play app linked to a project, and what it can start (src/playlinks.mjs, src/playactions.mjs).
   const links = createPlayLinks({ storage: orca.storage, listAccounts: () => play.list(), call: (method, params) => orca.host.call(method, params) });
   const allRuns = () => { const state = runtime.getState(); return [...state.runs, ...state.archivedRuns]; };
-  const handlers = {
+  const neonHandlers = {
     ...runtime.handlers,
     ...preflightHandlers({ preflight, start: runtime.handlers['runs.start'], log: (line) => orca.log?.(line) }),
     ...playLinkHandlers({ play, links, getRuns: allRuns, createRun: runtime.handlers['runs.create'] }),
@@ -63,6 +64,9 @@ export default async function activate(orca) {
     'today.save': (input) => today.save(input),
     'today.resume': (input) => today.resume(input)
   };
+  // Bots and other callers (src/remote.mjs): the same contract as the command neon.remote; docs/ROADMAP.md lists the paths.
+  const remote = createRemoteControl({ getRuns: allRuns, createRun: neonHandlers['runs.create'], startRun: neonHandlers['runs.start'], resumeRun: neonHandlers['runs.resume'] });
+  const handlers = { ...neonHandlers, 'remote.request': (input) => remote.request(input) };
   for (const [name, handler] of Object.entries(handlers)) {
     subscriptions.push(orca.panels.handle(name, (input) => handler(inputObject(input))));
   }
@@ -77,6 +81,7 @@ export default async function activate(orca) {
         ? state.runs.map((run) => run.goal + ' · ' + run.status + ' · ' + run.nodes.filter((node) => node.status === 'passed').length + '/' + run.nodes.length).join('\n')
         : '오른쪽 사이드바의 TORIS NEON 패널에서 Auto App 실행 계획을 만드세요.';
     }),
+    orca.commands.register('neon.remote', (args) => remote.request(args)),
     orca.commands.register('neon.play', async () => {
       const { accounts } = await play.list();
       return accounts.length
