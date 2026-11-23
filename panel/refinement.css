@@ -179,6 +179,16 @@ summary:focus-visible,.details:focus-visible{outline:2px solid var(--neon);outli
   .stat-value{display:block;font-size:20px;margin-top:4px}
   .note-grid .actions{gap:6px}
 }
+.preflight{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--bg) 45%,var(--card))}
+.preflight-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.preflight-head .hint{margin-top:0}
+.preflight-title{font-size:12px;font-weight:600;letter-spacing:0}
+.preflight-list{list-style:none;margin:9px 0 0;padding:0;display:flex;flex-direction:column;gap:9px}
+.preflight-item{display:flex;gap:8px;align-items:flex-start;font-size:11px;line-height:1.5}
+.preflight-item p{overflow-wrap:anywhere}
+.preflight-item .badge{flex:0 0 auto;margin-top:1px}
+.preflight-item .hint{font-size:11px}
+.preflight-fix{margin-top:4px;color:var(--fg)}
 @media(max-width:340px){
   .main{padding:17px 12px}
   .topbar{padding:12px}

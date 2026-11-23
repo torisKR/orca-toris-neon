@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { createRun, claimNode, recordLaunch, applyReport, pauseRun, resumeRun, cancelRun, templateGraph } from '../src/engine.mjs';
 import { dayKey, previousDay } from '../src/today.mjs';
 import { projectState } from '../src/views.mjs';
+import { classifyStages } from '../src/preflight.mjs';
 import { deflateSync, crc32 } from 'node:zlib';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
@@ -184,6 +185,10 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts};
     if(name==='play.submissionAccounts')return accounts.map(({id,name,developerId})=>({id,name,developerId}));
     if(name==='artifacts.read')return previewArtifact(input.path);
+    // Synthetic preflight facts (no host probe): a Flutter app missing the Android SDK, debug-signed, no Play account.
+    if(name==='runs.preflight')return {runId:input.runId,at:iso(stamp),...classifyStages(lookup(input.runId,true),{repository:{state:'ok'},
+      stack:{stacks:['flutter'],label:'Flutter/Dart',source:'files'},tools:{conclusive:true,flutter:'/example/flutter/bin/flutter',jdk:'/example/jdk',androidSdk:null,fastlane:null,bundletool:null},
+      project:{signing:'debug'},play:{linked:false,accounts:0}})};
     if(name==='runs.create') {
       const template=input.fromDiagnosis?'improve':input.template??'new-app',kind=input.fromDiagnosis?'bugfix':input.kind;
       const run=createRun({goal:input.goal??'미리보기 진단',projectId:input.projectId??'preview-project-5',nodes:templateGraph(template,{kind,...input.options}),id:'preview-created-'+(++sequence),now:tick()});

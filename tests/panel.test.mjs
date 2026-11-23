@@ -1000,3 +1000,31 @@ test('pause says it only stops new assignments; cancel shows requested, done, or
   const h3=await harness({state});await h3.click({action:'open-run',run:'run-1'});
   assert.match(h3.app.innerHTML,/취소 완료/);
 });
+
+test('opening a run card asks the worker for its preflight once and shows what to fix; 다시 점검 forces a new check',async()=>{
+  // Arrange
+  const state=baseState();const run=workflow();state.runs=[run];
+  const preflight={runId:'run-1',at:NOW,overall:'blocked',counts:{ready:0,blocked:1,check:0},conclusive:true,stack:'Flutter/Dart',
+    stages:[{id:'build',title:'Build',state:'blocked',reasons:[{state:'blocked',text:'Flutter SDK(flutter)을(를) 찾지 못했습니다.',fix:'Flutter SDK를 설치하세요.'}]}]};
+  const h=await harness({state,responses:{'runs.preflight':()=>copy(preflight)}});
+  // Act
+  await h.click({action:'open-run',run:'run-1'});
+  await h.settle();await h.flushFrames();
+  // Assert
+  assert.equal(h.requests('runs.preflight').length,1);
+  assert.deepEqual(h.requests('runs.preflight')[0].input,{runId:'run-1',force:false});
+  assert.match(h.app.innerHTML,/실행 전 점검/);
+  assert.match(h.app.innerHTML,/할 일: Flutter SDK를 설치하세요/);
+  await h.click(renderedAction(h.app.innerHTML,'recheck-preflight'));
+  await h.settle();
+  assert.deepEqual(h.requests('runs.preflight').at(-1).input,{runId:'run-1',force:true});
+});
+
+test('a finished run card does not run a preflight',async()=>{
+  const state=baseState();const run={...workflow(),status:'completed'};state.runs=[run];
+  const h=await harness({state});
+  await h.click({action:'open-run',run:'run-1'});
+  await h.settle();await h.flushFrames();
+  assert.equal(h.requests('runs.preflight').length,0);
+  assert.doesNotMatch(h.app.innerHTML,/실행 전 점검/);
+});

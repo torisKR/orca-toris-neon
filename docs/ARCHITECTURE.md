@@ -18,11 +18,12 @@ Toris Neon은 Orca 네이티브 패널, 순수 상태 엔진, 실제 호스트 �
 | [`commitcheck.mjs`](../src/commitcheck.mjs) | 쓰기 단계의 커밋 확인(깨끗한 트리·HEAD 이동), 검토와 커밋 연결 | 커밋 대신 만들기 |
 | [`flows.mjs`](../src/flows.mjs) | `runs.create` 계획: 새 앱·개선 종류·진단·후보에서 개선·이어서 개선, 요청 키(중복 생성 방지) | 실행 시작 |
 | [`artifacts.mjs`](../src/artifacts.mjs) | 보고서가 기록한 결과 파일 하나를 요청 시 읽기(실행 결과 폴더·작업 공간 안, 심볼릭 링크 탈출 거부, 크기 제한) | 상태 푸시에 파일 포함 |
+| [`preflight.mjs`](../src/preflight.mjs), [`hostprobe.mjs`](../src/hostprobe.mjs) | 실행 전 점검: 단계별 실행 가능·해당 단계 불가·확인 필요와 할 일(`runs.preflight`, 시작 직전 재점검). 로그인 셸의 PATH, SDK 위치, 서명 설정 존재, Git 커밋, Play 계정 수만 확인 | 빌드 실행·시작 차단·서명 파일 읽기 |
 | [`buildinfo.mjs`](../src/buildinfo.mjs) | 실행 중인 코드의 버전·커밋·수정 여부·개발 폴더/설치본 | 버전 변경 |
 | [`worker.mjs`](../src/worker.mjs) | Orca 수명 주기, 명령·패널 요청 등록 | HTML 화면 렌더링 |
 | [`play.mjs`](../src/play.mjs) | 계정 보호, OAuth, Play GET 조회와 캐시 | 앱 업로드·트랙 변경 |
 | [`today.mjs`](../src/today.mjs) | 날짜별 기록, 인계, Git 신선도, 에이전트 재개 | 원본 작업 일지 수정 |
-| [`panel/`](../panel) | 사용자 입력과 표시. `teams.mjs`(팀·상태 뷰 모델, 순수 함수), `flow.mjs`(Auto App 레인·에이전트 탭 렌더러), `newflow.mjs`(새 흐름 양식·진단 후보), `result.mjs`(결과 카드·완료 단계), `kit.mjs`(이스케이프·버튼 등 공용), `studio.mjs`(상태·이벤트·나머지 탭) | 직접 비밀키 저장·자체 모델 호출 |
+| [`panel/`](../panel) | 사용자 입력과 표시. `teams.mjs`(팀·상태 뷰 모델, 순수 함수), `flow.mjs`(Auto App 레인·에이전트 탭 렌더러), `newflow.mjs`(새 흐름 양식·진단 후보), `result.mjs`(결과 카드·완료 단계), `preflight.mjs`(실행 전 점검), `kit.mjs`(이스케이프·버튼 등 공용), `studio.mjs`(상태·이벤트·나머지 탭) | 직접 비밀키 저장·자체 모델 호출 |
 
 패널은 `window.orca.plugin.request(name, input)`로 워커에 요청합니다. 워커는 `orca.panels.handle`에 등록한 핸들러를 실행합니다. 별도 HTTP 서버나 클라우드 백엔드는 없습니다.
 

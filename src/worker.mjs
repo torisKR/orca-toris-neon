@@ -5,6 +5,7 @@ import { createPlayService } from './play.mjs';
 import { createTodayService } from './today.mjs';
 import { createEccAdvisor } from './ecc.mjs';
 import { createVisualAdvisor, createLaunchOverrides } from './visual.mjs';
+import { createPreflight, preflightHandlers } from './preflight.mjs';
 
 let activeRuntime;
 const subscriptions = [];
@@ -39,8 +40,15 @@ export default async function activate(orca) {
   activeRuntime = runtime;
   await runtime.initialize();
   const today = createTodayService({ orca, getState: runtime.getState });
+  // Which stages can run (src/preflight.mjs): on the run card, and fresh before every start. Reports only.
+  const preflight = createPreflight({
+    getRun: (runId) => runtime.handlers['runs.get']({ runId }),
+    call: (method, params) => orca.host.call(method, params),
+    submissionAccounts: () => play.listSubmissionAccounts()
+  });
   const handlers = {
     ...runtime.handlers,
+    ...preflightHandlers({ preflight, start: runtime.handlers['runs.start'], log: (line) => orca.log?.(line) }),
     'play.list': () => play.list(),
     'play.submissionAccounts': () => play.listSubmissionAccounts(),
     'play.account.save': (input) => play.saveAccount(input),

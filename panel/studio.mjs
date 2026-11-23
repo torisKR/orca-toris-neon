@@ -4,6 +4,7 @@ import { transitions, snapshotStates, elapsed, eccOverride, stageState, STATE_LA
 import { collabStrip, relay, inspector, attachCard, people, assignmentForm, teamNavigator } from './flow.mjs';
 import { runResult, artifactId } from './result.mjs';
 import { runTokens } from './tokens.mjs';
+import { preflightBlock, preflightSummary } from './preflight.mjs';
 const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
 const bridge = window.orca;
@@ -11,6 +12,8 @@ const ui = {tab:'today',state:null,today:null,play:null,runId:null,nodeId:null,a
 const playFilters = {query:'',status:'all'};
 let submissionAccounts = [];
 const details = new Map();
+const preflights = new Map(); // runId -> {loading, value, error}: 실행 전 점검 (panel/preflight.mjs)
+let preflightShown = null;
 const detailRequests = new Map();
 const dirtyForms = new Set();
 const disclosures = new Set();
@@ -92,6 +95,27 @@ async function loadSelectedDetail() {
   } catch(error) {
     if(epoch===navigation&&ui.tab==='studio'&&ui.runId===id){ui.error=error.message;scheduleRender();}
   }
+}
+// Fetched when a run's card opens and after a start (the worker re-checks before starting); never on every render.
+// A recheck the person asked for is announced once and keeps keyboard focus on its button; automatic loads stay quiet.
+const focusRecheck=id=>app.querySelector('[data-action="recheck-preflight"][data-run="'+id+'"]')?.focus?.();
+function loadPreflight(id,force=false,{announce=false}={}) {
+  const entry=preflights.get(id);
+  if(!id||(entry?.loading&&!force))return;
+  preflights.set(id,{value:entry?.value,loading:true});
+  request('runs.preflight',{runId:id,force})
+    .then(value=>preflights.set(id,{value}),error=>preflights.set(id,{value:entry?.value,error:error.message??String(error)}))
+    .finally(()=>{
+      if(!announce){scheduleRender();return;}
+      render();
+      const announcer=document.querySelector('#announcer');if(announcer)announcer.textContent=preflightSummary(preflights.get(id));
+      focusRecheck(id);
+    });
+}
+function preflightSection(item) {
+  if(FINISHED_RUN.has(item.status))return '';
+  if(preflightShown!==item.id||!preflights.has(item.id)){preflightShown=item.id;Promise.resolve().then(()=>loadPreflight(item.id));}
+  return preflightBlock(preflights.get(item.id)??{loading:true},{runId:item.id});
 }
 function leaveView() {
   navigation++;dirtyForms.clear();ui.pendingUpdate=false;
@@ -298,7 +322,7 @@ function runSummaryCard(item,nodes) {
   // A short title; the full goal (often thousands of characters) only on demand, here only.
   const short=goalTitle(item.goal);
   const goal='<div class="card-title goal-title">'+e(short)+'</div>'+(item.goal.trim()!==short?'<details class="goal-detail" data-disclosure="goal:'+e(item.id)+'"><summary>전체 목표 보기 · '+item.goal.length.toLocaleString('ko-KR')+'자</summary><p class="note-line goal-full">'+e(item.goal)+'</p></details>':'');
-  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(nodes.length,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+nodes.length+' 단계 통과</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+'<div class="actions">'+
+  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(nodes.length,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+nodes.length+' 단계 통과</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+preflightSection(item)+'<div class="actions">'+
     (startable?button(item.workspaceId?'계속 실행':'앱 제작 시작','start-run','data-run="'+e(item.id)+'"','primary'):'')+
     (!startable&&['paused','blocked'].includes(item.status)?button(item.status==='blocked'?'상태 확인 후 재개':'재개','resume-run','data-run="'+e(item.id)+'"','primary'):'')+
     (['running','ready','blocked'].includes(item.status)?button('새 배정 멈춤','pause-run','data-run="'+e(item.id)+'" title="새 단계 배정만 멈춥니다. 작업 중인 에이전트는 계속 작업합니다."'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+
@@ -620,6 +644,7 @@ app.addEventListener('click',async event=>{
     return;
   }
   if(action==='refresh'){await refresh({forceHost:true});return;}
+  if(action==='recheck-preflight'){loadPreflight(target.dataset.run,true,{announce:true});render();focusRecheck(target.dataset.run);return;}
   target.disabled=true;
   try {
     const methods={'start-run':'runs.start','pause-run':'runs.pause','resume-run':'runs.resume','cancel-run':'runs.cancel','refresh-run':'runs.refresh'};
@@ -628,6 +653,7 @@ app.addEventListener('click',async event=>{
       if(cancelling){ui.cancelling.add(cancelling);render();}
       let result;
       try{result=await request(methods[action],{runId:target.dataset.run});}finally{if(cancelling)ui.cancelling.delete(cancelling);}
+      if(action==='start-run')loadPreflight(target.dataset.run); // the worker checked again just before starting
       toast(action==='pause-run'?'새 단계 배정만 멈췄습니다. 작업 중인 에이전트는 계속 작업합니다.':cancelling?(result?.stopFailures?.length?'취소했지만 일부 에이전트의 종료를 확인해야 합니다. 실행 카드에서 확인하세요.':'취소 완료: Neon이 배정한 에이전트 터미널의 종료를 Orca가 확인했습니다.'):'작업 상태를 갱신했습니다.');
     } else if(action==='retry-node') {
       const selected=run()?.nodes?.find(n=>n.id===target.dataset.node);
