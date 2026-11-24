@@ -318,7 +318,7 @@ function runPicker(item) {
 // Cancel states as confirmed: requested, done (Orca confirmed every owned terminal closed), or needs checking.
 function stopBadge(item) {
   if(ui.cancelling.has(item.id))return '<span class="badge cancelled">취소 요청 처리 중</span>';
-  if(item.status==='cancelled')return '<span class="badge '+(item.stopFailures?.length?'blocked">종료 확인 필요':'cancelled">취소 완료')+'</span>';
+  if(item.status==='cancelled')return '<span class="badge '+(item.cancelUnsaved?'blocked">취소 저장 대기':item.stopFailures?.length?'blocked">종료 확인 필요':'cancelled">취소 완료')+'</span>';
   return badge(item.status);
 }
 function runSummaryCard(item,nodes) {
@@ -335,7 +335,7 @@ function runSummaryCard(item,nodes) {
     (item.workspaceId?button('작업 공간 열기','open-workspace','data-workspace="'+e(item.workspaceId)+'"'):'')+(!['cancelled','completed'].includes(item.status)?button('실행 취소','cancel-run','data-run="'+e(item.id)+'"','danger'):'')+'</div>'+
     autonomyLine(item)+cleanupLine(item)+cleanupResult(summaryOf(item))+runOperationsLine(summaryOf(item))+storageLine(item)+diskBlock(disks.get(item.id),{runId:item.id})+
     (item.status==='paused'?'<p class="hint spacer">새 단계 배정만 멈췄습니다. 이미 작업 중인 에이전트는 계속 작업하고 완료 보고서를 남길 수 있습니다. 모두 멈추려면 실행 취소를 누르세요.</p>':'')+(item.runtimeMessage?'<div class="callout error" role="status">'+e(item.runtimeMessage)+'</div>':'')+
-    (item.stopFailures?.length?'<div class="callout error"><strong>일부 에이전트의 종료를 확인하지 못했습니다.</strong>'+item.stopFailures.map(f=>'<p>'+e(f.message)+'</p>'+(f.terminalId?button('해당 에이전트 확인','focus-terminal','data-terminal="'+e(f.terminalId)+'"','small'):button('Orca 작업 공간 확인','open-workspace','data-workspace="'+e(item.workspaceId)+'"','small'))).join('')+'</div>':'')+'</div>';
+    (item.stopFailures?.length?'<div class="callout error"><strong>'+(item.cancelUnsaved?'취소가 아직 저장되지 않았습니다.':'일부 에이전트의 종료를 확인하지 못했습니다.')+'</strong>'+item.stopFailures.map(f=>'<p>'+e(f.message)+'</p>'+(f.terminalId?button('해당 에이전트 확인','focus-terminal','data-terminal="'+e(f.terminalId)+'"','small'):button('Orca 작업 공간 확인','open-workspace','data-workspace="'+e(item.workspaceId)+'"','small'))).join('')+'</div>':'')+'</div>';
 }
 // What cleanup did for this run: closed, already gone, failed (and why), kept (and why).
 function cleanupResult(item) {
@@ -666,7 +666,7 @@ app.addEventListener('click',async event=>{
       let result;
       try{result=await request(methods[action],{runId:target.dataset.run});}finally{if(cancelling)ui.cancelling.delete(cancelling);}
       if(action==='start-run')loadPreflight(target.dataset.run); // the worker checked again just before starting
-      toast(action==='pause-run'?'새 단계 배정만 멈췄습니다. 작업 중인 에이전트는 계속 작업합니다.':cancelling?(result?.stopFailures?.length?'취소했지만 일부 에이전트의 종료를 확인해야 합니다. 실행 카드에서 확인하세요.':'취소 완료: Neon이 배정한 에이전트 터미널의 종료를 Orca가 확인했습니다.'):'작업 상태를 갱신했습니다.');
+      toast(action==='pause-run'?'새 단계 배정만 멈췄습니다. 작업 중인 에이전트는 계속 작업합니다.':cancelling?(result?.cancelUnsaved?'취소를 아직 저장하지 못했습니다. 새 단계는 배정하지 않고, 저장되면 에이전트를 닫습니다.':result?.stopFailures?.length?'취소했지만 일부 에이전트의 종료를 확인해야 합니다. 실행 카드에서 확인하세요.':'취소 완료: Neon이 배정한 에이전트 터미널의 종료를 Orca가 확인했습니다.'):'작업 상태를 갱신했습니다.');
     } else if(action==='retry-node') {
       const selected=run()?.nodes?.find(n=>n.id===target.dataset.node);
       const acknowledgeUncertain=app.querySelector('#retry-ack')?.checked===true;

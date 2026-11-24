@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  registerJobs, observeSessions, failedCheck, updateUsage, usageSummary, usageTargets, createUsageSync,
+  registerJobs, observeSessions, failedCheck, updateUsage, usageSummary, usageTargets, createUsageSync, runtimeUsageSync, handOverSessions,
   FINAL_CHECKS, LOWER_CONFIRMATIONS, SESSION_LIMIT, USAGE_METHOD,
 } from '../src/usage.mjs';
 import { compactRun, archiveRun } from '../src/store.mjs';
@@ -361,4 +361,93 @@ test('review fixes: a run from before token usage has no token summary rather th
   const view = projectState({ version: 2, revision: 1, runs: [run], archivedRuns: [{ ...run, archivedAt: at(5) }] }, 'summary');
   assert.equal(view.runs[0].tokenUsage, null);
   assert.equal(view.archivedRuns[0].tokenUsage, null);
+});
+
+// Review H-3: a follow-up run that reuses the parent's agent session.
+const sharedSession = (order) => {
+  let total = 100_000;
+  const parent = { id: 'parent', status: 'completed', workspaceId: 'w1', jobs: [job()] };
+  // The child resumes the same session; its prompt is not typed yet when the baseline is read.
+  const child = { id: 'child', status: 'running', workspaceId: 'w1', jobs: [job({ nonce: 'c1', startedAt: at(10), promptRecovery: undefined })] };
+  const runs = order === 'child-first' ? [child, parent] : [parent, child];
+  const sync = runtimeUsageSync({
+    host: { has: () => true, call: async () => ({ sessions: [row({ totalTokens: total })], truncated: false }) },
+    runs: () => runs, queue: (task) => task(), persist: async () => {}, at: () => at(11), log: () => {},
+  });
+  return { parent, child, sync, grow: (value) => { total = value; }, typed: () => { child.jobs[0].promptRecovery = { state: 'sent' }; } };
+};
+
+for (const order of ['parent-first', 'child-first']) {
+  test('a follow-up run on the parent\'s session takes the tokens after its baseline and the parent stops there (' + order + ')', async () => {
+    // Arrange: parent ended at 100K; the child reads its baseline of 100K before typing.
+    const shared = sharedSession(order);
+    await shared.sync();
+    // Act: the child works; the session total reaches 150K before the parent's final checks end.
+    shared.typed();
+    shared.grow(150_000);
+    await shared.sync();
+    // Assert: 100K + 50K = the session's 150K, never 150K + 50K.
+    const parent = usageSummary(shared.parent.usage);
+    const child = usageSummary(shared.child.usage);
+    assert.equal(child.total, 50_000);
+    assert.equal(parent.total, 100_000);
+    assert.equal(parent.total + child.total, 150_000);
+    assert.equal(parent.scope, 'complete', 'a handed-over session is closed, not partial');
+    assert.equal(parent.counts.handedOver, 1);
+    assert.equal(shared.parent.usage.sessions[0].handedOver.runId, 'child');
+    assert.equal(shared.parent.usage.sessions[0].latest, 150_000, 'the stored session total itself never drops');
+  });
+}
+
+test('a follow-up run without a baseline closes the parent at what it had seen and counts nothing twice', async () => {
+  // Arrange: the child typed at launch, so its share of the session is unknown (a session total only).
+  const shared = sharedSession('parent-first');
+  shared.typed();
+  // Act
+  await shared.sync();
+  shared.grow(150_000);
+  await shared.sync();
+  // Assert
+  const parent = usageSummary(shared.parent.usage);
+  const child = usageSummary(shared.child.usage);
+  assert.equal(parent.total, 100_000);
+  assert.equal(child.total, null);
+  assert.equal(child.scope, 'session');
+});
+
+test('a run never closes its own session or a later run\'s copy of it', async () => {
+  // Arrange: the same session with two owners inside one run, and an unrelated later run.
+  const own = { id: 'own', status: 'running', workspaceId: 'w1', jobs: [job(), job({ nonce: 'n2', phase: 'review', startedAt: at(5) })] };
+  const sync = runtimeUsageSync({
+    host: { has: () => true, call: async () => ({ sessions: [row({ totalTokens: 70_000 })], truncated: false }) },
+    runs: () => [own], queue: (task) => task(), persist: async () => {}, at: () => at(11), log: () => {},
+  });
+  // Act
+  await sync();
+  // Assert
+  assert.equal(usageSummary(own.usage).total, 70_000);
+  assert.equal(own.usage.sessions[0].handedOver, undefined);
+});
+
+test('an earlier run whose job on the session is still live, or a session on another host, is not closed', async () => {
+  // Arrange
+  const shared = sharedSession('parent-first');
+  shared.parent.jobs[0].state = 'running';
+  // Act
+  await shared.sync();
+  shared.typed();
+  shared.grow(150_000);
+  await shared.sync();
+  // Assert
+  assert.equal(shared.parent.usage.sessions[0].handedOver, undefined, 'a live owner keeps counting its own session');
+  // Arrange: the same ids on another host
+  const entry = (hostId, startedAt, extra) => ({ agent: 'codex', sessionId: 's1', hostId, owners: [{ nonce: hostId + startedAt, startedAt }], ...extra });
+  const earlier = { id: 'a', jobs: [], usage: { sessions: [entry('ssh:other', at(0), { baseline: 0, latest: 100_000 })] } };
+  const later = { id: 'b', jobs: [], usage: { sessions: [entry('local', at(10), { baseline: 100_000, latest: 150_000 })] } };
+  // Act / Assert
+  assert.deepEqual(handOverSessions(later, [earlier, later], at(11)), []);
+  assert.equal(earlier.usage.sessions[0].cap, undefined);
+  earlier.usage.sessions[0].hostId = 'local';
+  assert.deepEqual(handOverSessions(later, [earlier, later], at(11)).map((run) => run.id), ['a']);
+  assert.equal(earlier.usage.sessions[0].cap, 100_000);
 });

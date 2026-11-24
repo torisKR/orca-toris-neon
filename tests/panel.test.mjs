@@ -1001,6 +1001,24 @@ test('pause says it only stops new assignments; cancel shows requested, done, or
   assert.match(h3.app.innerHTML,/취소 완료/);
 });
 
+test('an unsaved cancel says so in the toast, the badge and the card, and never claims the agents stopped',async()=>{
+  // Arrange
+  const state=baseState();const run=workflow();run.status='running';state.runs=[run];
+  const unsaved={...copy(run),status:'cancelled',cancelUnsaved:true,stopFailures:[{terminalId:null,code:'unsaved',message:'취소를 아직 저장하지 못했습니다. 새 단계는 배정하지 않습니다.'}]};
+  const h=await harness({state,responses:{'runs.cancel':async()=>unsaved}});
+  await h.click({action:'open-run',run:'run-1'});
+  // Act
+  await h.click({action:'cancel-run',run:'run-1'});
+  // Assert
+  assert.match(h.toast.textContent,/취소를 아직 저장하지 못했습니다/);
+  assert.doesNotMatch(h.toast.textContent,/취소 완료|종료를 Orca가 확인/);
+  state.runs=[unsaved];
+  const h2=await harness({state});await h2.click({action:'open-run',run:'run-1'});
+  assert.match(h2.app.innerHTML,/취소 저장 대기/);
+  assert.match(h2.app.innerHTML,/<strong>취소가 아직 저장되지 않았습니다\.<\/strong>/);
+  assert.doesNotMatch(h2.app.innerHTML,/취소 완료/);
+});
+
 test('opening a run card asks the worker for its preflight once and shows what to fix; 다시 점검 forces a new check',async()=>{
   // Arrange
   const state=baseState();const run=workflow();state.runs=[run];

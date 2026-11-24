@@ -92,3 +92,13 @@ test('an agent card shows its own phase compactly with the exact integer for ass
   assert.match(memberTokens(usage(), 'build', 'review'), /400K/);
   assert.equal(memberTokens(usage(), 'test', 'work'), '');
 });
+
+test('a session handed over to a follow-up run says the parent counts it only up to the hand-over', () => {
+  // Arrange
+  const handed = usage({ counts: { ...usage().counts, handedOver: 1 } });
+  // Act
+  const html = text(runTokens(handed, { now: NOW }));
+  // Assert
+  assert.match(html, /후속 실행이 이어 쓴 세션 1개 · 넘겨준 시점까지만 포함/);
+  assert.doesNotMatch(text(runTokens(usage(), { now: NOW })), /후속 실행/);
+});

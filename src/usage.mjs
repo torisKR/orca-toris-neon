@@ -19,6 +19,7 @@ export const FINAL_FAILURES = 5;
 /** A listSessions read that has not answered by then is a failed read; the job watch shares the pass. */
 export const READ_TIMEOUT_MS = 15_000;
 const FINISHED = new Set(['completed', 'cancelled']);
+const LIVE_JOB = new Set(['launching', 'running', 'awaiting-report', 'uncertain']);
 const UNSUPPORTED_CODES = new Set(['unknown_method', 'not_permitted']);
 
 const norm = (agent) => String(agent ?? '').trim().toLowerCase();
@@ -159,7 +160,8 @@ export function runtimeUsageSync({ host, runs, queue, persist, at, log }) {
       if (!run) return;
       const next = updateUsage(run, observation, at());
       run.usage = next.usage;
-      if (!next.changed) return;
+      const closed = handOverSessions(run, runs(), at());
+      if (!next.changed && !closed.length) return;
       const invalid = next.usage.sessions?.filter((entry) => entry.missing === 'invalid').length;
       if (invalid) log('Toris Neon usage: 실행 ' + runId + '의 세션 ' + invalid + '개가 totalTokens를 정수로 주지 않았습니다.');
       await persist();
@@ -167,14 +169,52 @@ export function runtimeUsageSync({ host, runs, queue, persist, at, log }) {
   });
 }
 
+const sessionKey = (entry) => norm(entry.agent) + '\0' + entry.sessionId;
+const sameHost = (a, b) => a.hostId == null || b.hostId == null || a.hostId === b.hostId;
+// An earlier owner whose job on the session is still live keeps counting it (parallel use, not a hand-over).
+const ownerLive = (run, entry) => (run.jobs ?? []).some((job) => entry.owners.some((owner) => owner.nonce === job.nonce) && LIVE_JOB.has(job.state));
+const firstStart = (entry) => Math.min(...entry.owners.map((owner) => Date.parse(owner.startedAt ?? '')).filter(Number.isFinite));
+
+/**
+ * A later run that took over a session (a follow-up resuming the same agent session) closes every
+ * earlier run's copy of it at the hand-over: the later run's baseline, or, without one, what the
+ * earlier run had seen by then. Tokens after that belong to the later run only, so no increment is
+ * counted twice. The stored total itself never drops; the close is a separate `cap`. Returns the
+ * runs it changed. ponytail: one hand-over direction (earlier → later); a parent resuming the
+ * session again after its child would need per-interval ownership.
+ */
+export function handOverSessions(run, runs, at) {
+  const changed = [];
+  for (const entry of run.usage?.sessions ?? []) {
+    const start = firstStart(entry);
+    if (entry.baseline === undefined || !Number.isFinite(start)) continue; // the boundary is not known yet
+    for (const other of runs) {
+      if (other === run || other.id === run.id || other.usage?.frozen || !Array.isArray(other.usage?.sessions)) continue;
+      let touched = false;
+      const sessions = other.usage.sessions.map((item) => {
+        if (sessionKey(item) !== sessionKey(entry) || !(firstStart(item) < start) || !sameHost(item, entry) || ownerLive(other, item)) return item;
+        const cap = count(entry.baseline) ? entry.baseline : item.latest;
+        if (!count(cap) || (count(item.cap) && item.cap <= cap)) return item;
+        touched = true;
+        return { ...item, cap, handedOver: { runId: run.id, at } };
+      });
+      if (touched) { other.usage = { ...other.usage, sessions }; changed.push(other); }
+    }
+  }
+  return changed;
+}
+
 // What one session adds to the run: its total above the baseline; 'session' when only the session's
 // own total is known (no baseline, or corrected below it); 'waiting' while nothing usable was seen
 // (no value, or a resumed session that has not grown past its baseline yet).
+// A session handed over to a later run counts only up to its cap (handOverSessions).
+const ownTotal = (entry) => count(entry.cap) && count(entry.latest) ? Math.min(entry.latest, entry.cap) : entry.latest;
 function amountOf(entry) {
-  if (!count(entry.latest)) return 'waiting';
-  if (entry.baseline === null || (count(entry.baseline) && entry.latest < entry.baseline)) return 'session';
-  if (!count(entry.baseline) || (entry.baseline > 0 && entry.latest === entry.baseline)) return 'waiting';
-  return entry.latest - entry.baseline;
+  const latest = ownTotal(entry);
+  if (!count(latest)) return 'waiting';
+  if (entry.baseline === null || (count(entry.baseline) && latest < entry.baseline)) return 'session';
+  if (!count(entry.baseline) || (entry.baseline > 0 && latest === entry.baseline)) return 'waiting';
+  return latest - entry.baseline;
 }
 const stageFor = (stages, nodeId) => stages[nodeId] ??= { work: null, review: null, retry: 0, total: 0, uncounted: 0, uncertain: 0, agents: { work: [], review: [] } };
 const stageOf = (owners) => owners.every((owner) => owner.nodeId === owners[0].nodeId && owner.phase === owners[0].phase) ? owners[0] : null;
@@ -192,7 +232,7 @@ export function usageSummary(usage) {
 
 function summarize(usage) {
   const sessions = usage?.sessions ?? [];
-  const counts = { sessions: sessions.length, counted: 0, waiting: 0, sessionOnly: 0, missing: 0, truncated: 0, invalid: 0, lower: 0, corrected: 0, unmapped: usage?.unmapped?.length ?? 0 };
+  const counts = { sessions: sessions.length, counted: 0, waiting: 0, sessionOnly: 0, missing: 0, truncated: 0, invalid: 0, lower: 0, corrected: 0, handedOver: 0, unmapped: usage?.unmapped?.length ?? 0 };
   let total = 0, retry = 0, unattributed = 0, sessionTotal = 0;
   const stages = {};
   for (const entry of sessions) {
@@ -201,12 +241,13 @@ function summarize(usage) {
     else if (entry.missing) counts.missing++;
     if (entry.lower) counts.lower++;
     if (entry.corrected) counts.corrected++;
+    if (entry.handedOver) counts.handedOver++;
     const amount = amountOf(entry);
     const owner = stageOf(entry.owners);
     const stage = owner ? stageFor(stages, owner.nodeId) : null;
     if (stage && (entry.missing || entry.lower || typeof amount !== 'number')) stage.uncertain++;
     if (typeof amount !== 'number') {
-      if (amount === 'session') { counts.sessionOnly++; sessionTotal += entry.latest; }
+      if (amount === 'session') { counts.sessionOnly++; sessionTotal += ownTotal(entry); }
       else counts.waiting++;
       if (stage) stage.uncounted++;
       continue;

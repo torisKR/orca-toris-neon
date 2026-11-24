@@ -12,6 +12,7 @@ import { AUTONOMY_BRIEF, DECIDE_PROMPT } from '../src/autonomy.mjs';
 import { INDEX_KEY, LEGACY_KEY, runKey, archiveKey } from '../src/store.mjs';
 import { STAGE_BUDGETS } from '../src/proportion.mjs';
 import { createRemoteControl } from '../src/remote.mjs';
+import { CREATE_SETTLE_MS } from '../src/wscreate.mjs';
 
 const NOW = Date.parse('2026-11-19T05:00:00Z');
 const exec = promisify(execFile);
@@ -143,6 +144,7 @@ function harness(options = {}) {
     }),
     fingerprint: async () => source,
     inspectRepository: options.inspectRepository ?? (async () => ({ hasCommit: true, hasBase: true })),
+    workspaceTrace: options.workspaceTrace ?? (async () => ({ branch: false, worktree: false })),
     ...(options.eccAdvisor ? { eccAdvisor: options.eccAdvisor } : {}),
     receiptWrittenAt: options.receiptWrittenAt ?? (async () => null),
     ...(options.visualAdvisor ? { visualAdvisor: options.visualAdvisor } : {}),
@@ -1224,18 +1226,78 @@ test('a generic host refusal with nothing created is a definite failure retried 
   assert.equal(launchCalls(h).length, 1);
 });
 
-test('an uncertain creation with no workspace of the reserved name is created again', async () => {
+// Review H-2. The old test expected a second workspace.create as soon as the reserved name was not
+// listed. That was wrong: a timed-out create may still be running in Orca, so "not listed yet" is
+// not "absent", and the late first completion plus the second create make two worktrees.
+const timedOutCreate = (extra = {}) => {
   let fail = true;
-  const h = harness({ host: async (name) => {
+  let clock = NOW;
+  const h = harness({ now: () => clock, ...extra, host: async (name) => {
     if (name === 'workspace.create' && fail) throw Object.assign(new Error('response timeout'), { code: 'timeout' });
   } });
-  await h.create();
-  await assert.rejects(h.start(), /timeout/);
-  assert.equal(h.getRun().workspaceCreation.state, 'uncertain');
-  fail = false;
-  await h.start();
-  assert.equal(h.calls.filter((call) => call.name === 'workspace.create').length, 2);
-  assert.equal(h.getRun().workspaceId, 'w1');
+  return { h, succeed: () => { fail = false; }, advance: (ms) => { clock += ms; }, creates: () => h.calls.filter((call) => call.name === 'workspace.create').length };
+};
+
+test('an uncertain creation is never re-issued inside the settle window, even when nothing is listed yet', async () => {
+  // Arrange
+  const t = timedOutCreate();
+  await t.h.create();
+  await assert.rejects(t.h.start(), /timeout/);
+  assert.equal(t.h.getRun().workspaceCreation.state, 'uncertain');
+  t.succeed();
+  // Act: started again right away, and again just before the window ends.
+  await assert.rejects(t.h.start(), /아직 끝났는지 확인/);
+  t.advance(CREATE_SETTLE_MS - 1000);
+  await assert.rejects(t.h.start(), /아직 끝났는지 확인/);
+  // Assert
+  assert.equal(t.creates(), 1, 'no second create while the first may still land');
+  assert.equal(t.h.getRun().workspaceCreation.state, 'uncertain');
+});
+
+test('a first creation that lands late inside the window is adopted, not created twice', async () => {
+  const t = timedOutCreate();
+  await t.h.create();
+  await assert.rejects(t.h.start(), /timeout/);
+  t.succeed();
+  await assert.rejects(t.h.start(), /아직 끝났는지 확인/);
+  t.h.workspaces.push({ id: 'late', name: t.h.getRun().workspaceCreation.name, projectId: 'p1', kind: 'worktree', hostId: 'local', path: '/repo/late' });
+  await t.h.start();
+  assert.equal(t.creates(), 1);
+  assert.equal(t.h.getRun().workspaceId, 'late');
+  assert.equal(t.h.getRun().workspaceCreation.state, 'created');
+});
+
+test('an uncertain creation is created again only when the name is unlisted after the window and git has no reserved branch or worktree', async () => {
+  // Arrange
+  const traced = [];
+  const t = timedOutCreate({ workspaceTrace: async (repositoryPath, name) => { traced.push([repositoryPath, name]); return { branch: false, worktree: false }; } });
+  await t.h.create();
+  await assert.rejects(t.h.start(), /timeout/);
+  t.succeed();
+  // Act
+  t.advance(CREATE_SETTLE_MS + 1000);
+  await t.h.start();
+  // Assert
+  assert.equal(t.creates(), 2);
+  assert.equal(t.h.getRun().workspaceId, 'w1');
+  assert.deepEqual(traced.at(-1), ['/repo', t.h.calls.find((call) => call.name === 'workspace.create').input.name]);
+});
+
+test('a reserved branch or worktree in git, or an unreadable git state, blocks a second create after the window', async () => {
+  for (const [trace, pattern] of [
+    [async () => ({ branch: true, worktree: false }), /브랜치나 워크트리/],
+    [async () => ({ branch: false, worktree: true }), /브랜치나 워크트리/],
+    [async () => { throw new Error('git is not available'); }, /git is not available/],
+  ]) {
+    const t = timedOutCreate({ workspaceTrace: trace });
+    await t.h.create();
+    await assert.rejects(t.h.start(), /timeout/);
+    t.succeed();
+    t.advance(CREATE_SETTLE_MS + 1000);
+    await assert.rejects(t.h.start(), pattern);
+    assert.equal(t.creates(), 1, String(pattern));
+    assert.equal(t.h.getRun().workspaceCreation.state, 'uncertain');
+  }
 });
 
 test('an uncertain creation with any workspace of the reserved name conflicts instead of creating twice', async () => {
@@ -2443,4 +2505,68 @@ test('token usage: the watch reads agent.listSessions once per active workspace,
   await restarted.runtime.watchTick(); await restarted.runtime.drain();
   assert.equal(restarted.runtime.getState({ view: 'summary' }).runs[0].tokenUsage.total, 150_000, 'cumulative, not 120K + 150K');
   h.runtime.dispose(); restarted.runtime.dispose();
+});
+
+// Review H-1: a cancel is never lost to a failed write, and a restart never resumes a cancelled run.
+const CANCEL_MARK = (runId) => 'toris-neon.cancel.' + runId;
+
+test('a cancel whose full save fails is kept by its own mark before any terminal closes, and a restart honours it', async () => {
+  // Arrange: an autonomous run with a live agent; then the run's own value can no longer be written.
+  let failing = false;
+  const h = harness({ failWrites: (key) => failing && key.startsWith('toris-neon.run.') });
+  await auto(h);
+  await h.start();
+  const runId = h.getRun().id;
+  failing = true;
+  // Act
+  const cancelled = await h.runtime.handlers['runs.cancel']({ runId });
+  // Assert: cancelled in memory, durable through the mark, agents closed only after that.
+  assert.equal(cancelled.status, 'cancelled');
+  assert.ok(h.store.has(CANCEL_MARK(runId)), 'the cancel intent has its own durable mark');
+  assert.notEqual(savedState(h.store).runs[0].status, 'cancelled', 'the full save really failed');
+  assert.equal(closeCalls(h).length, 1);
+  // Act: the worker stops before any retry writes; a new one starts from storage.
+  h.runtime.dispose();
+  failing = false;
+  const restarted = restartRuntime(h);
+  await restarted.initialize();
+  await restarted.drain();
+  // Assert
+  assert.equal(restarted.getState().runs[0].status, 'cancelled', 'the restart honours the stored cancel');
+  assert.deepEqual(restarted.getState().runs[0].stopFailures.map((item) => item.code), ['unconfirmed'], 'the unsaved closes are shown as needing a check');
+  assert.equal(launchCalls(h).length, 1, 'no stage is assigned after the restart');
+  assert.equal(savedState(h.store).runs[0].status, 'cancelled');
+  assert.equal(h.store.has(CANCEL_MARK(runId)), false, 'the mark goes once the full save holds the cancel');
+  restarted.dispose();
+});
+
+test('a cancel that cannot be saved at all is kept in memory, assigns nothing, says it is not saved, and closes agents once a save succeeds', async (t) => {
+  // Arrange
+  let failing = false;
+  const h = harness({ failWrites: () => failing });
+  await auto(h);
+  await h.start();
+  const runId = h.getRun().id;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  failing = true;
+  // Act
+  const result = await h.runtime.handlers['runs.cancel']({ runId });
+  await h.runtime.drain();
+  // Assert: the user's cancel is not refused, nothing new starts, the agents stay until it is durable.
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.cancelUnsaved, true);
+  assert.match(result.stopFailures.map((item) => item.message).join(' '), /취소를 아직 저장하지 못했습니다/);
+  assert.equal(closeCalls(h).length, 0, 'no terminal closes before the cancel is durable');
+  assert.equal(launchCalls(h).length, 1);
+  assert.equal(h.store.has(CANCEL_MARK(runId)), false);
+  // Act: storage recovers and the automatic retry writes.
+  failing = false;
+  t.mock.timers.tick(5_000);
+  await h.runtime.drain();
+  // Assert
+  assert.equal(savedState(h.store).runs[0].status, 'cancelled');
+  assert.equal(closeCalls(h).length, 1, 'the agents close once the cancel is saved');
+  assert.equal(h.getRun().cancelUnsaved, undefined);
+  assert.deepEqual(h.getRun().stopFailures, []);
+  assert.equal(launchCalls(h).length, 1);
 });

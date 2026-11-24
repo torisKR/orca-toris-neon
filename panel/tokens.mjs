@@ -44,6 +44,7 @@ function reasons(usage) {
     c.invalid && 'Orca가 토큰 값을 정수로 주지 않은 세션 ' + c.invalid + '개 · 마지막 확인값 유지',
     c.lower && '이전보다 작은 값이 보고된 세션 ' + c.lower + '개 · 다시 확인될 때까지 마지막 값 유지',
     c.corrected && '기록 보정으로 값이 줄어든 세션 ' + c.corrected + '개',
+    c.handedOver && '후속 실행이 이어 쓴 세션 ' + c.handedOver + '개 · 넘겨준 시점까지만 포함',
     usage.error && '조회 실패' + (usage.failedAt ? ' (' + localDate(usage.failedAt) + ')' : '') + ': ' + usage.error,
   ].filter(Boolean);
 }

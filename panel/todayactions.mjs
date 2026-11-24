@@ -14,6 +14,7 @@ const reportOf = (node) => (node.blockedPhase === 'review' ? node.review : node.
 const isExternal = (node) => node.status === 'blocked' && (reportOf(node).failureClass === 'external' || reportOf(node).outcome === 'blocked');
 
 function recovery(run) {
+  if (run.cancelUnsaved) return { text: '취소를 아직 저장하지 못했습니다. 새 단계는 배정하지 않고, 저장되면 Neon이 에이전트 터미널을 닫습니다.' };
   if (run.stopFailures?.length) return { text: 'Orca가 에이전트 터미널 ' + run.stopFailures.length + '개의 종료를 확인하지 못했습니다. 남은 터미널을 확인한 뒤 실행 카드에서 다시 정리하세요.' };
   if (run.workspaceCreation?.state === 'uncertain') return { text: '작업 공간 생성 결과가 불명확합니다. Orca에서 ' + (run.workspaceCreation.name ?? '예약된') + ' 작업 공간이 있는지 확인하고, 실행 카드에서 그 공간을 연결하세요.' };
   const node = (run.nodes ?? []).find((item) => item.launchUncertain);

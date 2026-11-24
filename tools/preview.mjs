@@ -75,7 +75,7 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     return run;
   });
   const improved=improvementSample(stamp),diagnosed=diagnosisSample(stamp);
-  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed,...kindSamples(stamp)],archivedRuns,projects,workspaces,
+  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
     agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
@@ -305,6 +305,18 @@ function improvementSample(stamp) {
     evidence:[{kind:'command',command:'./gradlew testDebugUnitTest',exitCode:0},{kind:'command',command:'./gradlew testDebugUnitTest (수정 전)',exitCode:1,role:'history'},
       {kind:'artifact',path:dir+'/after.png',label:'screenshot'},{kind:'artifact',path:dir+'/mock-settings.png',label:'mockup'},{kind:'artifact',path:dir+'/build.log'}]});
   return run;
+}
+/** A cancel the store could not save yet, on a run whose agent session a follow-up took over (review H-1, H-3). */
+function unsavedCancelSample(stamp) {
+  const run=createRun({id:'preview-cancel-unsaved',goal:'구름 날씨 · 위젯 새로고침 오류 고치기',projectId:'preview-project-13',now:stamp-5400000,nodes:templateGraph('improve',{kind:'bugfix'})});
+  Object.assign(run,{template:'improve',started:true,workspaceId:'preview-workspace-13',workspacePath:'/example/cloud-weather',jobs:[],
+    improvement:{kind:'bugfix',options:{design:false,payments:false},projectName:'cloud-weather',playLink:null}});
+  const owner={nonce:'preview-cancel-build',nodeId:'build',phase:'work',attempt:1,startedAt:iso(stamp-3600000)};
+  run.usage={source:'ok',checkedAt:iso(stamp-60000),unmapped:[],sessions:[{agent:'codex',sessionId:'preview-cancel-session',hostId:'local',baseline:0,latest:150000,cap:100000,
+    handedOver:{runId:'preview-follow-up',at:iso(stamp-1800000)},observedAt:iso(stamp-60000),owners:[owner]}]};
+  const cancelled=cancelRun(run,{now:stamp-120000,reason:'사용자가 실행을 취소했습니다.'});
+  const message='취소를 아직 저장하지 못했습니다. 새 단계는 배정하지 않습니다. 다시 시작돼도 취소가 지켜지도록 저장되기 전에는 에이전트 터미널을 닫지 않으며, 저장되면 자동으로 닫습니다.';
+  return {...cancelled,cancelUnsaved:true,stopFailures:[{terminalId:null,code:'unsaved',message}]};
 }
 /** Design, performance and release improvements with their kind proof (src/kinds.mjs) for the run card. */
 function kindSamples(stamp) {

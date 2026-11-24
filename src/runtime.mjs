@@ -24,6 +24,8 @@ import { nextLaunch, readLimits, GLOBAL_LIMITS } from './scheduler.mjs';
 import { gitWorkingState, sourceProblem } from './commitcheck.mjs';
 import { buildLabel } from './buildinfo.mjs';
 import { artifactReader } from './artifacts.mjs';
+import { recreateRefusal, reservedGitTrace } from './wscreate.mjs';
+import { createCancelMarks, closeCancelled } from './cancel.mjs';
 import { parentEvidenceOf } from './reuse.mjs';
 import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, isReportFormError, formError, reportFixPrompt } from './reportfix.mjs';
 
@@ -236,7 +238,7 @@ function appendEvent(run, summary, clock, extra = {}) {
 export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(homedir(), '.toris-neon', 'runs'),
   fingerprint = sourceFingerprint, readReceipt = boundedJson, ensureDirectory,
   writeBrief = (file, text) => fs.writeFile(file, text, { mode: 0o600 }),
-  inspectRepository = gitRepositoryState, eccAdvisor = null, visualAdvisor = null, launchOverrides = null,
+  inspectRepository = gitRepositoryState, workspaceTrace = reservedGitTrace, eccAdvisor = null, visualAdvisor = null, launchOverrides = null,
   receiptWrittenAt = async (file) => (await fs.stat(file)).mtimeMs,
   validateArtifact, resolvePlayAccount, readPlayApp, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   watchIntervalMs = WATCH_INTERVAL_MS, cleanupIntervalMs = CLEANUP_INTERVAL_MS, gitState = gitWorkingState, buildInfo = null } = {}) {
@@ -370,11 +372,16 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   const persistence = createPersistence({ storage: orca.storage, now, log: (line) => orca.log?.(line),
     notify: (title, body) => { void Promise.resolve().then(() => call('notifications.show', { title, body: body.slice(0, 900) })).catch(() => {}); },
     retry: () => { if (!disposed) void queue(() => persist()).then(() => { if (!persistence.failure()) schedulePump(); }, () => {}); } });
+  const cancelMarks = createCancelMarks(orca.storage, (line) => orca.log?.(line));
+  const closeCancel = (run) => closeCancelled(run, { save: async () => { await persist(); return !persistence.failure(); },
+    mark: (runId) => cancelMarks.write(runId, nowIso(now)), close: (terminalId) => call('terminal.close', { terminalId }),
+    appendEvent: (target, text) => appendEvent(target, text, now), activeJobs, describeError: safeError });
   const persist = async ({ durable = false } = {}) => {
     state.revision += 1;
     jsonValue(state); // a value JSON cannot hold is a bug; refuse it as before
     const saved = await persistence.save(state);
-    if (!saved.ok && durable) throw Object.assign(runtimeError('action_failed', '실행 상태를 저장하지 못해 진행하지 않았습니다: ' + saved.error), { unsaved: true });
+    if (saved.ok) await cancelMarks.clear(state);
+    else if (durable) throw Object.assign(runtimeError('action_failed', '실행 상태를 저장하지 못해 진행하지 않았습니다: ' + saved.error), { unsaved: true });
     try { orca.panels?.post('state.changed', jsonValue(projectState(state, 'summary', limits))); } catch {}
     try {
       const working = state.runs.reduce((sum, run) => sum + activeJobs(run).filter((job) => job.state === 'running').length, 0);
@@ -936,6 +943,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   let launchCursor = 0, limits = GLOBAL_LIMITS; // Neon-wide limits, refreshed from the settings on each pump
   const pump = async () => {
     if (disposed) return;
+    // A cancel kept only in memory closes its agents once storage works again (src/cancel.mjs).
+    for (const run of state.runs.filter((item) => item.cancelUnsaved && !persistence.failure())) await closeCancel(run);
     for (const entry of [...state.runs]) {
       let run = getRun(entry.id);
       if (run.autonomous && run.started && await supervisor.supervise(run.id)) {
@@ -996,8 +1005,10 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
         appendEvent(run, '기존 생성 작업 공간을 복구했습니다.', now);
         return run;
       }
-      // Nothing with this name exists in Orca, so the earlier create did not land: retry below.
       if (matches.length > 0) throw runtimeError('conflict', '작업 공간 생성 응답이 불명확합니다. Orca에서 기존 생성 결과를 확인하세요. 중복 생성하지 않았습니다.');
+      // Unlisted is not absent: create again only once the first is proven gone (src/wscreate.mjs).
+      const refusal = await recreateRefusal({ trace: () => workspaceTrace(project.path, run.workspaceCreation.name), since: (run.workspaceCreation.uncertainAt ??= run.workspaceCreation.at ?? nowIso(now)), now: now() });
+      if (refusal) throw runtimeError('conflict', refusal);
     }
     const name = 'neon-' + run.id.slice(-12);
     run.workspaceCreation = { state: 'creating', name, at: nowIso(now) };
@@ -1054,7 +1065,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     try { matches = await reservedWorkspaces(run); }
     catch (listError) { listFailure = ' 작업 공간 목록도 확인하지 못했습니다: ' + safeError(listError).message + '.'; }
     const definite = matches?.length === 0 && !AMBIGUOUS_HOST_CODES.has(reason.code);
-    run.workspaceCreation.state = definite ? 'failed' : 'uncertain';
+    Object.assign(run.workspaceCreation, { state: definite ? 'failed' : 'uncertain', uncertainAt: nowIso(now) });
     run.status = 'blocked';
     run.runtimeMessage = definite
       ? 'Orca가 작업 공간을 만들지 못했습니다 (' + reason.code + ': ' + reason.message + '). 만들어진 작업 공간은 없으므로 원인을 해결한 뒤 같은 시작 버튼으로 다시 시도하세요. 자세한 원인은 Orca 플러그인 로그에 있습니다.'
@@ -1287,24 +1298,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     'runs.cancel': (input) => queue(async () => {
       let run = getRun(input.runId);
       if (run.status === 'completed' || (run.status === 'cancelled' && !activeJobs(run).length && !(run.stopFailures || []).length)) return clone(run);
-      const owned = activeJobs(run).filter((job) => job.terminalId);
-      run = cancelRun(run, { now: now(), reason: '사용자가 실행을 취소했습니다.' });
-      run.stopFailures = [];
-      replaceRun(run);
-      await persist(); // Cancellation intent precedes terminal mutations.
-      for (const job of owned) {
-        try {
-          const closed = await call('terminal.close', { terminalId: job.terminalId });
-          if (closed?.closed !== true) throw runtimeError('action_failed', '소유한 에이전트 터미널의 종료를 확인하지 못했습니다.');
-          const saved = run.jobs.find((item) => item.nonce === job.nonce);
-          if (saved) saved.state = 'cancelled';
-        } catch (error) {
-          run.stopFailures.push({ terminalId: job.terminalId, ...safeError(error) });
-        }
-      }
-      for (const job of run.jobs || []) if (!job.terminalId && job.state === 'uncertain') run.stopFailures.push({ terminalId: null, code: 'uncertain', message: '응답이 없는 실행 요청이 있습니다. Orca에서 해당 실행을 확인하세요.' });
-      appendEvent(run, run.stopFailures.length ? '취소됐지만 일부 터미널 종료 여부를 확인해야 합니다.' : '실행을 취소하고 소유한 활성 터미널을 종료했습니다.', now);
-      await persist(); return clone(run);
+      run = replaceRun(cancelRun(run, { now: now(), reason: '사용자가 실행을 취소했습니다.' })); // no new stage from here on
+      return clone(await closeCancel(run)); // the intent is durable before any terminal closes (src/cancel.mjs)
     }),
     'terminals.focus': async (input) => {
       const owned = state.runs.some((run) => run.jobs?.some((job) => job.terminalId === input.terminalId));
@@ -1440,6 +1435,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   async function initialize() {
     const loaded = await persistence.load(); // an unreadable layout throws here; nothing is overwritten
     state = loaded.state;
+    for (const runId of await cancelMarks.apply(state, now())) orca.log?.('Toris Neon storage: 재시작 전에 저장하지 못한 실행 ' + runId + '의 취소를 적용했습니다.');
     state.build = buildInfo ? { ...buildInfo, label: buildLabel(buildInfo) } : null;
     const migration = loaded.migration;
     if (migration) orca.log?.('Toris Neon storage: ' + (migration.ok

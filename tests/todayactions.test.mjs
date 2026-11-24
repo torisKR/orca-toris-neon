@@ -64,3 +64,14 @@ test('a handoff note offers re-verify only when stale, and an uncertain start sh
   assert.match(uncertain.html, /새 인계 메모/);
   assert.deepEqual(actionsOf(uncertain.html), ['open-workspace']);
 });
+
+test('an unsaved cancel is a recovery that says the cancel is not saved yet, not that terminals failed to stop', () => {
+  // Arrange
+  const unsaved = run('cancelled', [stage('build', { status: 'blocked' })], { cancelUnsaved: true, stopFailures: [{ terminalId: null, code: 'unsaved' }] });
+  // Act
+  const action = runAction(unsaved);
+  // Assert
+  assert.equal(action.type, 'recover');
+  assert.match(action.text, /취소를 아직 저장하지 못했습니다/);
+  assert.doesNotMatch(action.text, /종료를 확인하지 못했습니다/);
+});
