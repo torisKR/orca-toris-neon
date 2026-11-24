@@ -21,7 +21,7 @@ function harness({ runs = [], failCreate } = {}) {
       state.runs.push(run);
       return structuredClone(run);
     },
-    startRun: async ({ runId }) => { state.starts.push(runId); Object.assign(find(runId), { started: true, status: 'running' }); return structuredClone(find(runId)); },
+    startRun: async ({ runId, expectedRevision }) => { state.revisions = [...(state.revisions ?? []), expectedRevision]; state.starts.push(runId); Object.assign(find(runId), { started: true, status: 'running' }); return structuredClone(find(runId)); },
     resumeRun: async ({ runId }) => { state.resumes.push(runId); Object.assign(find(runId), { status: 'running' }); return structuredClone(find(runId)); }
   });
   return { state, request: remote.request };
@@ -237,4 +237,14 @@ test('a follow-up redelivered after its parent was pruned returns the run it mad
   // Assert
   assert.equal(again.created, false);
   assert.equal(again.run.runId, first.run.runId);
+});
+
+test('resume hands its expected revision to the runtime, which compares it again inside its queue', async () => {
+  // Arrange
+  const h = harness();
+  const { run } = await h.request(create());
+  // Act
+  await h.request({ action: 'resume', runId: run.runId, expectedRevision: run.revision });
+  // Assert
+  assert.deepEqual(h.state.revisions, [run.revision]);
 });

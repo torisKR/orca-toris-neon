@@ -411,6 +411,9 @@
 .ops-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .ops-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .ops-row p { margin: 0; overflow-wrap: anywhere; }
+.ops-release .release-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ops-release input[type="checkbox"] { width: 24px; height: 24px; margin: 0; }
+.ops-release label { min-height: 24px; display: inline-flex; align-items: center; }
 .ops-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 10px 0 6px; font-size: 12px; }
 .ops-facts dt { color: var(--muted); }
 .ops-facts dd { margin: 0; overflow-wrap: anywhere; }

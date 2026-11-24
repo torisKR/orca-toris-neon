@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRun, templateGraph } from '../src/engine.mjs';
-import { verifiedEvidence, markFreshness, reuseInstruction, lastVerifiedCommit, parentEvidenceOf } from '../src/reuse.mjs';
+import { verifiedEvidence, markFreshness, reuseInstruction, lastVerifiedCommit, parentEvidenceOf, recheckParentEvidence } from '../src/reuse.mjs';
 import { planRunInput } from '../src/flows.mjs';
 import { buildNodePrompt } from '../src/prompt.mjs';
 import { archiveRun, compactRun } from '../src/store.mjs';
@@ -145,4 +145,25 @@ test('a release candidate from a web project\'s diagnosis gets the web graph', a
   // Assert
   assert.deepEqual(plan.nodes.map((node) => node.id), ['identity', 'test']);
   assert.equal(plan.extra.improvement.parent.runId, 'd1', 'a run started from a diagnosis reuses its evidence too');
+});
+
+test('right before delivery, fresh evidence is measured again: a changed source makes it stale with the reason; unchanged stays fresh', async () => {
+  // Arrange
+  const fresh = await markFreshness(verifiedEvidence(finishedRun('parent', { ids: ['identity'] })), async () => 'fp-a');
+  let measured = 0;
+  // Act
+  const same = await recheckParentEvidence({ parentEvidence: fresh }, async () => { measured++; return 'fp-a'; });
+  const moved = await recheckParentEvidence({ parentEvidence: fresh }, async () => 'fp-b');
+  const unreadable = await recheckParentEvidence({ parentEvidence: fresh }, async () => { throw new Error('git 실패'); });
+  const allStale = await recheckParentEvidence({ parentEvidence: { items: fresh.items.map((item) => ({ ...item, freshness: 'stale' })) } }, async () => { measured++; return 'fp-a'; });
+  // Assert
+  assert.equal(same.items[0].freshness, 'fresh');
+  assert.equal(moved.items[0].freshness, 'stale');
+  assert.match(moved.reason, /지시를 전달하기 직전/);
+  assert.equal(unreadable.items[0].freshness, 'stale');
+  assert.match(unreadable.reason, /git 실패/);
+  assert.equal(allStale.items[0].freshness, 'stale');
+  assert.equal(measured, 1, 'nothing fresh is not measured again');
+  assert.equal(await recheckParentEvidence({}, async () => 'fp-a'), undefined);
+  assert.doesNotMatch(reuseInstruction({ parentEvidence: moved }), /재사용 가능/);
 });

@@ -201,6 +201,11 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     }
     if(name==='play.submissionAccounts')return accounts.map(({id,name,developerId})=>({id,name,developerId}));
     if(name==='artifacts.read')return previewArtifact(input.path);
+    // 다른 PC용 기록 내보내기: the first press asks, as when gh cannot read the repository's visibility; nothing is written.
+    if(name==='history.export'){if(!input.confirmUnknownVisibility)throw Error('[confirmation_required] 내보낼 폴더가 있는 Git 저장소의 공개 여부를 확인하지 못했습니다(origin: gh가 설치돼 있지 않습니다). 비공개임을 직접 확인했다면 확인하고 다시 내보내세요. (미리보기)');
+      return {folder:'/example/Sync/neon-history',exportedAt:iso(tick()),visibility:'unknown',exported:(input.runIds??[]).map(runId=>({runId,thumbnails:1})),skipped:[]};}
+    if(name==='jobs.releaseUncertain'){const run=lookup(input.runId),job=run.jobs.find(item=>item.nonce===input.nonce);if(!job||!input.confirmed)throw Error('확인한 뒤에만 해제합니다.');
+      Object.assign(job,{state:'released',released:{by:input.by,at:iso(tick())}});run.stopFailures=(run.stopFailures??[]).filter(item=>item.code!=='uncertain');return changed(run);}
     // Synthetic disk use (no file system read): receipt folders by kind and one live build output.
     if(name==='runs.disk'){const root='/example/.toris-neon/runs/'+input.runId,job=(dir,kind,bytes)=>({nodeId:dir.split('/')[0],path:root+'/'+dir,kind,bytes,files:3,truncated:false});
       const jobs=[job('research/1-review-a','referenced',48_000),job('build/1-work-b','candidate',2_400_000),job('build/2-work-c','live',96_000)];
@@ -278,6 +283,7 @@ function previewPng(variant) {
   return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.concat(rows))),chunk('IEND',Buffer.alloc(0))]);
 }
 function previewArtifact(file) {
+  if(/mock-settings/.test(file))return {kind:'changed',size:2048,text:'변경됨: 보고서를 받은 뒤 이 파일이 바뀌어 내용을 표시하지 않습니다 (접수 sha256 9e1c9e1c9e1c, 현재 0b7d0b7d0b7d). 미리보기 자료입니다.'};
   if(/\.png$/.test(file)){const data=previewPng(/mock/.test(file)?'mockup':'screenshot');return {kind:'image',mime:'image/png',size:data.length,data:data.toString('base64')};}
   return {kind:'text',size:2048,text:'> Task :app:testDebugUnitTest\nNotificationSchedulerTest > schedulesOnce PASSED\nBUILD SUCCESSFUL in 41s (미리보기 로그)',truncated:false};
 }
@@ -316,7 +322,9 @@ function unsavedCancelSample(stamp) {
     handedOver:{runId:'preview-follow-up',at:iso(stamp-1800000)},observedAt:iso(stamp-60000),owners:[owner]}]};
   const cancelled=cancelRun(run,{now:stamp-120000,reason:'사용자가 실행을 취소했습니다.'});
   const message='취소를 아직 저장하지 못했습니다. 새 단계는 배정하지 않습니다. 다시 시작돼도 취소가 지켜지도록 저장되기 전에는 에이전트 터미널을 닫지 않으며, 저장되면 자동으로 닫습니다.';
-  return {...cancelled,cancelUnsaved:true,stopFailures:[{terminalId:null,code:'unsaved',message}]};
+  // A launch Orca never answered (no terminal id): its slot stays held until a person releases it (src/slotrelease.mjs).
+  cancelled.jobs=[{nonce:'preview-cancel-launch',nodeId:'test',phase:'work',agent:'codex',attempt:1,state:'uncertain',terminalId:null,startedAt:iso(stamp-900000)}];
+  return {...cancelled,cancelUnsaved:true,stopFailures:[{terminalId:null,code:'unsaved',message},{terminalId:null,code:'uncertain',message:'응답이 없는 실행 요청이 있습니다. Orca에서 해당 실행을 확인하세요.'}]};
 }
 /** Design, performance and release improvements with their kind proof (src/kinds.mjs) for the run card. */
 function kindSamples(stamp) {
@@ -335,7 +343,8 @@ function kindSamples(stamp) {
   performance.jobs.push({nodeId:'build',phase:'work',nonce:'preview-performance-build',state:'completed',parentEvidence:{items:[
     {nodeId:'identity',title:'앱 정체성 확인',freshness:'fresh'},{nodeId:'diagnose',title:'진단·개선 후보',freshness:'stale'}]}});
   const release=make('preview-release','release','초록 물주기 · 1.4.0 업데이트 출시',5,{internal:{releaseLink:{commit:'4f2a9c1e7b3d5a6c8e9f0a1b2c3d4e5f6a7b8c9d',artifact:'app/build/outputs/bundle/release/app-release.aab',
-    sha256:'9e1c'.repeat(16),packageName:'com.example.greenwater',track:'internal',versionCode:'44'}}});
+    sha256:'9e1c'.repeat(16),packageName:'com.example.greenwater',track:'internal',versionCode:'44',
+    binary:{format:'aab',sha256:'9e1c'.repeat(16),packageName:'com.example.greenwater',versionCode:'44',signingCertSha256:'5d3a'.repeat(16),artifact:'app/build/outputs/bundle/release/app-release.aab',checkedAt:iso(stamp-2100000)}}}});
   release.improvement.lastVerified={runId:'preview-improve',commit:'1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',at:iso(stamp-7200000)};
   for(const id of ['release'])Object.assign(release.nodes.find(node=>node.id===id),{status:'awaiting-approval',report:null,review:null});
   release.status='blocked';

@@ -135,7 +135,7 @@ export function requireKindProof(run, nodeId, report) {
 
 const CONDITIONS_SHAPE = '{"device": "기기·OS", "size": "화면 크기(해상도·글꼴 배율)", "language": "언어·지역(예: ko-KR)", "data": "화면에 쓴 데이터(예: 샘플 식물 3개)"}';
 const MEASUREMENT_SHAPE = '"measurement": {"scenario": "측정 시나리오", "environment": "기기·OS·빌드 종류·데이터 양", "samples": 잰 횟수, "metrics": [{"name": "지표", "unit": "ms", "better": "lower 또는 higher", "values": [잰 값 samples개]}]}';
-const RELEASE_LINK_SHAPE = '"releaseLink": {"commit": "빌드한 소스 커밋 전체 해시", "artifact": "AAB/APK 경로", "sha256": "아티팩트 SHA-256", "packageName": "패키지명", "track": "트랙", "versionCode": 정수}';
+const RELEASE_LINK_SHAPE = '"releaseLink": {"commit": "빌드한 소스 커밋 전체 해시", "artifact": "실제로 올린(올릴) AAB/APK의 작업 공간 기준 경로", "sha256": "아티팩트 SHA-256", "packageName": "패키지명", "track": "트랙", "versionCode": 정수}';
 
 function designWork(run, node) {
   if (node.id === 'design') {
@@ -158,7 +158,7 @@ function performanceWork(run, node) {
     'scenario·environment 문자열은 그대로 복사하세요. 같은 조건으로 잴 수 없으면 outcome failed와 failureClass "external"로 보고하세요. 개선율은 Neon이 두 측정에서 계산하니 직접 적지 마세요.'].join('\n');
 }
 function releaseWork(run, node) {
-  if (SUBMISSION_STAGES.has(node.id)) return '출시 연결: ' + RELEASE_LINK_SHAPE + '를 보고서에 적으세요. 계정은 사용자의 승인에서 연결합니다. 실제 제출은 사용자가 승인한 대상에만 하고, 승인이 없으면 준비만 합니다.';
+  if (SUBMISSION_STAGES.has(node.id)) return '출시 연결: ' + RELEASE_LINK_SHAPE + '를 보고서에 적으세요. Neon이 그 파일을 직접 읽어 해시·패키지·versionCode·서명 인증서를 승인한 대상과 대조하고, 다르면 이 단계를 멈춥니다. 계정은 사용자의 승인에서 연결합니다. 실제 제출은 사용자가 승인한 대상에만 하고, 승인이 없으면 준비만 합니다.';
   if (node.id !== 'test') return '';
   const last = run.improvement?.lastVerified;
   if (!last?.commit) return '변경 재검증: 이 프로젝트에 검증을 통과한 이전 실행 기록이 없어 전체를 다시 검증합니다.';

@@ -112,6 +112,7 @@ test('a run at every input limit still fits one value, and the bound is reported
 test('archived runs are trimmed and retention bounds their bytes, oldest first', () => {
   const archived = Array.from({ length: 80 }, (_, i) => archiveRun(worstRun('a' + i), '2026-11-' + String(1 + (i % 28)).padStart(2, '0') + 'T00:00:' + String(i % 60).padStart(2, '0') + '.000Z'));
   for (const run of archived) assert.ok(fileBytes(archiveKey(run.id), run) <= BUDGETS.archive, 'one archive ' + fileBytes(archiveKey(run.id), run));
+  assert.ok(archived.filter((run) => run.usage?.frozen).every((run) => run.usage.frozen.lateTotalsMissed === true), 'a ledger frozen early for its size says late totals are missed');
   const { kept, dropped } = retainArchives(archived);
   const total = kept.reduce((sum, run) => sum + fileBytes(archiveKey(run.id), run), 0);
   assert.ok(total <= BUDGETS.archives, 'archives total ' + total);

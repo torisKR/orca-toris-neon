@@ -7,7 +7,7 @@
  * file reads back as empty). Every value written here is compacted to a budget well under those
  * limits; full reports, evidence and long text stay on disk in the runs' receipt folders.
  */
-import { usageSummary } from './usage.mjs';
+import { archivedUsage, usageSummary } from './usage.mjs';
 
 export const ORCA_LIMITS = Object.freeze({ valueBytes: 262_144, keys: 1024, fileBytes: 5_242_880 });
 export const LEGACY_KEY = 'toris-neon.runtime.v1';
@@ -143,8 +143,8 @@ export function compactRun(run, level = 0) {
   const reviewCommits = new Map((run.jobs ?? []).filter((job) => job.phase === 'review' && job.sourceCommit).map((job) => [job.nonce, job.sourceCommit]));
   return {
     ...rest,
-    // Archived runs keep only the computed token summary; nothing reads an archived run's sessions again.
-    ...(L.archive ? { goal: clip(run.goal, 500), acceptedReports: undefined, ...(run.usage ? { usage: { frozen: usageSummary(run.usage) } } : {}) } : {}),
+    // Archived runs keep the ledger until their final token checks are made, then only the frozen summary (src/usage.mjs).
+    ...(L.archive ? { goal: clip(run.goal, 500), acceptedReports: undefined, usage: archivedUsage(run) } : {}),
     nodes: (run.nodes ?? []).map((node) => compactNode(node, L, reviewCommits)),
     jobs: L.archive ? [] : compactJobs(run, L),
     events: keptEvents,
@@ -163,8 +163,10 @@ export function fitRun(key, run, budget) {
 
 /** The stored form of an archived run: read-only history, trimmed hard. */
 export function archiveRun(run, archivedAt = run.archivedAt) {
-  const doc = JSON.parse(JSON.stringify(compactRun(run, LEVELS.length - 1)));
-  return { ...doc, archivedAt };
+  const doc = { ...JSON.parse(JSON.stringify(compactRun(run, LEVELS.length - 1))), archivedAt };
+  // ponytail: a ledger too big for one archive value freezes now and misses late totals; trim sessions if this happens in practice.
+  if (doc.usage && !doc.usage.frozen && fileBytes(archiveKey(doc.id), doc) > BUDGETS.archive) doc.usage = { frozen: { ...usageSummary(doc.usage), lateTotalsMissed: true } };
+  return doc;
 }
 
 /** Archived runs to keep: newest first until the count or byte budget is spent. */

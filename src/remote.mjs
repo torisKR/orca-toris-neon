@@ -67,7 +67,7 @@ export function remoteSummary(run) {
   return {
     runId: run.id, requestId: parseKey(run.requestId)?.requestId ?? null, status: run.status, started: Boolean(run.started),
     template: run.template ?? 'new-app', kind: run.improvement?.kind ?? null, parentRunId: run.parentRunId ?? null, projectId: run.projectId ?? null,
-    goal: String(run.goal ?? '').slice(0, 200), revision: run.updatedAt ?? null,
+    goal: String(run.goal ?? '').slice(0, 200), revision: run.updatedAt ?? null, ...(run.pruned ? { pruned: true } : {}), // pruned: only its request key is left (src/requests.mjs)
     stages: { passed: nodes.filter((node) => node.status === 'passed').length, total: nodes.length },
     finished: milestones(run), finishedText: milestoneText(run)
   };
@@ -122,11 +122,12 @@ export function createRemoteControl({ getRuns, createRun, startRun, resumeRun })
     const run = target(input);
     if (input.expectedRevision !== undefined && typeof input.expectedRevision !== 'string') throw invalid('expectedRevision은 get이 돌려준 revision 문자열이어야 합니다.');
     if (['completed', 'cancelled'].includes(run.status)) throw fail('conflict', '실행 ' + run.id + '은(는) 이미 ' + run.status + ' 상태라 재개하지 않습니다.');
-    // Best effort: the runtime may still change the run between this check and the resume.
+    // An early answer; the runtime compares again inside its queue, where nothing can change the run in between.
     if (input.expectedRevision !== undefined && input.expectedRevision !== run.updatedAt) {
       throw fail('conflict', '실행 ' + run.id + '이(가) 요청 이후 바뀌었습니다(현재 revision ' + run.updatedAt + '). 상태를 다시 확인한 뒤 요청하세요.');
     }
-    const next = run.started ? await resumeRun({ runId: run.id }) : await startRun({ runId: run.id });
+    const revision = input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision };
+    const next = run.started ? await resumeRun({ runId: run.id, ...revision }) : await startRun({ runId: run.id, ...revision });
     return { action: run.started ? 'resumed' : 'started', run: remoteSummary(next) };
   };
 

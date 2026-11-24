@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { readArtifact, artifactReader, ARTIFACT_LIMITS } from '../src/artifacts.mjs';
+import { createHash } from 'node:crypto';
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(tmpdir(), 'neon-artifacts-'));
@@ -62,4 +63,51 @@ test('a receipt directory must still be a directory owned by the run when its ar
   await fs.symlink(f.receipts + '-moved', f.receipts);
 
   await assert.rejects(read({ runId: 'r1', path: file }), /실행 결과 폴더나 작업 공간 밖/);
+});
+
+const sha = (data) => createHash('sha256').update(data).digest('hex');
+
+test('a relative artifact path is read from the receipt folder of the report that recorded it, as at intake', async (t) => {
+  // Arrange
+  const f = await fixture(t);
+  const directory = path.join(f.receipts, 'build', '1-work-n1');
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(path.join(directory, 'after.png'), Buffer.from([1, 2, 3]));
+  const report = { nodeId: 'build', nonce: 'n1', phase: 'work', attempt: 1, evidence: [{ kind: 'artifact', path: 'after.png', sha256: sha(Buffer.from([1, 2, 3])) }] };
+  const runs = [{ id: 'r1', workspacePath: f.workspace, nodes: [{ id: 'build', report }] }];
+  const read = artifactReader({ runs: () => runs, receiptRoot: path.dirname(f.receipts) });
+  // Act
+  const image = await read({ runId: 'r1', path: 'after.png' });
+  // Assert
+  assert.equal(image.kind, 'image');
+  assert.equal(image.verified, true);
+  await assert.rejects(read({ runId: 'r1', path: '../../outside/secret.png' }), /보고서/);
+});
+
+test('a file changed since intake shows 변경됨 instead of its content; a file with no stored hash says it is unverified', async (t) => {
+  // Arrange
+  const f = await fixture(t);
+  const file = path.join(f.receipts, 'after.png');
+  const runs = [{ id: 'r1', workspacePath: f.workspace, nodes: [
+    { id: 'build', report: { evidence: [{ kind: 'artifact', path: file, sha256: sha('the screenshot taken at intake') }] } },
+    { id: 'test', report: { evidence: [{ kind: 'artifact', path: path.join(f.workspace, 'build.log') }] } }] }];
+  const read = artifactReader({ runs: () => runs, receiptRoot: path.dirname(f.receipts) });
+  // Act
+  const changed = await read({ runId: 'r1', path: file });
+  const unhashed = await read({ runId: 'r1', path: path.join(f.workspace, 'build.log') });
+  // Assert
+  assert.equal(changed.kind, 'changed');
+  assert.equal(changed.data, undefined, 'no content of a changed file is sent');
+  assert.match(changed.text, /변경됨/);
+  assert.equal(unhashed.kind, 'text');
+  assert.equal(unhashed.verified, false);
+});
+
+test('the intake hash of the latest receipt is used when the report item carries none', async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.receipts, 'after.png');
+  const runs = [{ id: 'r1', workspacePath: f.workspace, nodes: [{ id: 'build', report: { evidence: [{ kind: 'artifact', path: file }] },
+    receipt: { artifacts: [{ kind: 'artifact', path: file, sha256: sha(Buffer.from([0x89, 0x50, 0x4e, 0x47])) }] } }] }];
+  const read = artifactReader({ runs: () => runs, receiptRoot: path.dirname(f.receipts) });
+  assert.equal((await read({ runId: 'r1', path: file })).verified, true);
 });

@@ -90,6 +90,20 @@ test('a loaded artifact shows inline with alt text; a log shows a bounded excerp
   assert.match(html, /파일 크기가 너무 큽니다/);
 });
 
+test('a file changed since intake says 변경됨 and shows no content; an unverified file says so', () => {
+  // Arrange
+  const artifacts = new Map([
+    [artifactCacheKey('r1', '/r/r1/build/after.png'), { kind: 'changed', size: 3, text: '변경됨: 보고서를 받은 뒤 이 파일이 바뀌어 내용을 표시하지 않습니다 (접수 sha256 aaaaaaaaaaaa, 현재 bbbbbbbbbbbb).' }],
+    [artifactCacheKey('r1', '/r/r1/build/build.log'), { kind: 'text', text: 'BUILD SUCCESSFUL', truncated: false, verified: false }],
+  ]);
+  // Act
+  const html = stageResult({ id: 'r1' }, { id: 'build', report }, { artifacts });
+  // Assert
+  assert.match(html, /<p class="callout warning" role="status">변경됨: 보고서를 받은 뒤/);
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /BUILD SUCCESSFUL[\s\S]*접수할 때의 해시 기록이 없어/);
+});
+
 test('the same artifact path in another run still requires its own read', () => {
   const file = '/shared/build/after.png';
   const node = { id: 'build', report: { ...report, evidence: [{ kind: 'artifact', path: file }] } };

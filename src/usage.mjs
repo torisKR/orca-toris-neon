@@ -95,23 +95,41 @@ export function failedCheck(usage, { unsupported = false, error = '', at }) {
 const meaningful = (usage) => JSON.stringify(usage ?? null, (key, value) => ['checkedAt', 'observedAt', 'failedAt'].includes(key) ? undefined : value);
 const typedJobs = (jobs) => new Set(jobs.filter((job) => !job.selfDelivery || job.promptRecovery).map((job) => job.nonce));
 
+/** Whether a finished run still has final checks to make for totals Orca records late. */
+export const finalChecksPending = (usage) => !usage?.frozen && (usage?.finalChecks ?? 0) < FINAL_CHECKS && (usage?.finalFailures ?? 0) < FINAL_FAILURES;
+
+/**
+ * The usage an archived run keeps (roadmap item 4): while its final checks remain, the live ledger
+ * with every job registered (the jobs themselves are trimmed), so late totals still count; after
+ * them, the frozen summary. Undefined for a run that never reached a terminal.
+ */
+export function archivedUsage(run) {
+  if (run.usage?.frozen) return run.usage;
+  if (!run.usage && !(run.jobs ?? []).some((job) => job.terminalId)) return undefined;
+  const usage = registerJobs(run.usage, run.jobs ?? []);
+  return finalChecksPending(usage) ? usage : { frozen: usageSummary(usage) };
+}
+
 /** The run's next ledger for one observation; `changed` is false when only check times moved. */
 export function updateUsage(run, observation, at) {
   const jobs = run.jobs ?? [];
   const registered = registerJobs(run.usage, jobs);
+  // An archived run has no jobs left: every owner counts as typed, so a late value never becomes a baseline.
+  const typed = run.archivedAt ? new Set((registered.sessions ?? []).flatMap((entry) => entry.owners.map((owner) => owner.nonce))) : typedJobs(jobs);
   let usage = observation.rows
-    ? observeSessions(registered, { ...observation, at, typed: typedJobs(jobs) })
+    ? observeSessions(registered, { ...observation, at, typed })
     : failedCheck(registered, { ...observation, at });
   // After the run ends only successful reads use up the final checks; failures have their own cap.
   if (FINISHED.has(run.status)) usage = observation.rows ? { ...usage, finalChecks: (usage.finalChecks ?? 0) + 1 } : { ...usage, finalFailures: (usage.finalFailures ?? 0) + 1 };
+  if (run.archivedAt && !finalChecksPending(usage)) usage = { frozen: usageSummary(usage) };
   return { usage, changed: meaningful(run.usage) !== meaningful(usage) };
 }
 
 /** Runs worth a read: live ones with a launched job, finished ones for their few final checks. */
 export function usageTargets(runs) {
   return runs.filter((run) => run.workspaceId && !run.usage?.frozen &&
-    ((run.jobs ?? []).some((job) => job.terminalId) || run.usage?.sessions?.length) &&
-    (!FINISHED.has(run.status) || ((run.usage?.finalChecks ?? 0) < FINAL_CHECKS && (run.usage?.finalFailures ?? 0) < FINAL_FAILURES)))
+    ((run.jobs ?? []).some((job) => job.terminalId) || run.usage?.sessions?.length || run.usage?.unmapped?.length) &&
+    (!FINISHED.has(run.status) || finalChecksPending(run.usage)))
     .map((run) => ({ runId: run.id, workspaceId: run.workspaceId }));
 }
 

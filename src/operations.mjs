@@ -43,14 +43,15 @@ export function runOperations(run) {
     for (const holder of [node.pendingReceipt, node.active]) {
       if (!holder?.nonce) continue;
       const job = jobs.get(holder.nonce);
-      if (run.status === 'cancelled' && job && !reservesSlot(job)) continue;
+      if ((run.status === 'cancelled' || job?.state === 'released') && job && !reservesSlot(job)) continue;
       current.set(holder.nonce, job ?? { ...holder, nodeId: node.id, state: 'uncertain', startedAt: null, promptRecovery: undefined, lastAgentEventAt: undefined, readyAt: undefined, failedAt: undefined });
     }
   }
   for (const job of jobs.values()) if (reservesSlot(job) && !current.has(job.nonce)) current.set(job.nonce, job);
   return [...current.values()].map((job) => {
     return {
-      nodeId: job.nodeId, phase: job.phase ?? null, agent: job.agent ?? null, attempt: job.attempt ?? null, terminalId: job.terminalId ?? null,
+      nodeId: job.nodeId, nonce: job.nonce, phase: job.phase ?? null, agent: job.agent ?? null, attempt: job.attempt ?? null, terminalId: job.terminalId ?? null,
+      releasable: job.state === 'uncertain' && !job.terminalId, // a person may free its slot (src/slotrelease.mjs)
       condition: run.status === 'cancelled' ? 'unclear' : jobCondition(job), lastProgressAt: lastProgressAt(job)
     };
   });

@@ -114,3 +114,15 @@ test('a workspace Neon did not create says why build outputs are not counted', (
   const plain = text(diskBlock({ value: { ...disk, builds: [], buildsNote: 'Neon이 만든 작업 공간이 아니라 빌드 출력을 세지 않습니다.' } }, { runId: 'r1' }));
   assert.match(plain, /빌드 출력을 세지 않습니다/);
 });
+
+test('an uncertain launch with no terminal offers a release that needs the person\'s confirmation', () => {
+  // Arrange
+  const list = [{ id: 'r1', goal: '물주기 앱 개선', status: 'blocked', operations: [op({ terminalId: null, condition: 'unclear', nonce: 'n-1', releasable: true })], waiting: {}, cleanup: null }];
+  // Act
+  const html = operationsOverview({ runs: list, limits: null, resources: { measured: false, reason: 'r' }, now: NOW });
+  // Assert
+  assert.match(html, /<input type="checkbox" id="release-ack-n-1"/);
+  assert.match(html, /<label for="release-ack-n-1">[^<]*실행 중인 에이전트가 없음을 확인했습니다/);
+  assert.match(html, /data-action="release-slot"[^>]*data-run="r1"[^>]*data-nonce="n-1"/);
+  assert.doesNotMatch(operationsOverview({ runs: runs(), limits: null, resources: { measured: false, reason: 'r' }, now: NOW }), /release-slot/);
+});

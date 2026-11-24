@@ -61,9 +61,11 @@ function artifactView(runId, item, artifacts) {
   if (!loaded) body = load;
   else if (loaded.loading) body = '<p class="hint">불러오는 중…</p>';
   else if (loaded.error) body = '<p class="callout warning">' + e(loaded.error) + '</p>' + load;
+  else if (loaded.kind === 'changed') body = '<p class="callout warning" role="status">' + e(loaded.text) + '</p>'; // src/artifacts.mjs: never the changed content
   else if (loaded.kind === 'image') body = '<img src="data:' + e(loaded.mime) + ';base64,' + e(loaded.data) + '" alt="' + e(what) + '">';
   else if (loaded.kind === 'video') body = '<video controls muted src="data:' + e(loaded.mime) + ';base64,' + e(loaded.data) + '" aria-label="' + e(what) + '"></video>';
   else body = '<pre class="artifact-text" tabindex="0" role="region" aria-label="' + e(name) + '">' + e(loaded.text) + '</pre>' + (loaded.truncated ? '<p class="hint">앞부분만 표시했습니다.</p>' : '');
+  if (loaded?.verified === false) body += '<p class="hint">접수할 때의 해시 기록이 없어 보고서를 받을 때와 같은 파일인지 확인하지 못했습니다.</p>';
   return '<figure class="artifact" id="' + artifactId(runId, item.path) + '" tabindex="-1">' + head + body + '</figure>';
 }
 

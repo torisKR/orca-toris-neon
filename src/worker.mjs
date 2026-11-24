@@ -10,6 +10,7 @@ import { createPlayLinks } from './playlinks.mjs';
 import { playLinkHandlers } from './playactions.mjs';
 import { createRemoteControl } from './remote.mjs';
 import { diskHandlers } from './disk.mjs';
+import { createHistoryExport } from './historyexport.mjs';
 
 let activeRuntime;
 const subscriptions = [];
@@ -53,11 +54,14 @@ export default async function activate(orca) {
   // Play Store tab: a Play app linked to a project, and what it can start (src/playlinks.mjs, src/playactions.mjs).
   const links = createPlayLinks({ storage: orca.storage, listAccounts: () => play.list(), call: (method, params) => orca.host.call(method, params) });
   const allRuns = () => { const state = runtime.getState(); return [...state.runs, ...state.archivedRuns]; };
+  // 다른 PC용 기록 내보내기 (src/historyexport.mjs): only when the person presses export.
+  const history = createHistoryExport({ getRuns: allRuns, settings: orca.settings, receiptRoot: runtime.receiptRoot, readPlay: () => play.list() });
   const neonHandlers = {
     ...runtime.handlers,
     ...preflightHandlers({ preflight, start: runtime.handlers['runs.start'], log: (line) => orca.log?.(line) }),
     ...playLinkHandlers({ play, links, getRuns: allRuns, createRun: runtime.handlers['runs.create'] }),
     ...diskHandlers({ getRuns: allRuns, receiptRoot: runtime.receiptRoot }), // per-run disk use and cleanup preview (src/disk.mjs), on request only
+    'history.export': (input) => history.export(input),
     'play.submissionAccounts': () => play.listSubmissionAccounts(),
     'play.account.save': (input) => play.saveAccount(input),
     'play.account.remove': (input) => play.removeAccount(input),
@@ -67,7 +71,7 @@ export default async function activate(orca) {
     'today.resume': (input) => today.resume(input)
   };
   // Bots and other callers (src/remote.mjs): the same contract as the command neon.remote; docs/ROADMAP.md lists the paths.
-  const remote = createRemoteControl({ getRuns: allRuns, createRun: neonHandlers['runs.create'], startRun: neonHandlers['runs.start'], resumeRun: neonHandlers['runs.resume'] });
+  const remote = createRemoteControl({ getRuns: () => [...allRuns(), ...runtime.prunedRequests()], createRun: neonHandlers['runs.create'], startRun: neonHandlers['runs.start'], resumeRun: neonHandlers['runs.resume'] });
   const handlers = { ...neonHandlers, 'remote.request': (input) => remote.request(input) };
   for (const [name, handler] of Object.entries(handlers)) {
     subscriptions.push(orca.panels.handle(name, (input) => handler(inputObject(input))));

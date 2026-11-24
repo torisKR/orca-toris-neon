@@ -128,6 +128,14 @@
         "maximum": 8
       },
       {
+        "key": "historyExportDir",
+        "title": "기록 내보내기 폴더",
+        "description": "다른 PC에서 볼 끝난 실행 기록(JSON과 HTML 스냅샷)을 실행 ID별 폴더로 내보낼 곳입니다. 비공개 저장소나 동기화 폴더를 지정하세요. 공개 저장소 안이면 내보내지 않습니다. 실행 카드의 내보내기 버튼을 누를 때만 씁니다.",
+        "type": "string",
+        "default": "",
+        "maxLength": 2048
+      },
+      {
         "key": "notifications",
         "title": "작업 알림",
         "description": "검토와 승인 대기 시 알림을 표시합니다.",

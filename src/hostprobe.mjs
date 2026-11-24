@@ -14,6 +14,7 @@ import { fileIo } from './ecc.mjs';
 
 const SHELL_MS = 5_000;
 const JAVA_HOME_MS = 3_000;
+const GODOT_VERSION_MS = 5_000;
 const HEAD_BYTES = 64 * 1024;
 const TOOLS = ['git', 'flutter', 'godot', 'java', 'fastlane', 'bundletool'];
 const KEPT_ENV = new Set(['PATH', 'JAVA_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT']);
@@ -57,12 +58,26 @@ async function probeFirst(candidates, test) {
   }
   return { found: null, unsure };
 }
-async function godotTemplates({ io, platform, home, env }) {
+/** The export template folder of a `godot --version` line: 4.3.stable.official.x → 4.3.stable; a .NET build keeps .mono. */
+export function godotTemplateName(line) {
+  const match = /^(\d+\.\d+(?:\.\d+)?\.(?:stable|dev\d*|alpha\d*|beta\d*|rc\d*))(\.mono)?(?:\.|$)/.exec(String(line ?? '').trim());
+  return match ? match[1] + (match[2] ?? '') : null;
+}
+async function godotVersion({ exec, godot }) {
+  if (!godot) return null;
+  try { return String((await exec(godot, ['--version'], GODOT_VERSION_MS)).stdout).split('\n').map(godotTemplateName).find(Boolean) ?? null; }
+  catch { return null; }
+}
+/** Whether templates for `version` are installed: true, false, or null when that cannot be told (unreadable folder or unknown version). */
+async function godotTemplates({ io, platform, home, env, version }) {
   const dir = platform === 'darwin' ? path.join(home, 'Library/Application Support/Godot/export_templates')
     : platform === 'win32' ? path.join(env.APPDATA ?? path.join(home, 'AppData/Roaming'), 'Godot/export_templates')
       : path.join(env.XDG_DATA_HOME ?? path.join(home, '.local/share'), 'godot/export_templates');
-  try { return (await io.readdir(dir)).length > 0; }
-  catch (error) { return ABSENT.has(error?.code) ? false : null; }
+  let installed;
+  try { installed = await io.readdir(dir); }
+  catch (error) { return { state: ABSENT.has(error?.code) ? false : null, installed: [] }; }
+  if (!installed.length) return { state: false, installed };
+  return { state: version ? installed.includes(version) : null, installed };
 }
 /** macOS java_home: a path, null when it says there is no JDK (non-zero exit), undefined when it could not answer. */
 async function javaHome({ exec, platform }) {
@@ -95,19 +110,21 @@ export async function probeHostTools({ exec = defaultExec, io = hostIo, env = pr
     const states = await Promise.all(['platform-tools', 'build-tools'].map((name) => io.exists(path.join(dir, name))));
     return states.includes(true) ? true : states.includes(null) ? null : false;
   };
-  const [macJava, godotApp, jdkDir, sdk, templates] = await Promise.all([
+  const [macJava, godotApp, jdkDir, sdk] = await Promise.all([
     javaHome({ exec, platform }),
     probeFirst(appDirs.flatMap((dir) => ['Godot.app', 'Godot_mono.app'].map((app) => path.join(dir, app, 'Contents/MacOS/Godot'))), io.exists),
     probeFirst([vars.JAVA_HOME, settings['jdk-dir'], ...appDirs.map((dir) => path.join(dir, 'Android Studio.app/Contents/jbr'))], io.exists),
     probeFirst([vars.ANDROID_HOME, vars.ANDROID_SDK_ROOT, settings['android-sdk'], sdkDefault], isSdk),
-    godotTemplates({ io, platform, home, env: vars }),
   ]);
+  const godot = found.godot ?? godotApp.found;
+  const version = await godotVersion({ exec, godot }); // templates of another version do not export this one
+  const templates = await godotTemplates({ io, platform, home, env: vars, version });
   // macOS ships a /usr/bin/java stub without a JDK; there only java_home or a real JDK folder counts.
   const jdk = jdkDir.found ?? macJava ?? (mac ? null : found.java);
   const unsure = [...(!jdk && (jdkDir.unsure || macJava === undefined) ? ['jdk'] : []), ...(!sdk.found && sdk.unsure ? ['androidSdk'] : []),
     ...(!found.godot && !godotApp.found && godotApp.unsure ? ['godot'] : [])];
-  return { conclusive: Boolean(shell), git: found.git, flutter: found.flutter, godot: found.godot ?? godotApp.found, jdk: jdk ?? null,
-    androidSdk: sdk.found, fastlane: found.fastlane, bundletool: found.bundletool, godotTemplates: templates, unsure };
+  return { conclusive: Boolean(shell), git: found.git, flutter: found.flutter, godot, jdk: jdk ?? null,
+    androidSdk: sdk.found, fastlane: found.fastlane, bundletool: found.bundletool, godotTemplates: templates.state, godotVersion: version, godotTemplateVersions: templates.installed, unsure };
 }
 
 const RELEASE_NAME = /create\(\s*["']release["']\s*\)|register\(\s*["']release["']\s*\)|getByName\(\s*["']release["']\s*\)|\brelease\s*\{/;

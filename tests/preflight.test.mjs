@@ -141,13 +141,56 @@ test('a failed login shell falls back to the worker PATH and is not conclusive',
 });
 
 test('the macOS /usr/bin/java stub is not a JDK; Android Studio\'s bundled runtime and Godot.app are found', async () => {
-  const exec = async (file) => file === '/bin/zsh' ? { stdout: 'PATH=/usr/bin\n' } : Promise.reject(new Error('Unable to locate a Java Runtime'));
+  const exec = async (file) => file === '/bin/zsh' ? { stdout: 'PATH=/usr/bin\n' } : file.endsWith('/Godot') ? { stdout: '4.3.stable.official.77dcf97d8\n' } : Promise.reject(new Error('Unable to locate a Java Runtime'));
   const io = fakeFs(new Set(['/usr/bin/java', '/Applications/Android Studio.app/Contents/jbr', '/Applications/Godot.app/Contents/MacOS/Godot',
     HOME + '/Library/Application Support/Godot/export_templates']));
   const tools = await probeHostTools({ exec, io, env: { SHELL: '/bin/zsh', PATH: '/usr/bin' }, platform: 'darwin', home: HOME });
   assert.equal(tools.jdk, '/Applications/Android Studio.app/Contents/jbr');
   assert.equal(tools.godot, '/Applications/Godot.app/Contents/MacOS/Godot');
   assert.equal(tools.godotTemplates, true);
+});
+
+const godotHost = (version, templates) => ({
+  exec: async (file, args) => file === '/bin/zsh' ? { stdout: 'PATH=/opt/bin\n' } : file === '/opt/bin/godot' && args[0] === '--version' && version ? { stdout: version } : Promise.reject(new Error('no')),
+  io: { isExecutable: async (file) => file === '/opt/bin/godot', exists: async () => false,
+    readdir: async (dir) => { if (dir === HOME + '/Library/Application Support/Godot/export_templates' && templates) return templates; throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } },
+});
+const probeGodot = ({ exec, io }) => probeHostTools({ exec, io, env: { SHELL: '/bin/zsh', PATH: '/usr/bin' }, platform: 'darwin', home: HOME });
+
+test('Godot export templates count only for the installed Godot version', async () => {
+  // Arrange / Act
+  const other = await probeGodot(godotHost('4.3.stable.official.77dcf97d8\n', ['4.2.2.stable']));
+  const same = await probeGodot(godotHost('Godot Engine\n4.3.stable.official.77dcf97d8\n', ['4.2.2.stable', '4.3.stable']));
+  const mono = await probeGodot(godotHost('4.3.stable.mono.official.77dcf97d8', ['4.3.stable']));
+  // Assert
+  assert.equal(other.godotVersion, '4.3.stable');
+  assert.equal(other.godotTemplates, false, 'templates of another version do not export this one');
+  assert.deepEqual(other.godotTemplateVersions, ['4.2.2.stable']);
+  assert.equal(same.godotTemplates, true);
+  assert.equal(mono.godotVersion, '4.3.stable.mono');
+  assert.equal(mono.godotTemplates, false, 'the .NET build needs its own templates');
+});
+
+test('templates whose Godot version cannot be read are unsure, not ready', async () => {
+  const unknown = await probeGodot(godotHost(null, ['4.3.stable']));
+  assert.equal(unknown.godotVersion, null);
+  assert.equal(unknown.godotTemplates, null);
+  const none = await probeGodot(godotHost('4.3.stable.official', null));
+  assert.equal(none.godotTemplates, false);
+});
+
+test('the preflight names the installed version and the templates found instead', () => {
+  // Arrange
+  const godot = { stacks: ['godot'], label: 'Godot/GDScript', source: 'files' };
+  const project = { signing: 'present', godotAndroidPreset: true };
+  // Act
+  const missing = classifyStages(newApp(), facts({ stack: godot, project, tools: { ...allTools, godotTemplates: false, godotVersion: '4.3.stable', godotTemplateVersions: ['4.2.2.stable'] } }));
+  const unsure = classifyStages(newApp(), facts({ stack: godot, project, tools: { ...allTools, godotTemplates: null, godotVersion: null, godotTemplateVersions: ['4.3.stable'] } }));
+  // Assert
+  assert.equal(stage(missing, 'test').state, 'blocked');
+  assert.match(stage(missing, 'test').reasons[0].text, /Godot 4\.3\.stable용 내보내기 템플릿이 없어.*설치된 템플릿: 4\.2\.2\.stable/);
+  assert.equal(stage(unsure, 'test').state, 'check');
+  assert.match(stage(unsure, 'test').reasons[0].text, /Godot 버전을 확인하지 못해/);
 });
 
 const projectIo = (files) => ({

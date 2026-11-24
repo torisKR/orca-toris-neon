@@ -34,8 +34,16 @@ const stageName = (op) => nodeNames[op.nodeId] ?? op.nodeId;
 
 function jobRow(op, run, now) {
   return '<li class="ops-row">' + conditionBadge(op.condition) + '<div class="grow"><p><strong>' + e(stageName(op)) + ' · ' + e(PHASES[op.phase] ?? op.phase) + '</strong> <span class="hint">' +
-    e(op.agent ?? '에이전트 미기록') + (op.attempt ? ' · 시도 ' + e(op.attempt) : '') + '</span></p><p class="hint">' + e(goalTitle(run.goal)) + ' · 마지막 진행 ' + since(op.lastProgressAt, now) + '</p></div>' +
+    e(op.agent ?? '에이전트 미기록') + (op.attempt ? ' · 시도 ' + e(op.attempt) : '') + '</span></p><p class="hint">' + e(goalTitle(run.goal)) + ' · 마지막 진행 ' + since(op.lastProgressAt, now) + '</p>' + releaseControl(op, run) + '</div>' +
     (op.terminalId ? button('열기', 'focus-terminal', 'data-terminal="' + e(op.terminalId) + '" aria-label="' + e('열기: ' + stageName(op) + ' 터미널 · ' + goalTitle(run.goal)) + '"', 'small') : '') + '</li>';
+}
+// src/slotrelease.mjs: only a person who checked Orca frees the slot of a launch that never answered.
+function releaseControl(op, run) {
+  if (!op.releasable || !op.nonce) return '';
+  const id = 'release-ack-' + e(op.nonce);
+  return '<details class="ops-release"><summary>슬롯 해제…</summary><p class="hint" id="' + id + '-hint">Orca가 실행 요청에 답하지 않아 에이전트가 떠 있을 수 있습니다. Orca에서 확인한 뒤에만 해제하세요.</p>' +
+    '<div class="release-confirm"><input type="checkbox" id="' + id + '" aria-describedby="' + id + '-hint"> <label for="' + id + '">Orca에서 이 요청으로 실행 중인 에이전트가 없음을 확인했습니다</label> ' +
+    button('슬롯 해제', 'release-slot', 'data-run="' + e(run.id) + '" data-nonce="' + e(op.nonce) + '" aria-label="' + e('슬롯 해제: ' + stageName(op) + ' · ' + goalTitle(run.goal)) + '"', 'small') + '</div></details>';
 }
 
 function waitSummary(runs) {

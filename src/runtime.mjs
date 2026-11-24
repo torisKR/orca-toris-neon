@@ -1,9 +1,7 @@
-import { promises as fs, constants as FS_CONSTANTS, createReadStream } from 'node:fs';
+import { promises as fs, constants as FS_CONSTANTS } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { randomUUID, createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import {
   createRun, nextActions, claimNode, recordLaunch, applyReport, approveNode,
   pauseRun, resumeRun, retryNode, blockNode, cancelRun, releaseClaim, normalizeEccAgent
@@ -26,12 +24,15 @@ import { buildLabel } from './buildinfo.mjs';
 import { artifactReader } from './artifacts.mjs';
 import { recreateRefusal, reservedGitTrace } from './wscreate.mjs';
 import { createCancelMarks, closeCancelled } from './cancel.mjs';
-import { parentEvidenceOf } from './reuse.mjs';
+import { releaseUncertainJob } from './slotrelease.mjs';
+import { createRequestLedger } from './requests.mjs';
+import { parentEvidenceOf, recheckParentEvidence } from './reuse.mjs';
+import { digestFile, gitRepositoryState, preflightMessage, sourceFingerprint } from './repository.mjs';
+import { recordReleaseBinary, recheckBeforeSubmission, readReleaseFile } from './releaselink.mjs';
 import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, isReportFormError, formError, reportFixPrompt } from './reportfix.mjs';
 
-export { buildNodePrompt };
+export { buildNodePrompt, gitRepositoryState, sourceFingerprint };
 
-const execFileAsync = promisify(execFile);
 const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 const MAX_RUNS = 40;
@@ -134,83 +135,6 @@ async function boundedJson(filename, base) {
     await file.close();
   }
 }
-async function digestFile(filename) {
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(filename, { flags: FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW || 0) })) {
-    hash.update(chunk);
-  }
-  return hash.digest('hex');
-}
-
-/** Whether a local repository can seed a worktree: it needs a commit, and the chosen base if any. */
-export async function gitRepositoryState(repositoryPath, baseBranch) {
-  const verify = async (ref) => {
-    try {
-      await execFileAsync('git', ['-c', 'core.fsmonitor=false', '-C', repositoryPath, 'rev-parse', '--verify', '--quiet', ref + '^{commit}'], {
-        encoding: 'utf8', timeout: 10_000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
-      });
-      return true;
-    } catch (error) {
-      if (error.code === 1) return false; // --quiet: the ref does not exist
-      throw error;
-    }
-  };
-  // Orca also accepts a base that exists only as a remote-tracking branch.
-  const remoteOnly = async (name) => (await execFileAsync('git', ['-C', repositoryPath, 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/*/' + name], {
-    encoding: 'utf8', timeout: 10_000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
-  })).stdout.trim() !== '';
-  const hasCommit = await verify('HEAD');
-  if (!hasCommit || !baseBranch) return { hasCommit, hasBase: hasCommit };
-  return { hasCommit, hasBase: await verify(baseBranch) || await remoteOnly(baseBranch) };
-}
-function preflightMessage({ hasCommit, hasBase }, baseBranch) {
-  if (!hasCommit) return '이 저장소에는 아직 커밋이 없어 작업 공간을 만들 기준 브랜치가 없습니다. 프로젝트에서 첫 커밋을 만든 뒤(예: git add -A && git commit -m "init") 같은 시작 버튼을 다시 누르세요.';
-  if (!hasBase) return "기준 브랜치 '" + baseBranch + "'를 저장소에서 찾을 수 없습니다. 브랜치를 만들거나 기준 브랜치를 비운 새 흐름을 만드세요.";
-  return null;
-}
-
-/** Content-sensitive Git fingerprint; fails closed if the checkout cannot be measured. */
-export async function sourceFingerprint(workspacePath) {
-  const git = async (args) => (await execFileAsync('git', ['-c', 'core.fsmonitor=false', '-C', workspacePath, ...args], {
-    encoding: 'utf8', timeout: 20_000, maxBuffer: 8 * 1024 * 1024,
-    windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
-  })).stdout;
-  // Settle all children before reporting failure so none outlive checkout inspection.
-  const reads = await Promise.allSettled([
-    git(['rev-parse', 'HEAD']),
-    git(['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--']),
-    git(['ls-files', '--others', '--exclude-standard', '-z']),
-    git(['ls-files', '--stage', '-v', '-z'])
-  ]);
-  const failed = reads.find(result => result.status === 'rejected');
-  if (failed) throw failed.reason;
-  const [head, tracked, names, indexEntries] = reads.map(result => result.value);
-  const entries = indexEntries.split('\0').filter(Boolean);
-  if (entries.some(entry => /^[a-zS] /.test(entry))) {
-    throw runtimeError('not_permitted', 'assume-unchanged/skip-worktree 파일은 실제 변경이 숨겨질 수 있어 검증 기준을 확정할 수 없습니다. Git 플래그를 해제하고 다시 검증하세요.');
-  }
-  if (entries.some(entry => /^\S (120000|160000) /.test(entry)) ||
-      /^(?:new file mode|new mode) 120000$/m.test(tracked)) {
-    throw runtimeError('not_permitted', '심볼릭 링크/서브모듈이 포함된 소스는 현재 검증 기준을 안전하게 확정할 수 없습니다. 일반 소스 파일로 구성된 작업 공간을 사용하세요.');
-  }
-  const hash = createHash('sha256').update(head).update('\0').update(tracked).update('\0');
-  const untracked = names.split('\0').filter(Boolean).sort();
-  if (untracked.length > 5000) throw runtimeError('too_large', '추적되지 않은 파일이 너무 많아 검증 기준을 확정할 수 없습니다.');
-  let bytes = 0;
-  for (const name of untracked) {
-    const filename = path.resolve(workspacePath, name);
-    if (!within(workspacePath, filename)) throw runtimeError('invalid_params', 'Git 파일 경로를 검증하지 못했습니다.');
-    const stat = await fs.lstat(filename);
-    if (stat.isSymbolicLink()) {
-      throw runtimeError('not_permitted', '미추적 심볼릭 링크가 있어 소스 신선도를 확인할 수 없습니다.');
-    } else if (stat.isFile()) {
-      bytes += stat.size;
-      if (bytes > 128 * 1024 * 1024) throw runtimeError('too_large', '검증할 미추적 파일이 128 MiB를 넘습니다. 빌드 출력을 .gitignore에 추가하세요.');
-      hash.update(name).update('\0').update(await digestFile(filename));
-    }
-  }
-  return hash.digest('hex');
-}
 
 function findNode(run, id) {
   const node = run.nodes.find((item) => item.id === id);
@@ -241,7 +165,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   inspectRepository = gitRepositoryState, workspaceTrace = reservedGitTrace, eccAdvisor = null, visualAdvisor = null, launchOverrides = null,
   receiptWrittenAt = async (file) => (await fs.stat(file)).mtimeMs,
   validateArtifact, resolvePlayAccount, readPlayApp, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  watchIntervalMs = WATCH_INTERVAL_MS, cleanupIntervalMs = CLEANUP_INTERVAL_MS, gitState = gitWorkingState, buildInfo = null } = {}) {
+  watchIntervalMs = WATCH_INTERVAL_MS, cleanupIntervalMs = CLEANUP_INTERVAL_MS, gitState = gitWorkingState, buildInfo = null, readRelease = readReleaseFile } = {}) {
   if (!orca?.host || !orca?.storage) throw new Error('Orca host and storage are required.');
   // Situational ECC agents and skills for this launch, kept on the job (prompt) and the stage
   // (inspector). Missing guidance never blocks a launch; for a Claude stage it is said in an event.
@@ -323,6 +247,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     if (await fingerprint(run.workspacePath) !== node.approval.sourceFingerprint) {
       throw runtimeError('conflict', '제출 승인 이후 소스가 변경됐습니다. 새 실행에서 검증과 구체적인 제출 승인을 다시 받으세요.');
     }
+    await recheckBeforeSubmission(run, node, { read: (artifact) => readRelease(artifact, { workspacePath: run.workspacePath, receiptDirectory: path.join(receiptRoot, safeSegment(run.id)) }) }); // the checked build is still the file (src/releaselink.mjs)
   };
   const queue = (work) => {
     const operation = chain.then(work);
@@ -373,6 +298,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     notify: (title, body) => { void Promise.resolve().then(() => call('notifications.show', { title, body: body.slice(0, 900) })).catch(() => {}); },
     retry: () => { if (!disposed) void queue(() => persist()).then(() => { if (!persistence.failure()) schedulePump(); }, () => {}); } });
   const cancelMarks = createCancelMarks(orca.storage, (line) => orca.log?.(line));
+  const requests = createRequestLedger(orca.storage, (line) => orca.log?.(line)); // request keys of pruned archives (src/requests.mjs)
+  const expectRevision = (run, input) => { if (input.expectedRevision !== undefined && input.expectedRevision !== run.updatedAt) throw runtimeError('conflict', '실행 ' + run.id + '이(가) 요청 이후 바뀌었습니다(현재 revision ' + run.updatedAt + '). 상태를 다시 확인한 뒤 요청하세요.'); };
   const closeCancel = (run) => closeCancelled(run, { save: async () => { await persist(); return !persistence.failure(); },
     mark: (runId) => cancelMarks.write(runId, nowIso(now)), close: (terminalId) => call('terminal.close', { terminalId }),
     appendEvent: (target, text) => appendEvent(target, text, now), activeJobs, describeError: safeError });
@@ -475,6 +402,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
         try { artifacts.push(await artifactDetails(evidence, job)); }
         catch (error) { throw formError('artifact ' + String(evidence.path) + ': ' + (error.code === 'ENOENT' ? '파일이 없습니다.' : safeError(error).message)); }
       }
+      let index = 0; // each artifact item keeps the hash taken here (src/artifacts.mjs shows a changed file as 변경됨)
+      report = { ...report, evidence: report.evidence.map((item) => item.kind === 'artifact' ? { ...item, sha256: artifacts[index++].sha256 } : item) };
       if (report.outcome === 'passed' && artifacts.length === 0) {
         throw formError('성공 보고서에는 실제 검증 artifact가 한 개 이상 필요합니다.');
       }
@@ -489,6 +418,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       const problem = sourceProblem({ job, write: findNode(run, job.nodeId).write, report, state: report.outcome === 'passed' && (job.startHead || job.sourceCommit) ? await readGit(run.workspacePath) : null });
       if (problem?.kind === 'commit') throw Object.assign(formError(problem.message), { commitRequired: true }); // written source must be committed (src/commitcheck.mjs)
       if (problem) throw runtimeError('conflict', problem.message);
+      const binary = job.phase === 'work' ? await recordReleaseBinary(run, findNode(run, job.nodeId), report, { read: (artifact) => readRelease(artifact, { workspacePath: run.workspacePath, receiptDirectory: job.receiptDirectory }), at: nowIso(now) }) : null;
       const node = findNode(run, job.nodeId);
       if (!node.active) {
         node.active = { ...node.pendingReceipt, ...job };
@@ -499,6 +429,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       run = applyReport(run, job.nodeId, report, { now: now() });
       const updatedNode = findNode(run, job.nodeId);
       updatedNode.receipt = { path: job.receiptPath, at: nowIso(now), phase: job.phase, artifacts };
+      if (binary && updatedNode.report?.releaseLink) updatedNode.report.releaseLink.binary = binary; // what Neon read from the file itself
       updatedNode.runtimeMessage = '';
       const storedJob = (run.jobs || []).find((entry) => entry.nonce === job.nonce);
       if (storedJob) {
@@ -731,6 +662,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     // promptRecovery (the never-resent assignment) stays untouched.
     const decision = continuation === 'decision';
     const fix = continuation === 'report';
+    if (!continuation && job.parentEvidence) job.parentEvidence = await recheckParentEvidence(job, () => fingerprint(run.workspacePath)); // reuse only what is still fresh now (src/reuse.mjs)
     const text = decision ? DECIDE_PROMPT : fix ? reportFixPrompt(job.reportFix.reason, job.receiptPath, job.reportFixes, { commit: job.reportFix.commit }) : continuation ? CONTINUE_PROMPT : await nodePrompt(run, node, job);
     const record = { state: 'sending', at: nowIso(now), terminalId: job.terminalId,
       ...(manual ? { acknowledgedEmpty: true } : {}), ...(continuation ? { count: job.continuations } : {}) };
@@ -1096,7 +1028,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       (() => { throw runtimeError('invalid_params', '실행을 찾을 수 없습니다.'); })(),
     'runs.create': (input = {}) => queue(async () => {
       const key = requestKey(input); // the same requestId or diagnosis candidate returns the run it already made
-      const existing = key && [...state.runs, ...state.archivedRuns].find((item) => item.requestId === key && (key.startsWith('req:') || item.status !== 'cancelled'));
+      const existing = key && [...state.runs, ...state.archivedRuns, ...requests.list()].find((item) => item.requestId === key && (key.startsWith('req:') || item.status !== 'cancelled'));
+      if (existing?.pruned) throw runtimeError('conflict', '이 요청은 이미 실행 ' + existing.id + '(' + existing.status + ')을(를) 만들었고, 그 기록은 보관 한도로 정리됐습니다. 다시 만들지 않습니다. 새 요청이면 새 requestId를 쓰세요.');
       if (existing) return clone(existing);
       if (state.runs.length >= MAX_RUNS) throw runtimeError('too_large', '최대 40개 실행을 보관합니다. 기존 실행을 완료한 뒤 보관 정리를 진행하세요.');
       const plan = await planRunInput(input, { call, inspectRepository, readPlayApp, runs: [...state.runs, ...state.archivedRuns] });
@@ -1158,13 +1091,15 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       const full = clone(run);
       appendEvent(full, '완료된 실행을 보관했습니다. 보고서 원문은 실행 결과 폴더에 남아 있습니다.', now);
       const archivedRun = archiveRun(full, nowIso(now)); // trimmed; the oldest archives go once their byte budget is spent
-      state.archivedRuns = retainArchives([...state.archivedRuns, archivedRun]).kept;
+      const { kept, dropped } = retainArchives([...state.archivedRuns, archivedRun]);
+      state.archivedRuns = kept;
       state.runs = state.runs.filter((entry) => entry.id !== run.id);
       await persist();
+      await requests.remember(dropped, nowIso(now)); // a late redelivery of their requests must not make a second run
       return { archived: true, runId: run.id, archivedRun: clone(archivedRun) };
     }),
     'runs.start': (input) => queue(async () => {
-      let run = getRun(input.runId);
+      let run = getRun(input.runId); expectRevision(run, input); // inside the queue: nothing changes it between check and start
       if (run.status === 'cancelled' || run.status === 'completed') throw runtimeError('conflict', '종료된 실행은 다시 시작할 수 없습니다.');
       run = await ensureWorkspace(run);
       replaceRun(run);
@@ -1180,7 +1115,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       replaceRun(run); await persist(); return clone(run);
     }),
     'runs.resume': (input) => queue(async () => {
-      let run = getRun(input.runId);
+      let run = getRun(input.runId); expectRevision(run, input);
       if (run.status === 'cancelled' || run.status === 'completed') throw runtimeError('conflict', '종료된 실행은 재개할 수 없습니다.');
       run = await ensureWorkspace(run);
       run = await reconcile(run, true);
@@ -1301,6 +1236,10 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       run = replaceRun(cancelRun(run, { now: now(), reason: '사용자가 실행을 취소했습니다.' })); // no new stage from here on
       return clone(await closeCancel(run)); // the intent is durable before any terminal closes (src/cancel.mjs)
     }),
+    'jobs.releaseUncertain': (input = {}) => queue(async () => { // a person confirmed no agent runs for it (src/slotrelease.mjs)
+      const { run, message, nodeId } = releaseUncertainJob(getRun(input.runId), { ...input, at: nowIso(now) });
+      appendEvent(run, message, now, { nodeId }); replaceRun(run); await persist(); schedulePump(); return clone(run);
+    }),
     'terminals.focus': async (input) => {
       const owned = state.runs.some((run) => run.jobs?.some((job) => job.terminalId === input.terminalId));
       if (!owned) throw runtimeError('invalid_params', '이 플러그인이 배정한 터미널만 열 수 있습니다.');
@@ -1408,7 +1347,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     }
   };
   // Token usage rides the same timer: one agent.listSessions per active workspace (src/usage.mjs).
-  const watch = createJobWatch({ afterPass: runtimeUsageSync({ host: orca.host, runs: () => state.runs, queue, persist, at: () => nowIso(now), log: (line) => orca.log?.(line) }),
+  const watch = createJobWatch({ afterPass: runtimeUsageSync({ host: orca.host, runs: () => [...state.runs, ...state.archivedRuns], queue, persist, at: () => nowIso(now), log: (line) => orca.log?.(line) }),
     now, log: (line) => orca.log?.(line), listAgents: (workspaceId) => listAgents(workspaceId),
     receiptAt: async (job) => { if (!(await receiptPresent(job))) return false; try { return await receiptWrittenAt(job.receiptPath); } catch { return null; } },
     apply: (runId, actions) => queue(() => applyWatch(runId, actions)),
@@ -1435,6 +1374,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   async function initialize() {
     const loaded = await persistence.load(); // an unreadable layout throws here; nothing is overwritten
     state = loaded.state;
+    await requests.load();
     for (const runId of await cancelMarks.apply(state, now())) orca.log?.('Toris Neon storage: 재시작 전에 저장하지 못한 실행 ' + runId + '의 취소를 적용했습니다.');
     state.build = buildInfo ? { ...buildInfo, label: buildLabel(buildInfo) } : null;
     const migration = loaded.migration;
@@ -1470,7 +1410,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     return api;
   }
   const api = {
-    initialize, receiptRoot,
+    initialize, receiptRoot, prunedRequests: () => requests.list(),
     handlers: Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, async (input) => jsonValue(await handler(input))])),
     getState: (input = {}) => jsonValue(projectState(state, input.view, limits)),
     drain: async () => {

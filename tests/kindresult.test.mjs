@@ -109,6 +109,18 @@ test('the release card links commit, artifact, account, package, track and versi
   assert.doesNotMatch(plain, /검토한 커밋과 다릅니다/, 'the reviewed commit matches the linked one');
 });
 
+test('the release card shows the file Neon read itself, or says the file was never checked', () => {
+  // Arrange
+  const link = { commit: 'a1b2c3d4e5f6', artifact: 'app-release.aab', packageName: 'com.example.water', track: 'internal', versionCode: '43' };
+  const checked = improveRun('release', { internal: { releaseLink: { ...link, binary: { format: 'aab', sha256: 'd'.repeat(64), packageName: 'com.example.water', versionCode: '43', signingCertSha256: 'e'.repeat(64), artifact: 'app-release.aab', checkedAt: NOW } } } });
+  const unchecked = improveRun('release', { internal: { releaseLink: link } });
+  // Act
+  const seen = text(kindResult(checked)), unseen = text(kindResult(unchecked));
+  // Assert
+  assert.match(seen, /Neon이 읽은 파일 AAB · sha256 dddddddddddd · com\.example\.water · versionCode 43 · 서명 인증서 eeeeeeeeeeee/);
+  assert.match(unseen, /Neon이 읽은 파일 확인 기록 없음/);
+});
+
 test('the release card says when no link was reported or no verified commit existed', () => {
   const run = improveRun('release', { test: {} });
   const plain = text(kindResult(run));
@@ -134,4 +146,17 @@ test('reused parent evidence is counted fresh and stale on the run card', () => 
 test('other kinds and new-app runs get no kind block', () => {
   assert.equal(kindResult(improveRun('bugfix', { build: {} })), '');
   assert.equal(kindResult({ ...improveRun('design'), template: 'new-app' }), '');
+});
+
+test('evidence that went stale just before delivery says the source moved, not that it could not be measured', () => {
+  // Arrange
+  const run = improveRun('bugfix', { build: { changes: ['x'] } }, { parentRunId: 'p0' });
+  run.jobs.push({ nodeId: 'build', phase: 'work', nonce: 'w1', parentEvidence: { changedBeforeDelivery: true, reason: '작업 지시를 전달하기 직전에 다시 재 보니 소스가 바뀌었습니다',
+    items: [{ nodeId: 'identity', title: '앱 정체성 확인', freshness: 'stale' }] } });
+  // Act
+  const plain = text(kindResult(run));
+  // Assert
+  assert.match(plain, /재사용 0개 · 오래됨 1개/);
+  assert.match(plain, /작업 지시를 전달하기 직전에 소스가 바뀌어 재사용하지 않았습니다/);
+  assert.doesNotMatch(plain, /잴 수 없어/);
 });

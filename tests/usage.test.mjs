@@ -451,3 +451,35 @@ test('an earlier run whose job on the session is still live, or a session on ano
   assert.deepEqual(handOverSessions(later, [earlier, later], at(11)).map((run) => run.id), ['a']);
   assert.equal(earlier.usage.sessions[0].cap, 100_000);
 });
+
+test('a run archived right after it completes keeps its ledger, counts late tokens through its final checks, then freezes', () => {
+  // Arrange: completed with no token read yet, archived at once.
+  const run = { ...createRun({ id: 'r1', goal: 'g', projectId: 'p1', nodes: [{ id: 'build', title: 'B', deps: [], write: true }], now: START }), status: 'completed', workspaceId: 'w1', jobs: [job({ state: 'complete' })] };
+  const archived = archiveRun(run, at(2));
+  // Act / Assert: still a ledger, still queried
+  assert.equal(archived.usage.frozen, undefined);
+  assert.equal(archived.usage.sessions.length, 1, 'the jobs\' sessions are registered before the jobs are trimmed');
+  assert.deepEqual(usageTargets([archived]), [{ runId: 'r1', workspaceId: 'w1' }]);
+  archived.usage = updateUsage(archived, { rows: [row({ totalTokens: 90_000 })], workspaceId: 'w1' }, at(3)).usage;
+  assert.equal(archived.usage.frozen, undefined);
+  assert.equal(usageSummary(archived.usage).total, 90_000);
+  archived.usage = updateUsage(archived, { rows: [row({ totalTokens: 130_000 })], workspaceId: 'w1' }, at(5)).usage;
+  assert.equal(archived.usage.frozen.total, 130_000, 'the late total is in the frozen summary');
+  assert.deepEqual(usageTargets([archived]), [], 'nothing reads it after its final checks');
+  assert.equal(archiveRun(archived, at(6)).usage.frozen.total, 130_000);
+});
+
+test('a run archived after its final checks is frozen at once, and an archived run never takes a late value as its baseline', () => {
+  // Arrange
+  const base = { ...createRun({ id: 'r1', goal: 'g', projectId: 'p1', nodes: [{ id: 'build', title: 'B', deps: [], write: true }], now: START }), status: 'completed', workspaceId: 'w1', jobs: [job({ state: 'complete' })] };
+  const checked = { ...base, usage: { ...observed(ledger(base.jobs), [row({ totalTokens: 50_000 })]), finalChecks: FINAL_CHECKS } };
+  const resumed = archiveRun({ ...base, jobs: [job({ state: 'complete', promptRecovery: undefined })] }, at(2));
+  // Act
+  const frozen = archiveRun(checked, at(9));
+  resumed.usage = updateUsage(resumed, { rows: [row({ totalTokens: 400_000, createdAt: START - 3_600_000 })], workspaceId: 'w1' }, at(3)).usage;
+  // Assert
+  assert.equal(frozen.usage.frozen.total, 50_000);
+  assert.equal(frozen.usage.frozen.lateTotalsMissed, undefined, 'frozen after its checks: nothing was missed');
+  assert.equal(usageSummary(resumed.usage).total, null, 'an older session with no baseline is a session total, not this run');
+  assert.equal(usageSummary(resumed.usage).sessionTotal, 400_000);
+});

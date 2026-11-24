@@ -151,6 +151,7 @@ function harness(options = {}) {
     ...(options.launchOverrides ? { launchOverrides: options.launchOverrides } : {}),
     ...(options.readPlayApp ? { readPlayApp: options.readPlayApp } : {}),
     gitState: options.gitState ?? null, buildInfo: options.buildInfo,
+    ...(options.readRelease ? { readRelease: options.readRelease } : {}),
     ensureDirectory: async () => {},
     writeBrief: async (filename, text) => { briefs.set(filename, text); },
     readReceipt: async (filename) => {
@@ -233,6 +234,18 @@ test('work receipt launches an independent review; verified review completes the
   assert.equal(h.getRun().status, 'completed');
   assert.equal(h.getRun().nodes[0].status, 'passed');
   assert.equal(h.getRun().nodes[0].receipt.artifacts[0].sha256, 'artifact-hash');
+});
+
+test('each artifact a report records keeps the SHA-256 taken at intake, so a later view can tell a changed file', async () => {
+  // Arrange
+  const h = harness();
+  await h.create(); await h.start();
+  // Act
+  h.report(); await h.done();
+  // Assert
+  const artifact = h.getRun().nodes[0].report.evidence.find((item) => item.kind === 'artifact');
+  assert.equal(artifact.sha256, 'artifact-hash');
+  assert.equal(h.getRun().nodes[0].report.evidence.find((item) => item.kind === 'command').sha256, undefined);
 });
 
 test('a done event without a receipt blocks; explicit refresh imports a later valid receipt', async () => {
@@ -496,6 +509,56 @@ test('failed Play access verification blocks the submission before launching the
   assert.equal(launchCalls(h).length, 0);
   assert.equal(h.getRun().jobs[0].state, 'not-started');
   assert.match(h.getRun().nodes[0].runtimeMessage, /Google denied access/);
+});
+
+test('a release link whose real file differs from the approved versionCode blocks; a matching file is recorded on the link', async () => {
+  // Arrange
+  const files = { 'build/app-release.aab': { format: 'aab', sha256: 'a'.repeat(64), size: 9, packageName: 'com.example.app', versionCode: '41', signingCertSha256: 'c'.repeat(64) } };
+  const h = harness({ readRelease: async (artifact) => structuredClone(files[artifact]) });
+  await h.create([{ id: 'internal', title: '내부 테스트 제출', deps: [], write: true }]);
+  await h.start();
+  await h.runtime.handlers['runs.approve']({ runId: h.getRun().id, nodeId: 'internal', note: 'com.example.app internal 42 제출 승인',
+    submission: { ...playAccount, packageName: 'com.example.app', track: 'internal', versionCode: 42 } });
+  await h.runtime.drain();
+  const releaseLink = { commit: 'a1b2c3d4e5f6', artifact: 'build/app-release.aab', packageName: 'com.example.app', track: 'internal', versionCode: 42 };
+  // Act
+  h.report(undefined, { releaseLink }); await h.done();
+  // Assert
+  assert.equal(h.getRun().nodes[0].status, 'blocked');
+  assert.match(h.getRun().nodes[0].runtimeMessage, /실제 파일은 41/);
+  // Arrange: the agent rebuilt the approved version
+  files['build/app-release.aab'].versionCode = '42';
+  // Act
+  await h.runtime.handlers['runs.refresh']({ runId: h.getRun().id }); await h.runtime.drain();
+  // Assert
+  const binary = h.getRun().nodes[0].report.releaseLink.binary;
+  assert.equal(binary.versionCode, '42');
+  assert.equal(binary.signingCertSha256, 'c'.repeat(64));
+  assert.equal(binary.artifact, 'build/app-release.aab');
+});
+
+test('a submission whose recorded release file changed since it was checked is not typed', async () => {
+  // Arrange
+  const files = { 'build/app-release.aab': { format: 'aab', sha256: 'a'.repeat(64), size: 9, packageName: 'com.example.app', versionCode: '42', signingCertSha256: 'c'.repeat(64) } };
+  const h = harness({ readRelease: async (artifact) => structuredClone(files[artifact]) });
+  await h.create([{ id: 'internal', title: '내부 테스트 제출', deps: [], write: true }, { id: 'release', title: '출시 제출', deps: ['internal'], write: true }]);
+  await h.start();
+  await h.runtime.handlers['runs.approve']({ runId: h.getRun().id, nodeId: 'internal', note: 'com.example.app internal 42 제출 승인',
+    submission: { ...playAccount, packageName: 'com.example.app', track: 'internal', versionCode: 42 } });
+  await h.runtime.drain();
+  h.report(undefined, { releaseLink: { commit: 'a1b2c3d4e5f6', artifact: 'build/app-release.aab', packageName: 'com.example.app', track: 'internal', versionCode: 42 } }); await h.done();
+  h.report(); await h.done();
+  assert.equal(h.getRun().nodes[0].status, 'passed');
+  const launches = launchCalls(h).length;
+  // Act
+  files['build/app-release.aab'].sha256 = 'f'.repeat(64);
+  await h.runtime.handlers['runs.approve']({ runId: h.getRun().id, nodeId: 'release', note: 'com.example.app production 42 제출 승인',
+    submission: { ...playAccount, packageName: 'com.example.app', track: 'production', versionCode: 42 } });
+  await h.runtime.drain();
+  // Assert
+  assert.equal(launchCalls(h).length, launches, 'no agent is launched for the submission');
+  assert.equal(h.getRun().nodes[1].status, 'blocked');
+  assert.match(h.getRun().nodes[1].runtimeMessage, /기록 이후 바뀌었습니다/);
 });
 
 test('approval without a submission target runs preparation only', async () => {
@@ -1973,6 +2036,29 @@ const restartRuntime = (h, extra = {}) => createRuntime({ orca: h.orca, gitState
   readReceipt: async (file) => { if (!h.receipts.has(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return structuredClone(h.receipts.get(file)); },
   validateArtifact: async (evidence) => ({ ...evidence, sha256: 'x', size: 1 }), ...extra });
 
+test('parent evidence fresh at launch is measured again before the brief is typed; a source change drops the reuse instruction', async () => {
+  // Arrange
+  let source = 'fp-a', brief = null;
+  const h = harness({ host: async (name) => { if (name === 'agent.launch') source = 'fp-b'; } }); // the source moves while the agent starts
+  await h.create();
+  const saved = savedState(h.store);
+  saved.runs[0].improvement = { parent: { runId: 'p0', evidence: [{ nodeId: 'identity', title: '앱 정체성 확인', summary: '정체성 근거', fingerprint: 'fp-a', commit: null, at: null }] } };
+  writeSaved(h.store, saved);
+  h.runtime.dispose();
+  const restarted = restartRuntime(h, { fingerprint: async () => source, writeBrief: async (_file, text) => { brief = text; } });
+  await restarted.initialize();
+  // Act
+  await restarted.handlers['runs.start']({ runId: saved.runs[0].id });
+  await restarted.drain();
+  // Assert
+  const typed = brief ?? sendCalls(h)[0].input.text;
+  assert.doesNotMatch(typed, /재사용 가능/);
+  assert.match(typed, /오래된 근거[^\n]*지시를 전달하기 직전/);
+  const job = restarted.getState().runs[0].jobs[0];
+  assert.equal(job.parentEvidence.items[0].freshness, 'stale');
+  restarted.dispose();
+});
+
 test('a failed save keeps serving events from memory, warns on the run and in state.get, and recovers', async () => {
   let failing = false;
   const h = harness({ failWrites: () => failing });
@@ -2440,6 +2526,78 @@ test('a direct runs.create requestId still identifies a cancelled run after rest
   restarted.dispose();
 });
 
+test('a request whose run was pushed out of the archive limit never makes a second run, even after a restart', async () => {
+  // Arrange: a full archive whose oldest run was made by a bot request
+  const h = harness();
+  await h.runtime.initialize();
+  const handlers = h.runtime.handlers;
+  const remote = createRemoteControl({ getRuns: () => { const state = h.runtime.getState(); return [...state.runs, ...state.archivedRuns, ...h.runtime.prunedRequests()]; },
+    createRun: handlers['runs.create'], startRun: handlers['runs.start'], resumeRun: handlers['runs.resume'] });
+  const request = { action: 'create', requestId: 'bot-old', mode: 'new-app', projectId: 'p1', goal: '물주기 알림 앱' };
+  const first = await remote.request(request);
+  await handlers['runs.cancel']({ runId: first.run.runId });
+  await handlers['runs.archive']({ runId: first.run.runId });
+  const saved = savedState(h.store);
+  saved.archivedRuns = [...saved.archivedRuns.map((run) => ({ ...run, archivedAt: '2026-01-01T00:00:00.000Z' })),
+    ...Array.from({ length: 100 }, (_, index) => ({ id: 'filler-' + index, goal: '앱', status: 'completed', projectId: 'p1', nodes: [], events: [], archivedAt: '2026-02-01T00:00:00.000Z' }))];
+  writeSaved(h.store, saved);
+  h.runtime.dispose();
+  const restarted = restartRuntime(h);
+  await restarted.initialize();
+  const latest = await restarted.handlers['runs.create']({ goal: '다른 앱', projectId: 'p1', autonomous: false });
+  await restarted.handlers['runs.cancel']({ runId: latest.id });
+  // Act: archiving one more pushes the oldest (the bot's run) out
+  await restarted.handlers['runs.archive']({ runId: latest.id });
+  const again = restartRuntime(h);
+  await again.initialize();
+  const remoteAgain = createRemoteControl({ getRuns: () => { const state = again.getState(); return [...state.runs, ...state.archivedRuns, ...again.prunedRequests()]; },
+    createRun: again.handlers['runs.create'], startRun: again.handlers['runs.start'], resumeRun: again.handlers['runs.resume'] });
+  const redelivered = await remoteAgain.request(request);
+  // Assert
+  assert.ok(!again.getState().archivedRuns.some((run) => run.id === first.run.runId), 'the run itself was pruned');
+  assert.equal(redelivered.created, false);
+  assert.equal(redelivered.run.runId, first.run.runId);
+  assert.equal(redelivered.run.pruned, true);
+  assert.equal(again.getState().runs.length, 0, 'no second run was made');
+  restarted.dispose(); again.dispose();
+});
+
+test('a direct runs.create with the request key of a pruned run is refused and names that run', async () => {
+  const h = harness();
+  await h.runtime.initialize();
+  const input = { goal: '앱', projectId: 'p1', requestId: 'req-pruned', autonomous: false };
+  const first = await h.runtime.handlers['runs.create'](input);
+  await h.runtime.handlers['runs.cancel']({ runId: first.id });
+  h.store.set('toris-neon.requests.v1', { version: 1, entries: [{ requestId: 'req:req-pruned', id: first.id, status: 'cancelled', projectId: 'p1', prunedAt: new Date(NOW).toISOString(), pruned: true }] });
+  const saved = savedState(h.store); saved.runs = []; writeSaved(h.store, saved); h.store.delete(runKey(first.id)); // pruned: the run itself is gone
+  h.runtime.dispose();
+  const restarted = restartRuntime(h);
+  await restarted.initialize();
+  await assert.rejects(restarted.handlers['runs.create'](input), (error) => error.code === 'conflict' && error.message.includes(first.id));
+  assert.equal(restarted.getState().runs.length, 0);
+  restarted.dispose();
+});
+
+test('expectedRevision is compared inside the runtime queue, after a panel change queued before it', async () => {
+  // Arrange
+  let t = NOW;
+  const h = harness({ now: () => t });
+  await h.create();
+  const seen = h.getRun().updatedAt;
+  t += 1000;
+  // Act: a panel change and a remote start race; the panel change is queued first
+  const change = h.runtime.handlers['runs.updateAssignments']({ runId: h.getRun().id, assignments: { build: { agent: 'claude' } } });
+  const start = h.runtime.handlers['runs.start']({ runId: h.getRun().id, expectedRevision: seen });
+  await change;
+  // Assert
+  await assert.rejects(start, (error) => error.code === 'conflict' && /revision/.test(error.message));
+  assert.equal(launchCalls(h).length, 0);
+  await h.runtime.handlers['runs.start']({ runId: h.getRun().id, expectedRevision: h.getRun().updatedAt });
+  await h.runtime.drain();
+  assert.equal(launchCalls(h).length, 1);
+  await assert.rejects(h.runtime.handlers['runs.resume']({ runId: h.getRun().id, expectedRevision: seen }), { code: 'conflict' });
+});
+
 test('picking a diagnosis candidate creates one linked improvement run of the candidate\'s kind', async () => {
   const h = harness();
   await h.runtime.initialize();
@@ -2505,6 +2663,51 @@ test('token usage: the watch reads agent.listSessions once per active workspace,
   await restarted.runtime.watchTick(); await restarted.runtime.drain();
   assert.equal(restarted.runtime.getState({ view: 'summary' }).runs[0].tokenUsage.total, 150_000, 'cumulative, not 120K + 150K');
   h.runtime.dispose(); restarted.runtime.dispose();
+});
+
+test('a run archived right after it completes still takes late token totals in its final checks, then keeps them frozen', async () => {
+  // Arrange: a finished run archived before any token read
+  let total = 100_000;
+  const host = async (name, input) => name !== 'agent.listSessions' ? undefined : { truncated: false, sessions: ['t1', 't2'].map((terminal) => (
+    { sessionId: 'session-' + terminal, agent: 'codex', hostId: 'local', workspaceId: input.workspaceId, createdAt: NOW + 5, updatedAt: NOW, totalTokens: terminal === 't1' ? total : 10_000, running: false, title: 'x', branch: null, messageCount: 1 })) };
+  const h = harness({ host });
+  await h.create([{ id: 'build', title: '앱 구현', deps: [], write: true, reviewer: 'codex' }]); await h.start();
+  h.report(); await h.done();
+  h.report(); await h.done();
+  assert.equal(h.getRun().status, 'completed');
+  await h.runtime.handlers['runs.archive']({ runId: h.getRun().id });
+  const archived = () => h.runtime.getState({ view: 'summary' }).archivedRuns[0].tokenUsage;
+  // Act: the agent's last tokens land after the archive
+  total = 130_000;
+  await h.runtime.watchTick(); await h.runtime.drain();
+  await h.runtime.watchTick(); await h.runtime.drain();
+  total = 999_000;
+  await h.runtime.watchTick(); await h.runtime.drain();
+  // Assert
+  assert.equal(archived().total, 140_000, 'the late total is counted, read no more after the final checks');
+  assert.ok(savedState(h.store).archivedRuns[0].usage.frozen, 'frozen once the final checks are made');
+  h.runtime.dispose();
+});
+
+test('a launch with no terminal id keeps its slot until a person confirms and releases it; the release is recorded, never automatic', async () => {
+  // Arrange: agent.launch never answered, so an agent may exist and the slot stays held
+  const h = harness({ host: async (name) => { if (name === 'agent.launch') throw Object.assign(new Error('timed out'), { code: 'timeout' }); } });
+  await h.create(); await h.start();
+  const runId = h.getRun().id, nonce = h.getRun().jobs[0].nonce;
+  const active = () => h.runtime.getState({ view: 'summary' }).limits.active;
+  assert.equal(h.getRun().jobs[0].state, 'uncertain');
+  await h.runtime.handlers['runs.refresh']({ runId }); await h.runtime.watchTick(); await h.runtime.drain();
+  assert.equal(active(), 1, 'nothing frees it on its own');
+  await assert.rejects(h.runtime.handlers['jobs.releaseUncertain']({ runId, nonce, by: 'panel' }), /확인/);
+  // Act
+  await h.runtime.handlers['jobs.releaseUncertain']({ runId, nonce, confirmed: true, by: 'panel' });
+  // Assert
+  assert.equal(active(), 0);
+  assert.deepEqual(h.getRun().jobs[0].released, { by: 'panel', at: new Date(NOW).toISOString() });
+  assert.match(h.getRun().events.at(-1).summary, /슬롯을 해제했습니다/);
+  assert.equal(savedState(h.store).runs[0].jobs[0].state, 'released', 'saved');
+  await h.runtime.handlers['nodes.retry']({ runId, nodeId: 'build' }); await h.runtime.drain();
+  assert.equal(launchCalls(h).length, 2, 'the stage can be retried without another uncertainty acknowledgement');
 });
 
 // Review H-1: a cancel is never lost to a failed write, and a restart never resumes a cancelled run.

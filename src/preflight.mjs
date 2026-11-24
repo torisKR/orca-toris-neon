@@ -9,7 +9,7 @@
  */
 import { homedir } from 'node:os';
 import { detectStack } from './ecc.mjs';
-import { gitRepositoryState } from './runtime.mjs';
+import { gitRepositoryState } from './repository.mjs';
 import { probeHostTools, readProjectFacts, hostIo } from './hostprobe.mjs';
 
 export { probeHostTools, readProjectFacts };
@@ -54,8 +54,9 @@ function exportReasons(stacks, tools, project, source) {
   const reasons = [toolReason(tools, 'jdk'), toolReason(tools, 'androidSdk')];
   if (!stacks.includes('godot')) return reasons;
   const fix = 'Godot 편집기 → Editor → Manage Export Templates에서 설치한 Godot 버전의 템플릿을 받으세요. ' + RECHECK;
-  if (tools.godotTemplates === false) reasons.unshift(reason('blocked', 'Godot 내보내기 템플릿이 설치돼 있지 않아 APK/AAB를 만들 수 없습니다.', fix));
-  if (tools.godotTemplates == null) reasons.unshift(reason('check', 'Godot 내보내기 템플릿 폴더를 확인하지 못했습니다.', fix));
+  const others = tools.godotTemplateVersions?.length ? ' (설치된 템플릿: ' + tools.godotTemplateVersions.join(', ') + ')' : '';
+  if (tools.godotTemplates === false) reasons.unshift(reason('blocked', tools.godotVersion ? 'Godot ' + tools.godotVersion + '용 내보내기 템플릿이 없어 APK/AAB를 만들 수 없습니다' + others + '.' : 'Godot 내보내기 템플릿이 설치돼 있지 않아 APK/AAB를 만들 수 없습니다.', fix));
+  if (tools.godotTemplates == null) reasons.unshift(reason('check', !tools.godotVersion && others ? 'Godot 버전을 확인하지 못해 설치된 템플릿이 이 버전용인지 확인하지 못했습니다' + others + '.' : 'Godot 내보내기 템플릿 폴더를 확인하지 못했습니다.', fix));
   const presetFix = 'Godot의 프로젝트 → 내보내기에서 Android 프리셋을 추가하세요. 에이전트가 테스트 단계에서 만들 수도 있습니다.';
   if (project.godotAndroidPreset === false) reasons.push(reason('check', 'Android 내보내기 프리셋(export_presets.cfg)이 없습니다.', presetFix));
   if (project.godotAndroidPreset == null && source === 'files') reasons.push(reason('check', 'Android 내보내기 프리셋(export_presets.cfg)을 읽지 못했습니다.', '파일 권한을 확인하세요. 없다면 ' + presetFix));

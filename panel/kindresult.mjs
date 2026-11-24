@@ -86,11 +86,14 @@ function linkFlags(run, node) {
   if (linked && linked !== link.packageName) flags.push('연결한 Play 앱 ' + linked + '와 패키지가 다릅니다');
   return flags;
 }
+// What src/releaselink.mjs read from the file itself at intake, or that nothing was checked (older reports).
+const binaryLine = (binary) => binary ? [binary.format?.toUpperCase(), 'sha256 ' + binary.sha256.slice(0, 12), binary.packageName, 'versionCode ' + binary.versionCode,
+  binary.signingCertSha256 ? '서명 인증서 ' + binary.signingCertSha256.slice(0, 12) : '서명 인증서 없음(v1 서명 미확인)'].filter(Boolean).join(' · ') : '확인 기록 없음';
 function releaseRows(run, node) {
   const link = node.report.releaseLink, approved = node.approval?.submission;
   const account = approved ? approved.accountId + (approved.developerId ? ' · 개발자 ' + approved.developerId : '') : run.improvement?.playLink?.accountName ?? '승인 전(미정)';
   return table('출시 연결: ' + node.title, ['항목', node.title], [['소스 커밋', link.commit.slice(0, 12)], ['빌드 아티팩트', link.artifact + (link.sha256 ? ' · sha256 ' + link.sha256.slice(0, 12) : '')],
-    ['계정', account], ['패키지', link.packageName], ['트랙', link.track], ['versionCode', link.versionCode]]);
+    ['계정', account], ['패키지', link.packageName], ['트랙', link.track], ['versionCode', link.versionCode], ['Neon이 읽은 파일', binaryLine(link.binary)]]);
 }
 function releaseBlock(run) {
   const last = run.improvement?.lastVerified;
@@ -107,7 +110,7 @@ function reuseBlock(run) {
   const items = check.items;
   const fresh = items.filter((item) => item.freshness === 'fresh'), stale = items.filter((item) => item.freshness !== 'fresh');
   return part('이전 결과 근거', '<p>재사용 ' + fresh.length + '개 · 오래됨 ' + stale.length + '개</p>' +
-    (stale.length ? hint('오래됨: ' + stale.map((item) => e(item.title)).join(', ') + (check.reason ? ' — 현재 소스를 잴 수 없어 같은지 확인하지 못했습니다(' + e(check.reason) + ').' : ' — 소스가 바뀌어 다시 검증해야 합니다.')) : ''));
+    (stale.length ? hint('오래됨: ' + stale.map((item) => e(item.title)).join(', ') + (check.changedBeforeDelivery ? ' — 작업 지시를 전달하기 직전에 소스가 바뀌어 재사용하지 않았습니다. 다시 검증해야 합니다.' : check.reason ? ' — 현재 소스를 잴 수 없어 같은지 확인하지 못했습니다(' + e(check.reason) + ').' : ' — 소스가 바뀌어 다시 검증해야 합니다.')) : ''));
 }
 
 const BLOCKS = { design: designBlock, performance: performanceBlock, release: releaseBlock };

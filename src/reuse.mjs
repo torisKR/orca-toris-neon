@@ -35,6 +35,21 @@ export async function parentEvidenceOf(run, measure) {
   return marked ? { parentEvidence: marked } : {};
 }
 
+export const CHANGED_BEFORE_DELIVERY = '작업 지시를 전달하기 직전에 다시 재 보니 소스가 바뀌었습니다';
+/**
+ * Right before a brief is typed (roadmap item 3): evidence still marked fresh is measured again, so a
+ * source that moved while the stage waited never gets a reuse instruction. Undefined when the job
+ * reuses nothing; unchanged when nothing is fresh any more.
+ */
+export async function recheckParentEvidence(job, measure) {
+  const evidence = job?.parentEvidence;
+  if (!evidence?.items?.length) return undefined;
+  if (!evidence.items.some((item) => item.freshness === 'fresh')) return evidence;
+  const marked = await markFreshness(evidence.items, measure);
+  const moved = !marked.reason && marked.items.some((item, index) => evidence.items[index].freshness === 'fresh' && item.freshness !== 'fresh');
+  return moved ? { ...marked, reason: CHANGED_BEFORE_DELIVERY, changedBeforeDelivery: true } : marked;
+}
+
 const line = (item) => '- ' + item.title + ' (' + item.nodeId + '): ' + item.summary;
 /** What the stage may reuse from the parent run and what it must check again. */
 export function reuseInstruction(job) {
