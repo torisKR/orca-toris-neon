@@ -2,6 +2,7 @@ import { createPrivateKey, createSign, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { productionStatus } from "./playstatus.mjs";
 
 // GET-only release inspection. The OAuth token exchange is the sole POST.
 // https://developers.google.com/android-publisher/api-ref/rest/v3/applications.tracks.releases/list
@@ -98,7 +99,7 @@ export function summarizeApp(tracks) {
   const status = rejected ? "rejected" : has("in_review") ? "in_review" : has("approved_not_published") ? "approved_not_published"
     : has("draft") || has("not_sent_for_review") ? "draft" : published ? "published"
     : all.length ? (has("unknown") ? "unknown" : "testing") : incomplete ? "unknown" : "no_release";
-  return { status, published, needsAttention: incomplete || ["rejected", "approved_not_published", "draft", "unknown"].includes(status) };
+  return { status, production: productionStatus(tracks), published, needsAttention: incomplete || ["rejected", "approved_not_published", "draft", "unknown"].includes(status) };
 }
 
 function httpError(status, retryAfterMs = 0, auth = false) {

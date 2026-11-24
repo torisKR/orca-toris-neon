@@ -259,35 +259,84 @@ test('read-only Play check is forced only by the explicit check button',async()=
 });
 
 const playRows = html => [...html.matchAll(/data-disclosure="play-app:[^:]+:([^"]+)"/g)].map(match=>match[1]);
-const catalogApp = (packageName,name,status,tracks=[]) => ({packageName,name,status,tracks,storeUrl:'https://play.google.com/store/apps/details?id='+packageName});
+const catalogApp = (packageName,name,production,tracks=[]) => ({packageName,name,status:'published',production,tracks,storeUrl:'https://play.google.com/store/apps/details?id='+packageName});
 const catalogAccount = (id,apps) => ({id,name:id,tracks:['production'],apps});
 const playTrack = extra => ({track:'production',observedAt:NOW,releases:[],...extra});
+const playBadges = (html,packageName) => [...(html.split(':'+packageName+'"')[1]??'').split('</summary>')[0].matchAll(/<span class="badge ([\w_]+)"[^>]*>(?:<span class="sr-only">([^<]*)<\/span>)?([^<]*)<\/span>/g)].map(match=>[match[1],(match[2]??'')+match[3]]);
 
-test('Play app rows put action and lookup issues above routine states and keep track details expandable',async()=>{
+test('Play app rows put action and lookup issues above routine production states and keep track details expandable',async()=>{
   const accounts=[catalogAccount('first',[
-    catalogApp('com.example.published','Published','published'),
-    catalogApp('com.example.review','Review','in_review'),
-    catalogApp('com.example.stale','Stale','published',[playTrack({stale:true})]),
-    catalogApp('com.example.draft','Draft','draft'),
-    catalogApp('com.example.error','Error','published',[playTrack({stale:true,error:{message:'Permission problem'}})]),
-    catalogApp('com.example.approved','Approved','in_review',[playTrack({releases:[{name:'Ready to publish',versionCodes:[42],state:'approved_not_published'}]})]),
-    catalogApp('com.example.pending','Pending','draft',[playTrack({releases:[{name:'Needs review',versionCodes:[41],state:'not_sent_for_review'}]})]),
-    catalogApp('com.example.rejected','Rejected','rejected'),
+    catalogApp('com.example.published','Published',['published']),
+    catalogApp('com.example.review','Review',['in_review']),
+    catalogApp('com.example.update','Update',['in_review','published']),
+    catalogApp('com.example.none','None',['no_production']),
+    catalogApp('com.example.stale','Stale',['published'],[playTrack({stale:true})]),
+    catalogApp('com.example.draft','Draft',['draft']),
+    catalogApp('com.example.error','Error',['published'],[playTrack({stale:true,error:{message:'Permission problem'}})]),
+    catalogApp('com.example.approved','Approved',['approved_not_published'],[playTrack({releases:[{name:'Ready to publish',versionCodes:[42],state:'approved_not_published'}]})]),
+    catalogApp('com.example.rejected','Rejected',['rejected']),
   ])];
   const h=await harness({responses:{'play.list':()=>({accounts})}});
   await h.click({action:'tab',tab:'play'});
-  assert.deepEqual(playRows(h.app.innerHTML),['rejected','pending','approved','error','draft','stale','review','published'].map(id=>'com.example.'+id));
+  assert.deepEqual(playRows(h.app.innerHTML),['rejected','approved','error','draft','stale','review','update','published','none'].map(id=>'com.example.'+id));
   assert.match(h.app.innerHTML,/<details class="play-app"[^>]*>[\s\S]*?<summary class="play-app-row">/);
   assert.match(h.app.innerHTML,/Ready to publish[\s\S]*?v42/);
   assert.match(h.app.innerHTML,/Permission problem/);
 });
 
+test('Play row badges name the production status, show an update before the live release, and never show a stale 게시됨 alone',async()=>{
+  const accounts=[catalogAccount('first',[
+    catalogApp('com.example.update','Update',['in_review','published'],[playTrack({releases:[{name:'2.0',versionCodes:[20],state:'in_review'},{name:'1.0',versionCodes:[10],state:'published'}]}),
+      {track:'internal',observedAt:NOW,releases:[{name:'2.1',versionCodes:[21],state:'draft'}]}]),
+    catalogApp('com.example.stale','Stale',['published'],[playTrack({stale:true})]),
+    catalogApp('com.example.failed','Failed',['unknown'],[playTrack({error:{message:'denied'}})]),
+    catalogApp('com.example.none','None',['no_production']),
+    catalogApp('com.example.draft','Draft',['draft']),
+    catalogApp('com.example.mystery','Mystery',['unknown']),
+  ])];
+  const h=await harness({responses:{'play.list':()=>({accounts})}});
+  await h.click({action:'tab',tab:'play'});
+  const html=h.app.innerHTML;
+  assert.deepEqual(playBadges(html,'com.example.update'),[['in_review','프로덕션: 심사 중'],['published','프로덕션: 게시됨']]);
+  assert.deepEqual(playBadges(html,'com.example.stale'),[['published','프로덕션: 게시됨'],['stale','재확인 필요']]);
+  assert.deepEqual(playBadges(html,'com.example.failed'),[['lookup_error','조회 오류']]);
+  assert.deepEqual(playBadges(html,'com.example.none'),[['no_production','프로덕션: 프로덕션 없음']]);
+  assert.deepEqual(playBadges(html,'com.example.draft'),[['draft','프로덕션: 초안']]);
+  assert.deepEqual(playBadges(html,'com.example.mystery'),[['unknown','프로덕션: 미확인']]);
+  assert.match(html,/internal[\s\S]*?2\.1[\s\S]*?초안/,'test-track detail stays in the expanded track list');
+});
+
+test('Play status filter offers production states and matches any badge the row shows',async()=>{
+  const accounts=[catalogAccount('first',[
+    catalogApp('com.example.update','Update',['in_review','published']),
+    catalogApp('com.example.live','Live',['published']),
+    catalogApp('com.example.review','Review',['in_review']),
+    catalogApp('com.example.none','None',['no_production']),
+    catalogApp('com.example.stale','Stale',['published'],[playTrack({stale:true})]),
+  ])];
+  const h=await harness({responses:{'play.list':()=>({accounts})}});
+  await h.click({action:'tab',tab:'play'});
+  const select=h.app.innerHTML.split('id="play-status-filter">')[1].split('</select>')[0];
+  assert.deepEqual([...select.matchAll(/>([^<]+)<\/option>/g)].map(match=>match[1]),['모든 상태','조치 필요','조회 확인','초안','심사 중','게시됨','거부됨','승인 · 게시 전','프로덕션 없음']);
+  const search={id:'play-search',value:'',focus(){}},filter={id:'play-status-filter',value:'published'};
+  const count={textContent:''},results={innerHTML:'',querySelectorAll:()=>[]};
+  h.app.querySelector=selector=>({'#play-search':search,'#play-status-filter':filter,'#play-result-count':count,'#play-results':results})[selector]??null;
+  await h.change(filter);
+  assert.deepEqual(playRows(results.innerHTML),['com.example.stale','com.example.update','com.example.live']);
+  await h.change({...filter,value:'in_review'});
+  assert.deepEqual(playRows(results.innerHTML),['com.example.review','com.example.update']);
+  await h.change({...filter,value:'no_production'});
+  assert.deepEqual(playRows(results.innerHTML),['com.example.none']);
+  await h.change({...filter,value:'lookup'});
+  assert.deepEqual(playRows(results.innerHTML),['com.example.stale']);
+});
+
 test('Play search and status filter intersect in the selected account without requesting data',async()=>{
   const accounts=[catalogAccount('first',[
-    catalogApp('com.example.moon','달빛 습관','rejected'),
-    catalogApp('com.example.sun','햇빛 습관','in_review'),
-    catalogApp('com.example.night','달빛 일기','published'),
-  ]),catalogAccount('second',[catalogApp('com.example.other','달빛 게임','rejected')])];
+    catalogApp('com.example.moon','달빛 습관',['rejected']),
+    catalogApp('com.example.sun','햇빛 습관',['in_review']),
+    catalogApp('com.example.night','달빛 일기',['published']),
+  ]),catalogAccount('second',[catalogApp('com.example.other','달빛 게임',['rejected'])])];
   const h=await harness({responses:{'play.list':()=>({accounts})}});
   await h.click({action:'tab',tab:'play'});
   const search={id:'play-search',value:'달빛 EXAMPLE',focus(){}},filter={id:'play-status-filter',value:'action'};

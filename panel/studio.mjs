@@ -27,22 +27,21 @@ const stageSnapshots = new Map(), stageMotions = new Map();
 const MOTION_MS = 700;
 let navigation = 0, renderPending = false, detailPending = false, refreshPromise = null, refreshQueued = false, hostRefreshQueued = false;
 const revision = () => ui.state?.revision ?? 0;
+// Row badges follow the production track only (src/playstatus.mjs); lookup_error and stale are the check badges.
 const playStatus = {
   rejected:{label:'거부됨',priority:0,action:true},
-  not_sent_for_review:{label:'심사 제출 전',priority:1,action:true},
   approved_not_published:{label:'승인 · 게시 전',priority:2,action:true},
   lookup_error:{label:'조회 오류',priority:3},
   draft:{label:'초안',priority:4},
   stale:{label:'재확인 필요',priority:5},
   unknown:{label:'미확인',priority:5},
   in_review:{label:'심사 중',priority:6},
-  testing:{label:'테스트 중',priority:7},
   published:{label:'게시됨',priority:8},
-  no_release:{label:'릴리스 없음',priority:9},
+  no_production:{label:'프로덕션 없음',priority:9},
 };
 const playFiltersForSelect = [
   {value:'all',label:'모든 상태'}, {value:'action',label:'조치 필요'}, {value:'lookup',label:'조회 확인'},
-  ...['rejected','not_sent_for_review','approved_not_published','draft','in_review','testing','published','no_release']
+  ...['draft','in_review','published','rejected','approved_not_published','no_production']
     .map(value=>({value,label:playStatus[value].label})),
 ];
 const playNameOrder = new Intl.Collator('ko-KR',{numeric:true,sensitivity:'base'});
@@ -435,17 +434,16 @@ function filteredPlayApps(apps) {
   })
     .map(item=>{
       const tracks=item.tracks??[];
-      const lifecycle=new Set(tracks.flatMap(track=>(track.releases??[]).map(release=>release.state)));
-      const status=item.status==='rejected'?'rejected'
-        :lifecycle.has('not_sent_for_review')?'not_sent_for_review'
-        :lifecycle.has('approved_not_published')?'approved_not_published'
-        :Object.hasOwn(playStatus,item.status)?item.status:'unknown';
       const check=tracks.some(track=>track.error)?'lookup_error':tracks.some(track=>track.stale)?'stale':null;
-      const priority=Math.min(playStatus[status].priority,check?playStatus[check].priority:Infinity);
-      return {item,status,check,priority};
+      const known=(Array.isArray(item.production)?item.production:[]).map(status=>Object.hasOwn(playStatus,status)?status:'unknown');
+      const production=known.length?known:['unknown'];
+      // An unknown production state next to a check badge would say the same thing twice.
+      const statuses=production[0]==='unknown'&&check?[]:production;
+      const priority=Math.min(...[...statuses,check].filter(Boolean).map(status=>playStatus[status].priority));
+      return {item,statuses,check,priority};
     })
-    .filter(({status,check})=>filter==='all'||status===filter||
-      (filter==='action'&&playStatus[status].action)||(filter==='lookup'&&(check||status==='unknown')))
+    .filter(({statuses,check})=>filter==='all'||statuses.includes(filter)||
+      (filter==='action'&&statuses.some(status=>playStatus[status].action))||(filter==='lookup'&&(check||statuses.includes('unknown'))))
     .sort((a,b)=>a.priority-b.priority||playNameOrder.compare(a.item.name||a.item.packageName,b.item.name||b.item.packageName)||
       playNameOrder.compare(a.item.packageName,b.item.packageName));
 }
@@ -455,15 +453,16 @@ function playResultCount(shown,total) {
 function playAppList(matches,account) {
   const accountId=account.id;
   if(!matches.length)return empty('검색 결과가 없습니다','검색어 또는 상태 필터를 바꿔 보세요.',button('검색 및 필터 초기화','reset-play-filters','','small'));
-  const label=status=>'<span class="badge '+status+'">'+playStatus[status].label+'</span>';
-  return '<ul class="play-list" aria-label="Play Store 앱">'+matches.map(({item,status,check})=>`<li>
+  const label=(status,prefix='')=>'<span class="badge '+status+'">'+prefix+playStatus[status].label+'</span>';
+  const production=status=>label(status,'<span class="sr-only">프로덕션: </span>');
+  return '<ul class="play-list" aria-label="Play Store 앱">'+matches.map(({item,statuses,check})=>`<li>
     <details class="play-app" data-disclosure="play-app:${e(accountId)}:${e(item.packageName)}">
       <summary class="play-app-row">
         <span class="play-app-name">
           <span class="play-title">${e(item.name||item.packageName)}</span>
           <span class="mono play-package">${e(item.packageName)}</span>
         </span>
-        <span class="play-app-status">${status==='unknown'&&check?'':label(status)}${check?label(check):''}</span>
+        <span class="play-app-status" title="프로덕션 트랙 기준">${[...statuses.map(production),...(check?[label(check)]:[])].join(' ')}</span>
         <span class="play-chevron" aria-hidden="true"></span>
       </summary>
       <div class="play-app-tracks">${(item.tracks??[]).map(playTrack).join('')}

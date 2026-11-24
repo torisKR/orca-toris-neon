@@ -14,6 +14,7 @@ import { projectState } from '../src/views.mjs';
 import { classifyStages } from '../src/preflight.mjs';
 import { scopedGraph } from '../src/scope.mjs';
 import { profileAssignments } from '../src/profile.mjs';
+import { summarizeApp } from '../src/play.mjs';
 import { deflateSync, crc32 } from 'node:zlib';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
@@ -109,13 +110,22 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     sessions:[{sessionId:'preview-session-1',workspaceId:'preview-workspace',agent:'codex',title:'루틴 타이머 설계 · 샘플',updatedAt:iso(stamp-86400000),messageCount:12},
       {sessionId:'preview-session-2',workspaceId:'preview-workspace-2',agent:'claude',title:'메모 편집 흐름 검토 · 샘플',updatedAt:iso(stamp-90000000),messageCount:8}],
     sessionsTruncated:false,warnings:[]};
+  // One app per production row state; the summary comes from src/play.mjs so the preview shows the real mapping.
+  const playApp=(slug,name,tracks)=>({packageName:'com.example.'+slug,name:name+' (미리보기)',storeUrl:'https://play.google.com/store/apps/details?id=com.example.'+slug,tracks,...summarizeApp(tracks)});
+  const observed=(track,releases,extra={})=>({track,observedAt:iso(stamp),stale:false,error:null,releases,...extra});
+  const release=(name,code,state)=>({name,versionCodes:[code],state});
   const accounts=[{id:'preview-account',name:'샘플 개발자 계정',developerId:'1000000000000000000',packages:['com.example.moonhabit','com.example.quietnotes'],tracks:['production','internal'],hasCredential:false,
-    checkedAt:iso(stamp),discovery:{observedAt:iso(stamp),stale:false},apps:[{packageName:'com.example.moonhabit',name:'달빛 습관 (미리보기)',
-      status:'in_review',published:true,needsAttention:true,storeUrl:'https://play.google.com/store/apps/details?id=com.example.moonhabit',
-      tracks:[{track:'production',observedAt:iso(stamp),stale:false,releases:[{name:'0.9.0',versionCodes:['9'],state:'published'},{name:'1.0.0',versionCodes:['10'],state:'in_review'}]},
-        {track:'internal',observedAt:iso(stamp-86400000),stale:true,error:{message:'429 · 미리보기용 API 제한 상태'},releases:[{name:'1.0.1',versionCodes:['11'],state:'published'}]}]},
-      {packageName:'com.example.quietnotes',name:'고요 메모 (미리보기)',status:'rejected',published:false,needsAttention:true,storeUrl:'https://play.google.com/store/apps/details?id=com.example.quietnotes',
-        tracks:[{track:'production',observedAt:iso(stamp),stale:false,releases:[{name:'2.0.0',versionCodes:['20'],state:'not_approved'}]},{track:'internal',observedAt:iso(stamp),stale:false,releases:[{name:'2.0.0',versionCodes:['20'],state:'published'}]}]}]}];
+    checkedAt:iso(stamp),discovery:{observedAt:iso(stamp),stale:false},apps:[
+      playApp('moonhabit','달빛 습관',[observed('production',[release('0.9.0','9','published'),release('1.0.0','10','in_review')]),
+        observed('internal',[release('1.0.1','11','published')],{observedAt:iso(stamp-86400000),stale:true,error:{message:'429 · 미리보기용 API 제한 상태'}})]),
+      playApp('quietnotes','고요 메모',[observed('production',[release('2.0.0','20','not_approved')]),observed('internal',[release('2.0.0','20','published')])]),
+      playApp('sunrise','해돋이 알람',[observed('production',[release('3.1.0','31','published')]),observed('internal',[release('3.2.0','32','draft')])]),
+      playApp('raindrop','빗방울 일기',[observed('production',[release('1.0.0','5','draft')]),observed('internal',[release('1.0.0','5','in_review')])]),
+      playApp('starmap','별자리 지도',[observed('production',[release('0.1.0','2','in_review')]),observed('internal',[])]),
+      playApp('leafnote','나뭇잎 노트',[observed('production',[release('1.4.0','14','approved_not_published')]),observed('internal',[])]),
+      playApp('pebble','조약돌 퍼즐',[observed('production',[]),observed('internal',[release('0.0.1','1','published')])]),
+      playApp('cloudwalk','구름 산책',[observed('production',[release('2.2.0','22','published')],{observedAt:iso(stamp-86400000*2),stale:true}),observed('internal',[])]),
+    ]}];
   // Play app ↔ project links (src/playlinks.mjs); the rejected app shows the reason field.
   let links=[{accountId:'preview-account',developerId:'1000000000000000000',accountName:'샘플 개발자 계정',packageName:'com.example.moonhabit',projectId:'preview-project',projectName:'moon-habit',linkedAt:iso(stamp),problem:null},
     {accountId:'preview-account',developerId:'1000000000000000000',accountName:'샘플 개발자 계정',packageName:'com.example.quietnotes',projectId:'preview-project-2',projectName:'quiet-notes',linkedAt:iso(stamp),problem:null}];
