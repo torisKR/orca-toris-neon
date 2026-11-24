@@ -17,7 +17,9 @@ import { planRunInput, requestKey } from './flows.mjs';
 import { approvalScope } from './approval.mjs';
 import { stageBudget } from './proportion.mjs';
 import { createTerminalCleanup, cleanupRecorder, describeSweep, CLEANUP_INTERVAL_MS } from './cleanup.mjs';
-import { classifySendError, SEND_RETRY_DELAYS_MS } from './delivery.mjs';
+import { classifySendError, focusTerminal, SEND_RETRY_DELAYS_MS } from './delivery.mjs';
+import { readBlocker } from './agentscreen.mjs';
+import { sendingEvidence } from './sending.mjs';
 import { nextLaunch, readLimits, GLOBAL_LIMITS } from './scheduler.mjs';
 import { gitWorkingState, sourceProblem } from './commitcheck.mjs';
 import { buildLabel } from './buildinfo.mjs';
@@ -335,6 +337,17 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     if (run.autonomous) schedulePump(); // the supervisor decides what happens next
     return run;
   };
+  // An agent on a screen no prompt answers (src/agentscreen.mjs): nothing more is typed, its terminal
+  // is closed so a held prompt can never run later, and the stage names the action (autonomy switches agent).
+  const screenOf = (job) => readBlocker(call, { terminalId: job.terminalId, agent: job.agent }, (line) => orca.log?.(line));
+  const blockOnScreen = async (run, job, blocker) => {
+    let closed = false, closeError = '';
+    try { closed = (await call('terminal.close', { terminalId: job.terminalId }))?.closed === true; }
+    catch (error) { closeError = ' (' + safeError(error).message + ')'; }
+    job.blocker = { kind: blocker.kind, agent: job.agent };
+    markBlocked(run, job, blocker.message + (closed ? '' : ' 터미널을 닫지 못해' + closeError + ' 입력된 지시가 나중에 실행될 수 있으니 터미널을 직접 닫은 뒤 재시도하세요.'), !closed);
+    return persist();
+  };
   const createReceiptDirectory = async (directory) => {
     if (ensureDirectory) return ensureDirectory(directory);
     await assertNoSymlinks(path.dirname(receiptRoot), directory, true);
@@ -441,6 +454,9 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       appendEvent(run, node.title + ' ' + (job.phase === 'review' ? '검토' : '작업') + ': ' + report.outcome, now, { nodeId: job.nodeId });
       return true;
     } catch (error) {
+      if (error.missingReceipt && job.blocker) return false; // already stopped with its cause
+      const blocker = error.missingReceipt ? await screenOf(job) : null;
+      if (blocker) { await blockOnScreen(run, job, blocker); return false; }
       const message = !error.missingReceipt ? safeError(error).message
         : FAILED_AGENT_OUTCOMES.has(job.agentOutcome) && job.promptSeen ? failedTurnMessage(job, '원인을 해결한 뒤 터미널에서 이어서 진행하고 상태 동기화하거나 이 단계를 재시도하세요.')
         : job.promptSeen ? '에이전트가 종료됐지만 검증 보고서가 없습니다. 보고서를 저장한 뒤 새로고침하거나 이 단계를 재시도하세요.'
@@ -463,11 +479,17 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       run = getRun(run.id);
       const job = (run.jobs || []).find((entry) => entry.nonce === originalJob.nonce);
       if (!job || !matchingNodeJob(run, job)) continue;
-      if (job.promptRecovery?.state === 'sending') {
-        job.promptRecovery.state = 'uncertain';
-        job.promptRecovery.reason = '재시작 전에 저장된 프롬프트 전달 요청의 결과를 확인할 수 없습니다. 자동 재전송하지 않습니다.';
-        markBlocked(run, job, job.promptRecovery.reason, true);
-        continue;
+      if (job.promptRecovery?.state === 'sending') { // the worker restarted mid-typing: settle it from evidence (src/sending.mjs)
+        const evidence = sendingEvidence({ job, agent: agents.find((entry) => entry.terminalId === job.terminalId), receipt: await receiptPresent(job) });
+        if (!evidence) {
+          job.promptRecovery.state = 'uncertain';
+          job.promptRecovery.reason = '재시작 전에 저장된 프롬프트 전달 요청의 결과를 확인할 수 없습니다. 자동 재전송하지 않습니다.';
+          markBlocked(run, job, job.promptRecovery.reason, true);
+          continue;
+        }
+        Object.assign(job.promptRecovery, { state: 'sent', recoveredFrom: evidence });
+        job.promptSeen = true;
+        appendEvent(run, findNode(run, job.nodeId).title + ': 재시작 전에 입력 중이던 작업 지시가 전달됐음을 확인했습니다 (근거: ' + evidence + ').', now, { nodeId: job.nodeId, nonce: job.nonce });
       }
       if (['', 'confirm:', 'continue:'].some((key) => deliveryTasks.has(key + job.nonce))) continue; // a delivery task decides
       if (job.selfDelivery && !job.promptRecovery) continue; // nothing typed yet; the scheduler resumes delivery
@@ -606,43 +628,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     await sleep(PROMPT_CONFIRM_MS);
     await queue(() => confirmDelivery(runId, nonce));
   });
-  const focusJobTerminal = async (run, job) => {
-    try { await call('workspace.open', { workspaceId: run.workspaceId }); }
-    catch (error) {
-      throw runtimeError('action_failed', '실행 작업 공간을 열지 못했습니다. 프롬프트를 전달하지 않았습니다: ' + safeError(error).message);
-    }
-    let focused;
-    try { focused = await call('terminal.focus', { terminalId: job.terminalId }); }
-    catch (error) {
-      throw runtimeError('action_failed', '기존 에이전트 터미널을 활성 작업 공간으로 열지 못했습니다. 프롬프트를 전달하지 않았습니다: ' + safeError(error).message);
-    }
-    if (focused?.focused !== true) {
-      throw runtimeError('conflict', '다른 화면 이동으로 에이전트 터미널 활성화가 취소됐습니다. 프롬프트를 전달하지 않았으므로 터미널을 확인한 뒤 다시 시도하세요.');
-    }
-    // Native focus acknowledgement precedes propagation of the active worktree; Orca accepts
-    // terminal.sendText only there. Observe the official context for at most 2.5 seconds.
-    const focusAbort = new AbortController();
-    const focusTimeout = () => runtimeError('conflict', '2.5초 안에 에이전트 터미널이 활성 작업 공간에 반영되지 않았습니다. 프롬프트를 전달하지 않았으므로 화면을 확인한 뒤 다시 시도하세요.');
-    let focusTimer;
-    try {
-      const propagated = (async () => {
-        for (let attempt = 0; attempt <= 25; attempt++) {
-          if (focusAbort.signal.aborted) throw focusTimeout();
-          const context = await call('workspace.readContext', {}, { signal: focusAbort.signal });
-          if (context?.workspaceId === run.workspaceId &&
-              context.terminals?.some((terminal) => terminal.id === job.terminalId)) return;
-          if (attempt < 25) await sleep(100);
-        }
-        throw focusTimeout();
-      })();
-      const timedOut = new Promise((_, reject) => {
-        focusTimer = setTimeout(() => { reject(focusTimeout()); focusAbort.abort(); }, 2500);
-      });
-      await Promise.race([propagated, timedOut]);
-    } finally {
-      clearTimeout(focusTimer);
-      focusAbort.abort();
-    }
+  const focusJobTerminal = async (run, job) => { // src/delivery.mjs; throws before anything is typed
+    await focusTerminal({ call, sleep, workspaceId: run.workspaceId, terminalId: job.terminalId, describe: (error) => safeError(error).message });
     job.focusedAt = nowIso(now);
   };
   /**
@@ -657,6 +644,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     if (job.phase === 'review' && (!job.sourceFingerprint || await fingerprint(run.workspacePath) !== job.sourceFingerprint)) {
       throw runtimeError('conflict', '검토 배정 이후 소스가 변경됐습니다. 이전 검토 프롬프트를 전달하지 않았습니다.');
     }
+    const blocker = await screenOf(job); // never type into a screen no prompt answers (hook review toggles trust)
+    if (blocker) throw Object.assign(runtimeError('conflict', blocker.message), { notSent: true, blocker });
     // A continuation asks the agent that already received and started this assignment to finish it
     // after its turn died. It is not the assignment, so it has its own record and the one-shot
     // promptRecovery (the never-resent assignment) stays untouched.
@@ -771,6 +760,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     else job.continuations = (job.continuations ?? 0) + 1;
     try { await sendJobPrompt(run, findNode(run, job.nodeId), job, { continuation: kind === 'error' ? true : kind }); }
     catch (error) {
+      if (error.blocker) return blockOnScreen(getRun(runId), job, error.blocker);
       markBlocked(getRun(runId), job, failedTurnMessage(job, '이어서 진행 요청을 입력하지 못했습니다: ' + safeError(error).message));
       await persist();
     }
@@ -781,6 +771,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     if (!job || job.promptRecovery) return;
     try { await sendJobPrompt(run, findNode(run, job.nodeId), job); }
     catch (error) {
+      if (error.blocker) return blockOnScreen(getRun(runId), job, error.blocker);
       if (error.notSent) return abandonUnready(runId, nonce, error.message); // like an undelivered prompt
       if (job.promptRecovery) throw error;
       markBlocked(getRun(runId), job, '작업 지시를 입력하지 않았습니다: ' + safeError(error).message + ' 터미널을 확인한 뒤 지시 전달 또는 재시도를 선택하세요.');
@@ -837,6 +828,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       delete findNode(run, job.nodeId).deliveryRetries;
       return persist();
     }
+    const blocker = await screenOf(job); // typed into a modal: closing the terminal keeps it from ever running
+    if (blocker) return blockOnScreen(run, job, blocker);
     markBlocked(run, job, '작업 지시를 입력했지만 에이전트가 작업을 시작했는지 확인되지 않았습니다. 자동으로 다시 보내지 않습니다. 터미널을 확인한 뒤 재시도하세요.', true);
     return persist();
   };

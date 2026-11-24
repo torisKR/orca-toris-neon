@@ -33,3 +33,49 @@ export function classifySendError(error) {
   const entry = SEND_ERRORS.find((item) => item.kind === 'code' ? error?.code === item.id : message.includes(item.id));
   return entry ? { sent: false, retry: entry.retry, id: entry.id } : { sent: 'unknown', retry: false, id: null };
 }
+
+const deliveryError = (code, message) => Object.assign(new Error(message), { code });
+const FOCUS_WAIT_MS = 2500;
+const FOCUS_POLLS = 25;
+const FOCUS_POLL_MS = 100;
+
+/**
+ * Opens the run's workspace and focuses the job's terminal. Native focus acknowledgement precedes
+ * propagation of the active worktree; Orca accepts terminal.sendText only there, so the official
+ * context is observed for at most 2.5 seconds. Every failure is thrown before anything is typed.
+ */
+export async function focusTerminal({ call, sleep, workspaceId, terminalId, describe }) {
+  try { await call('workspace.open', { workspaceId }); }
+  catch (error) {
+    throw deliveryError('action_failed', '실행 작업 공간을 열지 못했습니다. 프롬프트를 전달하지 않았습니다: ' + describe(error));
+  }
+  let focused;
+  try { focused = await call('terminal.focus', { terminalId }); }
+  catch (error) {
+    throw deliveryError('action_failed', '기존 에이전트 터미널을 활성 작업 공간으로 열지 못했습니다. 프롬프트를 전달하지 않았습니다: ' + describe(error));
+  }
+  if (focused?.focused !== true) {
+    throw deliveryError('conflict', '다른 화면 이동으로 에이전트 터미널 활성화가 취소됐습니다. 프롬프트를 전달하지 않았으므로 터미널을 확인한 뒤 다시 시도하세요.');
+  }
+  const focusAbort = new AbortController();
+  const focusTimeout = () => deliveryError('conflict', '2.5초 안에 에이전트 터미널이 활성 작업 공간에 반영되지 않았습니다. 프롬프트를 전달하지 않았으므로 화면을 확인한 뒤 다시 시도하세요.');
+  let focusTimer;
+  try {
+    const propagated = (async () => {
+      for (let attempt = 0; attempt <= FOCUS_POLLS; attempt++) {
+        if (focusAbort.signal.aborted) throw focusTimeout();
+        const context = await call('workspace.readContext', {}, { signal: focusAbort.signal });
+        if (context?.workspaceId === workspaceId && context.terminals?.some((terminal) => terminal.id === terminalId)) return;
+        if (attempt < FOCUS_POLLS) await sleep(FOCUS_POLL_MS);
+      }
+      throw focusTimeout();
+    })();
+    const timedOut = new Promise((_, reject) => {
+      focusTimer = setTimeout(() => { reject(focusTimeout()); focusAbort.abort(); }, FOCUS_WAIT_MS);
+    });
+    await Promise.race([propagated, timedOut]);
+  } finally {
+    clearTimeout(focusTimer);
+    focusAbort.abort();
+  }
+}

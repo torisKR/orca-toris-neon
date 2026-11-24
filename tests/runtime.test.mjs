@@ -2806,3 +2806,141 @@ test('a cancel that cannot be saved at all is kept in memory, assigns nothing, s
   assert.deepEqual(h.getRun().stopFailures, []);
   assert.equal(launchCalls(h).length, 1);
 });
+
+// --- Live run d5b7ce8d (2026-11-24): a restart during typing, and Codex stuck on its hook-review modal.
+const snapshotOf = (store) => new Map([...store].map(([key, value]) => [key, structuredClone(value)]));
+// Saves the store at the moment the Nth prompt is being typed: what a worker restart leaves behind.
+function restartDuringSend(nth) {
+  let sends = 0, snapshot = null;
+  const h = harness({ host: async (name, input, { store }) => { if (name === 'terminal.sendText' && ++sends === nth) snapshot = snapshotOf(store); } });
+  return { h, snapshot: () => snapshot };
+}
+
+test('a worker restart while the review prompt is being typed keeps the run going when Orca shows the agent working, and its report is accepted', async () => {
+  // Arrange: work passes, the review prompt is being typed (intent 'sending') when the worker restarts.
+  const { h, snapshot } = restartDuringSend(2);
+  await auto(h);
+  await h.start();
+  h.report(); await h.done();
+  h.runtime.dispose();
+  const saved = savedState(snapshot()).runs[0].jobs[1];
+  assert.equal(saved.promptRecovery.state, 'sending');
+  const restarted = harness({ store: snapshot() });
+  restarted.agents.push({ terminalId: saved.terminalId, agent: 'codex', state: 'working', stateStartedAt: NOW + 1 });
+  // Act
+  await restarted.runtime.initialize();
+  await restarted.runtime.drain();
+  // Assert: delivered, not uncertain; nothing typed or launched again; autonomy keeps going.
+  const job = restarted.getRun().jobs[1];
+  assert.equal(job.promptRecovery.state, 'sent');
+  assert.match(job.promptRecovery.recoveredFrom, /working/);
+  assert.equal(job.promptSeen, true);
+  assert.equal(restarted.getRun().nodes[0].status, 'review');
+  assert.equal(restarted.getRun().nodes[0].launchUncertain, undefined);
+  assert.equal(restarted.getRun().autonomy?.stopped, undefined);
+  assert.equal(sendCalls(restarted).length + launchCalls(restarted).length, 0);
+  // The agent finishes and writes a valid report: accepted without a manual refresh.
+  restarted.report(job); await restarted.done(job);
+  assert.equal(restarted.getRun().nodes[0].status, 'passed');
+  restarted.runtime.dispose();
+});
+
+test('after a restart during typing, a report already in the receipt folder settles the delivery and is accepted', async () => {
+  // Arrange
+  const { h, snapshot } = restartDuringSend(1);
+  await auto(h);
+  await h.start();
+  h.runtime.dispose();
+  const saved = savedState(snapshot()).runs[0].jobs[0];
+  const restarted = harness({ store: snapshot() });
+  restarted.agents.push({ terminalId: saved.terminalId, agent: 'codex', state: 'done', stateStartedAt: NOW - 1000 });
+  restarted.report(saved);
+  // Act
+  await restarted.runtime.initialize();
+  await restarted.runtime.drain();
+  // Assert
+  assert.equal(restarted.getRun().jobs[0].promptRecovery.state, 'sent');
+  assert.equal(restarted.getRun().nodes[0].report.outcome, 'passed');
+  assert.equal(restarted.getRun().jobs[0].state, 'complete');
+  restarted.runtime.dispose();
+});
+
+test('after a restart during typing, an agent idle since before the send and no report stay uncertain', async () => {
+  // Arrange
+  const { h, snapshot } = restartDuringSend(1);
+  await auto(h);
+  await h.start();
+  h.runtime.dispose();
+  const saved = savedState(snapshot()).runs[0].jobs[0];
+  const restarted = harness({ store: snapshot() });
+  restarted.agents.push({ terminalId: saved.terminalId, agent: 'codex', state: 'done', stateStartedAt: NOW - 1000 });
+  // Act
+  await restarted.runtime.initialize();
+  await restarted.runtime.drain();
+  // Assert
+  assert.equal(restarted.getRun().jobs[0].promptRecovery.state, 'uncertain');
+  assert.equal(sendCalls(restarted).length, 0);
+  restarted.runtime.dispose();
+});
+
+const HOOK_MODAL = ['  >_ OpenAI Codex (v0.172.0)', '  1 hook is new or changed.', '  Hooks need review', '› Review hooks', '  Trust all and continue'];
+const HOOK_PAGE = ['  UserPromptSubmit hooks', '  1 hook needs review before it can run.', '  [!]  4  Unnamed hook · modified', '  space/enter toggle · esc back'];
+const twoStages = [{ id: 'research', title: '조사', deps: [], write: false }, { id: 'brief', title: '기획', deps: ['research'], write: false }];
+const typedInto = (h, terminalId) => sendCalls(h).filter((call) => call.input.terminalId === terminalId);
+
+test('codex showing its hook-review modal is never typed into; the stage names the action and autonomy moves to claude at once', async () => {
+  // Arrange: only the first codex terminal shows the modal.
+  const h = harness({ host: async (name, input) => { if (name === 'terminal.read') return { lines: input.terminalId === 't1' ? HOOK_MODAL : ['› '], truncated: false }; } });
+  await auto(h, twoStages);
+  // Act
+  await h.start();
+  // Assert
+  assert.equal(typedInto(h, 't1').length, 0, 'nothing typed into the modal');
+  assert.ok(closedTerminals(h).includes('t1'), 'the stuck terminal is closed so a held prompt can never run');
+  const run = h.getRun();
+  assert.equal(run.jobs[0].blocker.kind, 'hook-review');
+  assert.notEqual(run.jobs[0].state, 'uncertain');
+  assert.ok(run.events.some((event) => /Hooks need review/.test(event.summary) && /Review hooks/.test(event.summary)));
+  assert.deepEqual(launchCalls(h).map((call) => call.input.agent), ['codex', 'claude'], 'switched after the first occurrence');
+  assert.deepEqual([run.nodes[0].agent, run.nodes[0].reviewer, run.nodes[1].agent, run.nodes[1].reviewer], ['claude', 'claude', 'claude', 'claude']);
+  assert.equal(notices(h).length, 1);
+  assert.match(notices(h)[0].input.body, /\/hooks/);
+  assert.equal(run.autonomy.stopped, undefined);
+});
+
+test('a codex turn that ends on the hook review page gets no "decide yourself" text; it stops with the cause', async () => {
+  // Arrange: the prompt reaches a normal screen; afterwards codex shows the hook review page.
+  let screen = ['› '];
+  const h = harness({ host: async (name) => { if (name === 'terminal.read') return { lines: screen, truncated: false }; } });
+  await auto(h, twoStages);
+  await h.start();
+  screen = HOOK_PAGE;
+  // Act
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'working', receivedAt: NOW + 10 });
+  h.agents[0].state = 'done';
+  await h.events.get('agent.status.changed')({ terminalId: 't1', state: 'done', receivedAt: NOW + 15, mainAgent: { outcome: 'success' } });
+  await h.runtime.drain();
+  // Assert
+  assert.equal(typedInto(h, 't1').filter((call) => call.input.text === DECIDE_PROMPT).length, 0);
+  assert.equal(h.getRun().jobs[0].blocker.kind, 'hook-review');
+  assert.equal(launchCalls(h).at(-1).input.agent, 'claude');
+});
+
+test('a typed prompt that lands in the hook modal is closed and reported with its cause instead of an unknown delivery', async () => {
+  // Arrange: typing succeeds, but codex then shows the modal and never starts a turn.
+  let screen = ['› '];
+  const h = harness({ host: async (name, input, { agents }) => {
+    if (name === 'terminal.read') return { lines: screen, truncated: false };
+    if (name === 'terminal.sendText' && input.terminalId === 't1') { agents[0].state = 'done'; screen = HOOK_MODAL; }
+  } });
+  await auto(h, twoStages);
+  // Act
+  await h.start();
+  // Assert
+  const run = h.getRun();
+  assert.equal(typedInto(h, 't1').length, 1);
+  assert.ok(closedTerminals(h).includes('t1'));
+  assert.equal(run.jobs[0].blocker.kind, 'hook-review');
+  assert.equal(run.jobs[0].state === 'uncertain' || Boolean(run.nodes[0].launchUncertain), false);
+  assert.equal(launchCalls(h).at(-1).input.agent, 'claude');
+});

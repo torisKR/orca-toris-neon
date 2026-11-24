@@ -52,11 +52,30 @@ function retryAction(run, node, state) {
     return { type: 'stop', nodeId: node.id, notify: true, key: 'limit:repair:' + state.extraRepairLoops,
       reason: summary(state, '테스트 → 구현 수정 루프를 자동으로 ' + state.extraRepairLoops + '번 더 늘렸지만 테스트를 통과하지 못해 멈췄습니다.') };
   }
-  const field = node.blockedPhase === 'review' && node.report?.outcome === 'passed' ? 'reviewer' : 'agent';
+  // An agent stuck on a screen only a person can clear (src/agentscreen.mjs): another try cannot help.
+  // Its own job's phase says which field it filled.
+  const job = jobFor(run, node);
+  const jobField = job?.phase === 'review' ? 'reviewer' : 'agent';
+  const blocker = job?.blocker && job.blocker.agent === node[jobField] ? job.blocker : null;
+  const field = blocker ? jobField : node.blockedPhase === 'review' && node.report?.outcome === 'passed' ? 'reviewer' : 'agent';
   const streak = state.streak?.[node.id];
-  const switchTo = streak && streak.agent === node[field] && (streak.field ?? 'agent') === field && streak.count >= AUTONOMY_LIMITS.switchAgentAfter
-    ? otherAgent(node[field]) : null;
-  return { type: 'retry', nodeId: node.id, field, switchTo, extendRepairLoop, reason: node.failureReason ?? node.runtimeMessage ?? '' };
+  const switchTo = blocker ? otherAgent(blocker.agent)
+    : streak && streak.agent === node[field] && (streak.field ?? 'agent') === field && streak.count >= AUTONOMY_LIMITS.switchAgentAfter ? otherAgent(node[field]) : null;
+  const reason = node.failureReason ?? node.runtimeMessage ?? '';
+  return { type: 'retry', nodeId: node.id, field, switchTo, extendRepairLoop, reason,
+    ...(blocker && switchTo ? { avoid: blocker.agent, notice: { key: 'screen:' + blocker.agent + ':' + blocker.kind, body: reason } } : {}) };
+}
+
+/** The rest of the run stops using an agent stuck on such a screen; returns what moved. */
+function avoidAgent(run, agent, replacement) {
+  const moved = [];
+  for (const node of run.nodes) {
+    if (node.active || node.status === 'passed') continue;
+    for (const key of ['agent', 'reviewer']) {
+      if (node[key] === agent) { node[key] = replacement; moved.push(node.id + (key === 'reviewer' ? ' 검토' : '')); }
+    }
+  }
+  return moved;
 }
 
 /** What an autonomous run does next, from its stored state only. */
@@ -109,6 +128,7 @@ export function createSupervisor(ops) {
     const node = next.nodes.find((item) => item.id === action.nodeId);
     const before = node[action.field];
     if (action.switchTo) node[action.field] = action.switchTo;
+    const moved = action.avoid ? avoidAgent(next, action.avoid, action.switchTo) : [];
     if (action.extendRepairLoop) next.maxRepairLoops += 1;
     // The plugin's own budget (AUTONOMY_LIMITS) bounds these; the stage's attempt counter must
     // leave room for one more attempt so the engine accepts the retry.
@@ -133,7 +153,8 @@ export function createSupervisor(ops) {
     autonomy.tried = [...(autonomy.tried ?? []), note].slice(-20);
     ops.appendEvent(retried, '자율 진행: ' + action.nodeId + ' 단계를 새로 시도합니다 (단계 ' + autonomy.retries[action.nodeId] + '/' + AUTONOMY_LIMITS.retriesPerStage +
       ', 실행 ' + autonomy.total + '/' + AUTONOMY_LIMITS.retriesPerRun + (action.switchTo ? ', ' + before + ' → ' + action.switchTo : '') +
-      (action.extendRepairLoop ? ', 수정 루프 +1' : '') + '). 이유: ' + (action.reason || '이전 시도 실패').slice(0, 300), { nodeId: action.nodeId });
+      (action.extendRepairLoop ? ', 수정 루프 +1' : '') + '). 이유: ' + (action.reason || '이전 시도 실패').slice(0, 300) +
+      (moved.length ? ' 남은 단계도 ' + action.switchTo + '로 진행합니다: ' + moved.join(', ') + '.' : ''), { nodeId: action.nodeId });
     return retried;
   };
   return {
@@ -150,6 +171,7 @@ export function createSupervisor(ops) {
           const next = await retry(run, action);
           if (next === run) continue;
           run = next;
+          if (action.notice) notifyOnce(run, action.notice.key, 'Toris Neon: ' + action.avoid + ' 확인이 필요합니다', action.notice.body + ' 자율 진행은 ' + action.switchTo + '로 계속합니다.');
         } else if (action.type === 'stop') {
           if (!notifyOnce(run, action.key, 'Toris Neon: 확인이 필요합니다', action.reason)) continue;
           state(run).stopped = { at: new Date(ops.now()).toISOString(), reason: action.reason };
