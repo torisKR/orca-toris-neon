@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sendingEvidence } from '../src/sending.mjs';
+import { sendingEvidence, workEvidence } from '../src/sending.mjs';
 
 const AT = '2026-11-24T09:50:28.695Z';
 const job = (extra = {}) => ({ promptRecovery: { state: 'sending', at: AT }, ...extra });
 
-test('a turn already seen proves the prompt that was being sent arrived', () => {
-  assert.ok(sendingEvidence({ job: job({ promptSeen: true }), agent: null, receipt: false }));
+test('a turn already seen with its session proves the prompt that was being sent arrived', () => {
+  assert.ok(sendingEvidence({ job: job({ promptSeen: true, sessionId: 's1' }), agent: null, receipt: false }));
 });
 
 test('an agent working or blocked on its terminal proves the prompt arrived', () => {
@@ -29,4 +29,16 @@ test('an idle agent from before the send, a waiting agent or no agent stays unkn
   assert.equal(sendingEvidence({ job: job(), agent: { state: 'done' }, receipt: false }), null);
   assert.equal(sendingEvidence({ job: job(), agent: { state: 'waiting', stateStartedAt: Date.parse(AT) + 5 }, receipt: false }), null);
   assert.equal(sendingEvidence({ job: job(), agent: undefined, receipt: false }), null);
+});
+
+test('promptSeen without a sessionId is not proof: Codex sets it from its prompt-submit hook even inside the hook-review modal', () => {
+  assert.equal(sendingEvidence({ job: job({ promptSeen: true }), agent: undefined, receipt: false }), null);
+  assert.ok(sendingEvidence({ job: job({ promptSeen: true, sessionId: 's1' }), agent: undefined, receipt: false }));
+});
+
+test('workEvidence: a sessionId or any result file besides brief.md is work; nothing else is', () => {
+  assert.match(workEvidence({ job: { sessionId: 's1' }, files: ['brief.md'] }), /sessionId/);
+  assert.match(workEvidence({ job: {}, files: ['brief.md', 'result.json'] }), /result\.json/);
+  assert.equal(workEvidence({ job: { promptSeen: true }, files: ['brief.md'] }), null);
+  assert.equal(workEvidence({ job: {}, files: [] }), null);
 });

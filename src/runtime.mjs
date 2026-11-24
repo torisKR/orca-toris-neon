@@ -1,4 +1,4 @@
-import { promises as fs, constants as FS_CONSTANTS } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -19,7 +19,9 @@ import { stageBudget } from './proportion.mjs';
 import { createTerminalCleanup, cleanupRecorder, describeSweep, CLEANUP_INTERVAL_MS } from './cleanup.mjs';
 import { classifySendError, focusTerminal, SEND_RETRY_DELAYS_MS } from './delivery.mjs';
 import { readBlocker } from './agentscreen.mjs';
-import { sendingEvidence } from './sending.mjs';
+import { sendingEvidence, workEvidence } from './sending.mjs';
+import { refundAttempts, planManualRefund, NO_WORK } from './refund.mjs';
+import { within, assertNoSymlinks, boundedJson, resultFiles } from './receipts.mjs';
 import { nextLaunch, readLimits, GLOBAL_LIMITS } from './scheduler.mjs';
 import { gitWorkingState, sourceProblem } from './commitcheck.mjs';
 import { buildLabel } from './buildinfo.mjs';
@@ -35,7 +37,6 @@ import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, isReportFormError, formError, re
 
 export { buildNodePrompt, gitRepositoryState, sourceFingerprint };
 
-const MAX_RECEIPT_BYTES = 256 * 1024;
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
 const MAX_RUNS = 40;
 const MAX_HOST_PROMPT_CHARS = 4096;
@@ -103,41 +104,6 @@ function safeSegment(value) {
   }
   return value;
 }
-function within(parent, child) {
-  const relative = path.relative(parent, child);
-  return relative !== '' && !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative);
-}
-async function assertNoSymlinks(base, target, allowMissing = false) {
-  const relative = path.relative(base, target);
-  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
-    throw runtimeError('invalid_params', '결과 파일이 실행 디렉터리 밖에 있습니다.');
-  }
-  let current = base;
-  for (const part of ['', ...relative.split(path.sep).filter(Boolean)]) {
-    if (part) current = path.join(current, part);
-    try {
-      const stat = await fs.lstat(current);
-      if (stat.isSymbolicLink()) throw runtimeError('invalid_params', '결과 경로에 심볼릭 링크를 사용할 수 없습니다.');
-    } catch (error) {
-      if (allowMissing && error.code === 'ENOENT') return;
-      throw error;
-    }
-  }
-}
-async function boundedJson(filename, base) {
-  await assertNoSymlinks(base, filename);
-  const file = await fs.open(filename, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW || 0));
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile() || stat.size > MAX_RECEIPT_BYTES) {
-      throw runtimeError('invalid_params', '완료 보고서는 256 KiB 이하의 일반 JSON 파일이어야 합니다.');
-    }
-    return JSON.parse(await file.readFile('utf8'));
-  } finally {
-    await file.close();
-  }
-}
-
 function findNode(run, id) {
   const node = run.nodes.find((item) => item.id === id);
   if (!node) throw runtimeError('invalid_params', '실행에 해당 단계가 없습니다.');
@@ -165,7 +131,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   fingerprint = sourceFingerprint, readReceipt = boundedJson, ensureDirectory,
   writeBrief = (file, text) => fs.writeFile(file, text, { mode: 0o600 }),
   inspectRepository = gitRepositoryState, workspaceTrace = reservedGitTrace, eccAdvisor = null, visualAdvisor = null, launchOverrides = null,
-  receiptWrittenAt = async (file) => (await fs.stat(file)).mtimeMs,
+  receiptWrittenAt = async (file) => (await fs.stat(file)).mtimeMs, listResultFiles = resultFiles,
   validateArtifact, resolvePlayAccount, readPlayApp, id = randomUUID, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   watchIntervalMs = WATCH_INTERVAL_MS, cleanupIntervalMs = CLEANUP_INTERVAL_MS, gitState = gitWorkingState, buildInfo = null, readRelease = readReleaseFile } = {}) {
   if (!orca?.host || !orca?.storage) throw new Error('Orca host and storage are required.');
@@ -346,7 +312,18 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     catch (error) { closeError = ' (' + safeError(error).message + ')'; }
     job.blocker = { kind: blocker.kind, agent: job.agent };
     markBlocked(run, job, blocker.message + (closed ? '' : ' 터미널을 닫지 못해' + closeError + ' 입력된 지시가 나중에 실행될 수 있으니 터미널을 직접 닫은 뒤 재시도하세요.'), !closed);
+    // Only the hook-review modal comes before any turn; a usage limit or login can follow real work.
+    const worked = closed && (blocker.kind !== 'hook-review' || await evidenceOf(job).catch((error) => '결과 폴더를 읽지 못함 (' + safeError(error).message + ')'));
+    if (closed && !worked) replaceRun(giveBack(getRun(run.id), job.nodeId, [job.nonce], '에이전트 화면(' + blocker.kind + ')에서 멈춰 작업을 시작하지 않았고 터미널을 닫았습니다.').run);
     return persist();
+  };
+  // Attempts that never started work do not count (src/refund.mjs); each refund is a run event.
+  const evidenceOf = async (job) => workEvidence({ job, files: await listResultFiles(job) });
+  const giveBack = (run, nodeId, nonces, reason, manual = false) => {
+    const refund = refundAttempts(run, nodeId, nonces, { at: nowIso(now), reason, manual });
+    refund.message = '시작 안 한 시도 ' + refund.count + '회를 되돌렸습니다 (' + nonces.map((nonce) => nonce.slice(0, 8)).join(', ') + '): ' + reason;
+    appendEvent(refund.run, findNode(refund.run, nodeId).title + ': ' + refund.message, now, { nodeId });
+    return refund;
   };
   const createReceiptDirectory = async (directory) => {
     if (ensureDirectory) return ensureDirectory(directory);
@@ -1204,10 +1181,15 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       return clone(getRun(run.id));
     }),
     'nodes.retry': (input) => queue(async () => {
-      const original = clone(getRun(input.runId));
+      let original = clone(getRun(input.runId));
       checkExpectedNonce(findNode(original, input.nodeId), input.expectedNonce);
-      const run = await retryStage(original, input.nodeId, { acknowledgeUncertain: input.acknowledgeUncertain === true, stopPrevious: input.stopPrevious === true });
-      replaceRun(run); await persist(); schedulePump(); return clone(run);
+      const plan = await planManualRefund(original, input.nodeId, { evidenceOf }); // a stage at its limit, once (src/refund.mjs)
+      const refund = plan?.nonces ? giveBack(original, input.nodeId, plan.nonces, NO_WORK, true) : null;
+      let run;
+      try { run = await retryStage(refund?.run ?? original, input.nodeId, { acknowledgeUncertain: input.acknowledgeUncertain === true, stopPrevious: input.stopPrevious === true }); }
+      catch (error) { throw error.code === 'attempt_limit' && plan?.refused ? runtimeError('attempt_limit', error.message + ' ' + plan.refused) : error; }
+      replaceRun(run); await persist(); schedulePump();
+      return { ...clone(run), ...(refund ? { attemptRefund: { count: refund.count, message: refund.message } } : {}) };
     }),
     'runs.setAutonomous': (input) => queue(async () => {
       if (typeof input?.enabled !== 'boolean') throw runtimeError('invalid_params', 'enabled 값은 true 또는 false여야 합니다.');

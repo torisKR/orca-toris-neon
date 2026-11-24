@@ -153,6 +153,7 @@ function harness(options = {}) {
     gitState: options.gitState ?? null, buildInfo: options.buildInfo,
     ...(options.readRelease ? { readRelease: options.readRelease } : {}),
     ensureDirectory: async () => {},
+    listResultFiles: options.listResultFiles ?? (async (job) => receipts.has(job.receiptPath) ? ['brief.md', 'result.json'] : ['brief.md']),
     writeBrief: async (filename, text) => { briefs.set(filename, text); },
     readReceipt: async (filename) => {
       if (!receipts.has(filename)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
@@ -2943,4 +2944,92 @@ test('a typed prompt that lands in the hook modal is closed and reported with it
   assert.equal(run.jobs[0].blocker.kind, 'hook-review');
   assert.equal(run.jobs[0].state === 'uncertain' || Boolean(run.nodes[0].launchUncertain), false);
   assert.equal(launchCalls(h).at(-1).input.agent, 'claude');
+});
+
+// --- Attempts that never started work (live run d5b7ce8d design: 3/3 spent on the hook-review modal).
+const endTurnWithoutSession = async (h, terminalId = 't1') => {
+  const agent = h.agents.find((item) => item.terminalId === terminalId);
+  agent.state = 'done';
+  await h.events.get('agent.status.changed')({ terminalId, workspaceId: 'w1', state: 'done', mainAgent: { state: 'done', outcome: 'success' } });
+  await h.runtime.drain();
+};
+
+test('an attempt stopped on an agent screen with its terminal closed and no work gives its attempt back, with an event', async () => {
+  // Arrange
+  const h = harness({ host: async (name) => { if (name === 'terminal.read') return { lines: HOOK_MODAL, truncated: false }; } });
+  await h.create();
+  // Act
+  await h.start();
+  // Assert
+  const run = h.getRun();
+  assert.equal(run.nodes[0].status, 'blocked');
+  assert.equal(run.nodes[0].attempts, 0);
+  assert.ok(run.jobs[0].refunded);
+  assert.ok(run.events.some((event) => /되돌렸습니다/.test(event.summary) && event.summary.includes(run.jobs[0].nonce.slice(0, 8))));
+});
+
+test('an agent that worked and then hit an account screen keeps its attempt', async () => {
+  // Arrange: the turn ran in a session, then the terminal shows a usage limit.
+  let screen = ['› '];
+  const h = harness({ host: async (name) => { if (name === 'terminal.read') return { lines: screen, truncated: false }; } });
+  await h.create();
+  await h.start();
+  screen = ['■ You\'ve hit your usage limit. Try again at 9:40 PM.'];
+  // Act
+  await h.done();
+  // Assert
+  assert.equal(h.getRun().jobs[0].blocker.kind, 'usage-limit');
+  assert.equal(h.getRun().nodes[0].attempts, 1);
+  assert.equal(h.getRun().jobs[0].refunded, undefined);
+});
+
+test('a usage limit is never refunded automatically, even without a session: it can follow work that left no trace', async () => {
+  let screen = ['› '];
+  const h = harness({ host: async (name) => { if (name === 'terminal.read') return { lines: screen, truncated: false }; } });
+  await h.create();
+  await h.start();
+  screen = ['■ You\'ve hit your usage limit. Try again at 9:40 PM.'];
+  await endTurnWithoutSession(h);
+  assert.equal(h.getRun().jobs[0].blocker.kind, 'usage-limit');
+  assert.equal(h.getRun().nodes[0].attempts, 1);
+});
+
+test('a person\'s retry at the limit gives back attempts that never worked, once, and says how many', async () => {
+  // Arrange: one attempt allowed; the agent ends without a session or any file but the brief.
+  const h = harness();
+  await h.create(undefined, { maxAttempts: 1 });
+  await h.start();
+  await endTurnWithoutSession(h);
+  assert.equal(h.getRun().nodes[0].attempts, 1);
+  // Act
+  const retried = await h.runtime.handlers['nodes.retry']({ runId: h.getRun().id, nodeId: 'build' });
+  await h.runtime.drain();
+  // Assert
+  assert.equal(retried.attemptRefund.count, 1);
+  assert.match(retried.attemptRefund.message, /시작 안 한 시도 1회를 되돌렸습니다/);
+  assert.equal(launchCalls(h).length, 2);
+  assert.ok(h.getRun().events.some((event) => /시작 안 한 시도 1회를 되돌렸습니다/.test(event.summary) && /sessionId 없음/.test(event.summary)));
+  // The same failure again: no second refund for this stage.
+  await endTurnWithoutSession(h, 't2');
+  await assert.rejects(h.runtime.handlers['nodes.retry']({ runId: h.getRun().id, nodeId: 'build' }), (error) => error.code === 'attempt_limit' && /한 번/.test(error.message));
+});
+
+test('a person\'s retry at the limit keeps attempt_limit when an attempt has a session', async () => {
+  // Arrange
+  const h = harness();
+  await h.create(undefined, { maxAttempts: 1 });
+  await h.start();
+  await h.done(); // the done event carries a sessionId
+  // Act / Assert
+  await assert.rejects(h.runtime.handlers['nodes.retry']({ runId: h.getRun().id, nodeId: 'build' }), (error) => error.code === 'attempt_limit' && /sessionId/.test(error.message));
+  assert.equal(h.getRun().nodes[0].attempts, 1);
+  assert.equal(launchCalls(h).length, 1);
+});
+
+test('a person\'s retry at the limit keeps attempt_limit when the result folder has more than the brief', async () => {
+  const h = harness({ listResultFiles: async () => ['brief.md', 'notes.md'] });
+  await h.create(undefined, { maxAttempts: 1 });
+  await h.start();
+  await endTurnWithoutSession(h);
+  await assert.rejects(h.runtime.handlers['nodes.retry']({ runId: h.getRun().id, nodeId: 'build' }), (error) => error.code === 'attempt_limit' && /notes\.md/.test(error.message));
 });

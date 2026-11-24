@@ -147,6 +147,17 @@
   - **Neon 밖의 조치**: 사람이 Codex를 한 번 직접 열어 Review hooks(`/hooks`)에서 바뀐 hook을 확인하고 신뢰하거나 지웁니다. Codex에는 `bypass_hook_trust` 설정이 있지만 검토하지 않은 hook을 샌드박스 밖에서 실행하게 하므로 Neon은 쓰지 않습니다.
 - `src/runtime.mjs`는 터미널 활성화 코드를 `src/delivery.mjs`로 옮겨 1426줄에서 1419줄로 줄었습니다.
 
+## 14묶음: 시작하지 않은 시도는 실행 횟수에서 빼기 (구현)
+
+Codex가 hook 검토 화면에서 멈춘 화면·상호작용 설계 단계는 세 번 모두 일을 시작하지 못했는데도 실행 횟수 3/3을 써서, 사람이 다시 시도하면 `attempt_limit`가 났습니다.
+
+- **자동** (`src/refund.mjs`, `src/runtime.mjs` `blockOnScreen`): 에이전트 화면(13묶음)에서 멈춰 터미널을 닫은 시도는, 일한 근거가 없으면 그 시도의 실행 횟수(작업 또는 검토)를 되돌리고 실행 이벤트에 nonce와 이유를 남깁니다. `releaseClaim`이 전달되지 않은 지시를 되돌리는 것과 같습니다. 일한 뒤 사용 한도에 걸린 시도처럼 세션이 있으면 되돌리지 않습니다.
+- **이미 막힌 실행의 복구** (`nodes.retry`): 한도에 닿은 단계를 사람이 다시 시도하면, 아직 정리되지 않은 그 단계의 시도를 모두 봅니다. 모든 시도에 일한 근거가 없을 때만 전부 되돌리고 재시도합니다. 응답의 `attemptRefund`와 패널 알림에 `시작 안 한 시도 N회를 되돌렸습니다`를 보여 줍니다. 근거가 하나라도 있으면 `attempt_limit`를 유지하고 오류에 그 근거를 적습니다. 단계당 한 번만 허용합니다.
+- **일한 근거** (`workEvidence`, `src/sending.mjs`): 그 시도의 `sessionId`, 또는 결과 폴더에 `brief.md` 말고 다른 파일(보고서 포함)이 있는 경우입니다. 폴더를 읽지 못하면 일한 것으로 봅니다.
+- **`promptSeen`은 약한 근거입니다**: Codex가 hook 검토 화면에 멈춰 실제 턴이 없어도, Orca의 프롬프트 제출 상태 hook이 `working`을 보고해 `promptSeen`이 켜졌습니다. 그래서 되돌리기 판정은 `promptSeen`을 보지 않습니다. 재시작 판정(13묶음)에서도 `promptSeen`은 `sessionId`가 함께 있을 때만 근거로 씁니다.
+- **남는 기록**: 끝난 시도(`superseded`)도 `run.jobs`에 `promptSeen`, `agentState`, `receiptPath`, `terminalClosed`, `promptRecovery.state`, (있으면) `sessionId`를 남깁니다. `agentOutcome`은 남지 않습니다. 결과 폴더는 `receiptPath`의 폴더를 읽습니다.
+- 결과 폴더 읽기 함수(`boundedJson` 등)를 `src/receipts.mjs`로 옮겨 `src/runtime.mjs`는 1419줄에서 1400줄로 줄었습니다.
+
 ### 운영 위험: 개발 모드 로딩과 진행 중인 실행
 
 사용자 맥북의 Orca는 Neon을 이 저장소 폴더에서 개발 모드로 불러옵니다. 그래서 플러그인 파일을 저장할 때마다(다른 작업의 커밋, 편집기 저장 포함) 워커가 다시 시작되고, 진행 중인 자율 실행이 그 순간 하던 일(작업 지시 입력, 상태 저장)이 끊깁니다. 13묶음은 입력 중 재시작을 근거로 판정하게 했지만, 재시작 자체를 막지는 못합니다.
@@ -204,3 +215,4 @@
 - 11묶음: 실제 업로드에 쓰인 AAB를 에이전트가 `releaseLink.artifact`로 정확히 가리키는지, Play App Signing 업로드 키 인증서 값이 기대와 같은지, Orca 워커 PATH에서 `godot --version`·`gh`·`sips`가 실행되는지, 실제 보관 직후 늦은 토큰이 두 번의 확인 안에 들어오는지, 동기화 폴더(iCloud 등)로 내보낸 페이지가 다른 PC·휴대폰에서 열리는지
 - 높음 3건 수정: 실제 Orca 저장소 쓰기 실패에서 취소 표시가 따로 저장되는지와 재시작 후 취소가 유지되는지, 실제 `workspace.create` 타임아웃 뒤 2분 안에 Orca 목록에 나타나는지와 Orca가 만드는 브랜치 이름이 `<접두사>/<이름>` 규칙과 맞는지, 실제 후속 실행이 이전 세션을 이어 쓸 때 기준값이 지시 입력 전에 잡히는지
 - 13묶음: 실제 워커 재시작이 지시 입력 중에 일어났을 때 Orca의 `agents.list`가 그 터미널을 `working`이나 이후의 `done`(`stateStartedAt`)으로 보여 주는지, Codex의 hook 검토 화면이 `terminal.read` 마지막 60줄에 이 문구로 나오는지, 사람이 Codex에서 hook을 한 번 신뢰한 뒤 다음 codex 실행부터 화면이 사라지는지, 사용 한도·로그인 화면의 실제 문구가 감지 문구와 맞는지
+- 14묶음: 실제 Codex·Claude 작업이 일을 시작하면 Orca가 그 작업에 `sessionId`를 주는지(되돌리기 판정이 이 값에 기대므로, 주지 않는 환경에서는 실제로 일한 시도도 사람의 재시도 한 번에 되돌려질 수 있음)

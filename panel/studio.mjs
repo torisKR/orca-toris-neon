@@ -674,7 +674,8 @@ app.addEventListener('click',async event=>{
       const selected=run()?.nodes?.find(n=>n.id===target.dataset.node);
       const acknowledgeUncertain=app.querySelector('#retry-ack')?.checked===true;
       if(selected?.launchUncertain&&!acknowledgeUncertain)throw new Error('Orca에서 이전 실행 상태를 확인한 후 체크해 주세요.');
-      await request('nodes.retry',{runId:target.dataset.run,nodeId:target.dataset.node,acknowledgeUncertain,stopPrevious:app.querySelector('#retry-stop')?.checked===true,...(target.dataset.nonce?{expectedNonce:target.dataset.nonce}:{})});
+      const retried=await request('nodes.retry',{runId:target.dataset.run,nodeId:target.dataset.node,acknowledgeUncertain,stopPrevious:app.querySelector('#retry-stop')?.checked===true,...(target.dataset.nonce?{expectedNonce:target.dataset.nonce}:{})});
+      if(retried?.attemptRefund?.message)toast(retried.attemptRefund.message); // attempts that never started work (src/refund.mjs)
     }
     else if(action==='deliver-prompt') {
       if(app.querySelector('#delivery-ack')?.checked!==true)throw new Error('이전 에이전트의 빈 입력 화면을 확인한 후 체크해 주세요.');

@@ -1150,3 +1150,12 @@ test('the run card reads disk use only when asked and shows the cleanup preview 
   assert.match(html,/정리 후보 0개/);
   assert.doesNotMatch(html,/data-action="(delete|remove|clean)[^"]*"/);
 });
+
+test('a retry that gave back attempts which never started says so',async()=>{
+  const message='시작 안 한 시도 3회를 되돌렸습니다 (a, b, c): 보고서 없음';
+  const h=await harness({state:recoveryState(),responses:{'nodes.retry':()=>({attemptRefund:{count:3,message}})}});
+  await h.click({action:'open-run',run:'run-1'});await h.flushFrames();
+  h.app.querySelector=selector=>['#retry-ack','#retry-stop'].includes(selector)?{checked:true}:null;
+  await h.click(renderedAction(h.app.innerHTML,'retry-node'));
+  assert.equal(h.toast.textContent,message);
+});
