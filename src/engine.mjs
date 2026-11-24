@@ -5,6 +5,8 @@
  */
 import { kindFieldsOf, requireKindProof } from './kinds.mjs';
 import { candidatesOf, requireCandidates } from './candidates.mjs';
+import { followUpFieldsOf, failOnDefects, requireBrokenCriterion } from './followups.mjs';
+import { parallelFieldsOf, requireParallel } from './fanout.mjs';
 export const RUN_VERSION = 1;
 export const DEFAULT_TIME_ZONE = 'Asia/Seoul';
 export const DEFAULT_GRAPH = [
@@ -191,7 +193,7 @@ function invalidate(run, nodeId, includeSelf = false) {
   if (run.nodes.some(node => ids.has(node.id) && node.active)) {
     fail('active_dependants', '연결된 실행 중 작업을 먼저 중지해야 합니다.');
   }
-  for (const node of run.nodes) if (ids.has(node.id)) resetNode(node);
+  for (const node of run.nodes) if (ids.has(node.id) && node.status !== 'skipped') resetNode(node); // a skipped release stage stays skipped (src/scope.mjs)
 }
 
 function settle(run) {
@@ -206,12 +208,14 @@ function settle(run) {
     }
   }
   if (run.status === 'paused' || run.status === 'cancelled') return run;
-  if (run.nodes.every(node => node.status === 'passed')) run.status = 'completed';
+  if (run.nodes.every(node => node.status === 'passed' || node.status === 'skipped')) run.status = 'completed'; // skipped never counts as passed elsewhere
   else if (run.nodes.some(node => node.active)) run.status = 'running';
   else if (run.nodes.some(node => node.status === 'failed' || node.status === 'blocked')) run.status = 'blocked';
   else run.status = 'ready';
   return run;
 }
+
+export { settle as settleRun };
 
 /** Returns a topological node id ordering, throwing for duplicate/unknown/cyclic edges. */
 export function validateGraph(nodes) {
@@ -404,7 +408,6 @@ function classifyFailedCommands(evidence) {
   });
 }
 const exitCodeOf = (value) => typeof value === 'string' && /^-?\d{1,5}$/.test(value.trim()) ? Number(value) : value;
-const MAX_FOLLOW_UPS = 12;
 // Play product ids: lowercase letters, digits, '_' and '.', starting with a letter or digit.
 const PRODUCT_ID = /^[a-z0-9][a-z0-9._]{0,138}$/;
 const reportText = (value, label, max) => { try { return requiredText(value, label, max); } catch (error) { return fail('invalid_report', error.message); } };
@@ -459,11 +462,6 @@ function productsOf(report) {
   if (new Set(products.map(item => item.productId)).size !== products.length) fail('invalid_report', '상품 ID가 중복됩니다.');
   return products;
 }
-function followUpsOf(report) {
-  if (report.followUps === undefined) return undefined;
-  if (!Array.isArray(report.followUps) || report.followUps.length > MAX_FOLLOW_UPS) fail('invalid_report', 'followUps는 최대 ' + MAX_FOLLOW_UPS + '개의 문자열 배열이어야 합니다.');
-  return report.followUps.map(item => requiredText(item, '후속 과제', 1000));
-}
 
 function normalizeReport(run, nodeId, report) {
   if (!report || typeof report !== 'object' || report.runId !== run.id || report.nodeId !== nodeId) {
@@ -498,17 +496,19 @@ function normalizeReport(run, nodeId, report) {
   });
   if (report.outcome === 'passed' && evidence.length === 0) fail('missing_evidence', '근거 없이 작업이나 검토를 통과시킬 수 없습니다.');
   if (report.outcome === 'passed') classifyFailedCommands(evidence);
-  const clean = {
+  const clean = failOnDefects({
     ...copy(report), runId: run.id, nodeId, nonce: report.nonce,
     phase: report.phase, outcome: report.outcome, summary, evidence,
     ...(report.next ? { next: requiredText(report.next, '다음 행동', 4000) } : {}),
-    ...(report.followUps === undefined ? {} : { followUps: followUpsOf(report) }),
+    ...followUpFieldsOf(report), ...parallelFieldsOf(report), // classified follow-ups, the build's module split
     ...(report.products === undefined ? {} : { products: productsOf(report) }),
     ...(report.identity === undefined ? {} : { identity: identityOf(report.identity) }),
     ...resultFieldsOf(report),
     // Only a passed report's candidates can be started; a failed or blocked one's are dropped, not refused.
     ...(report.candidates === undefined ? {} : { candidates: report.outcome === 'passed' ? candidatesOf(report.candidates, Object.keys(IMPROVE_KINDS)) : undefined }), ...kindFieldsOf(report),
-  };
+  }); // a criterion-breaking follow-up fails the review now
+  requireBrokenCriterion(nodeId, clean); // a failed test names the criterion it breaks
+  requireParallel(run, nodeId, clean); // a Claude build that could fan out states its split (src/fanout.mjs)
   requireKindProof(run, nodeId, clean); // design, performance and release proof (src/kinds.mjs)
   requireCandidates(run, nodeId, clean); // a passed diagnosis carries 3-5 startable candidates (src/candidates.mjs)
   return clean;
@@ -720,7 +720,7 @@ export function cancelRun(run, { reason = '사용자가 실행을 취소했습�
   next.status = 'cancelled';
   for (const node of next.nodes) {
     if (node.active) node.interrupted = copy(node.active);
-    if (node.status !== 'passed') {
+    if (node.status !== 'passed' && node.status !== 'skipped') {
       node.status = 'blocked';
       node.failureReason = reason;
       node.active = null;

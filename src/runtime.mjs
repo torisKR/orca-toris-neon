@@ -4,10 +4,14 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   createRun, nextActions, claimNode, recordLaunch, applyReport, approveNode,
-  pauseRun, resumeRun, retryNode, blockNode, cancelRun, releaseClaim, normalizeEccAgent
+  pauseRun, resumeRun, retryNode, blockNode, cancelRun, releaseClaim
 } from './engine.mjs';
+import { applyAssignments } from './assignments.mjs';
+import { skipReleaseStages } from './scope.mjs';
+import { restoreAgent } from './fallback.mjs';
 import { AUTONOMY_LIMITS, DECIDE_PROMPT, createSupervisor } from './autonomy.mjs';
-import { launchSettings, normalizeModel, normalizeEffort, EFFORTS, VISUAL_STAGES, VISUAL_DEFAULT } from './visual.mjs';
+import { EFFORTS, VISUAL_STAGES, VISUAL_DEFAULT } from './visual.mjs';
+import { resolveLaunch } from './profile.mjs';
 import { createPersistence, archiveRun, retainArchives } from './store.mjs';
 import { createJobWatch, WATCH_INTERVAL_MS } from './watch.mjs';
 import { runtimeUsageSync } from './usage.mjs';
@@ -166,7 +170,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   // The host's agent.launch takes no model; Orca's agent.launch.before hook rewrites the command
   // line for the one launch registered here (src/visual.mjs). The outcome is recorded either way.
   const expectLaunchSettings = (run, node, action) => {
-    const settings = action.phase === 'work' ? launchSettings(node, action.agent) : null;
+    const settings = resolveLaunch(run, node, action.phase, action.agent); // profile, stage override or visual default (src/profile.mjs)
     if (!settings) return null;
     return { settings, pending: launchOverrides?.expect({ workspaceId: run.workspaceId, workspacePath: run.workspacePath, agent: action.agent, settings }) ?? null };
   };
@@ -425,10 +429,10 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       if (storedJob) {
         storedJob.state = 'complete';
         storedJob.completedAt = nowIso(now);
-        storedJob.outcome = report.outcome;
+        storedJob.outcome = updatedNode.history.at(-1)?.outcome ?? report.outcome; // a review failed on a defect follow-up (src/followups.mjs)
       }
       replaceRun(run);
-      appendEvent(run, node.title + ' ' + (job.phase === 'review' ? '검토' : '작업') + ': ' + report.outcome, now, { nodeId: job.nodeId });
+      appendEvent(run, node.title + ' ' + (job.phase === 'review' ? '검토' : '작업') + ': ' + (storedJob?.outcome ?? report.outcome), now, { nodeId: job.nodeId });
       return true;
     } catch (error) {
       if (error.missingReceipt && job.blocker) return false; // already stopped with its cause
@@ -838,7 +842,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     return candidate;
   };
   const supervisor = createSupervisor({
-    getRun, replaceRun, retryStage: (run, nodeId) => retryStage(run, nodeId), now,
+    getRun, replaceRun, retryStage: (run, nodeId) => retryStage(run, nodeId), now, allJobs: () => state.runs.flatMap((item) => item.jobs ?? []),
     appendEvent: (run, text, extra) => appendEvent(run, text, now, extra),
     notify: (title, body) => { void Promise.resolve().then(() => call('notifications.show', { title, body: body.slice(0, 900) })).catch((error) => orca.log?.('Toris Neon notification: ' + safeError(error).message)); }
   });
@@ -1002,7 +1006,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       if (existing?.pruned) throw runtimeError('conflict', '이 요청은 이미 실행 ' + existing.id + '(' + existing.status + ')을(를) 만들었고, 그 기록은 보관 한도로 정리됐습니다. 다시 만들지 않습니다. 새 요청이면 새 requestId를 쓰세요.');
       if (existing) return clone(existing);
       if (state.runs.length >= MAX_RUNS) throw runtimeError('too_large', '최대 40개 실행을 보관합니다. 기존 실행을 완료한 뒤 보관 정리를 진행하세요.');
-      const plan = await planRunInput(input, { call, inspectRepository, readPlayApp, runs: [...state.runs, ...state.archivedRuns] });
+      const plan = await planRunInput(input, { call, inspectRepository, readPlayApp, settings: orca.settings, runs: [...state.runs, ...state.archivedRuns] });
       const { goal, projectId } = plan;
       const run = createRun({
         id: id(), goal, projectId, assignments: input.assignments || {},
@@ -1109,36 +1113,22 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       replaceRun(run); await persist(); schedulePump(); return clone(run);
     }),
     'runs.updateAssignments': (input) => queue(async () => {
-      const run = clone(getRun(input.runId));
-      if (!input.assignments || typeof input.assignments !== 'object' || Array.isArray(input.assignments)) throw runtimeError('invalid_params', '단계별 담당자 맵이 필요합니다.');
-      for (const [nodeId, assignment] of Object.entries(input.assignments)) {
-        const node = findNode(run, nodeId);
-        if (node.active || ['passed', 'awaiting-approval'].includes(node.status)) throw runtimeError('conflict', '실행 중이거나 검증 완료한 단계의 담당자는 바꿀 수 없습니다.');
-        for (const field of ['agent', 'reviewer']) {
-          if (assignment[field] !== undefined) {
-            const provider = requireString(assignment[field], '에이전트', 64);
-            if (!/^[a-z][a-z0-9-]*$/.test(provider)) throw runtimeError('invalid_params', '잘못된 에이전트 ID입니다.');
-            node[field] = provider;
-          }
-        }
-        for (const [field, normalize] of [['model', normalizeModel], ['effort', normalizeEffort]]) {
-          if (assignment[field] === undefined) continue;
-          let value;
-          try { value = normalize(assignment[field]); }
-          catch (error) { throw runtimeError('invalid_params', error.message); }
-          if (value === undefined) delete node[field]; // the agent's own default
-          else node[field] = value;
-        }
-        if (assignment.eccAgent !== undefined) {
-          let choice;
-          try { choice = normalizeEccAgent(assignment.eccAgent); }
-          catch (error) { throw runtimeError('invalid_params', error.message); }
-          if (choice === undefined) delete node.eccAgent; // automatic
-          else node.eccAgent = choice;
-        }
-      }
+      const run = applyAssignments(clone(getRun(input.runId)), input.assignments); // src/assignments.mjs
       appendEvent(run, '단계별 에이전트 배정을 변경했습니다.', now);
       replaceRun(run); await persist(); return clone(run);
+    }),
+    // The person says an avoided agent works again: stages not yet started go back to it (src/fallback.mjs).
+    'runs.restoreAgent': (input) => queue(async () => {
+      const run = clone(getRun(input.runId));
+      if (typeof input.agent !== 'string' || !Object.hasOwn(run.avoided ?? {}, input.agent)) throw runtimeError('conflict', '이 실행이 피하고 있는 에이전트가 아닙니다.');
+      const restored = restoreAgent(run, input.agent, { at: nowIso(now), why: '사용자가 다시 쓰기로 함' });
+      appendEvent(run, input.agent + '를 다시 씁니다. 아직 시작하지 않은 단계를 원래 배정으로 되돌렸습니다' + (restored.length ? ': ' + restored.join(', ') : ' (되돌릴 단계 없음)') + '.', now);
+      replaceRun(run); await persist(); schedulePump(); return clone(run);
+    }),
+    // 여기까지만: skip the release stages nobody started (src/scope.mjs); the run completes once test passes.
+    'runs.skipRelease': (input) => queue(async () => {
+      const run = skipReleaseStages(clone(getRun(input.runId)), { now: nowIso(now) });
+      replaceRun(run); await persist(); schedulePump(); return clone(run);
     }),
     'nodes.deliverPrompt': (input) => queue(async () => {
       if (input.acknowledgeUnsent !== true) {

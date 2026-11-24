@@ -12,6 +12,8 @@ import { createRun, claimNode, recordLaunch, applyReport, pauseRun, resumeRun, c
 import { dayKey, previousDay } from '../src/today.mjs';
 import { projectState } from '../src/views.mjs';
 import { classifyStages } from '../src/preflight.mjs';
+import { scopedGraph } from '../src/scope.mjs';
+import { profileAssignments } from '../src/profile.mjs';
 import { deflateSync, crc32 } from 'node:zlib';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
@@ -75,7 +77,7 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     return run;
   });
   const improved=improvementSample(stamp),diagnosed=diagnosisSample(stamp),unstructured=unstructuredDiagnosisSample(stamp);
-  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed,unstructured,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
+  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,speedSample(stamp),improved,diagnosed,unstructured,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
     agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
@@ -310,6 +312,32 @@ function improvementSample(stamp) {
     notVerified:['Android 9 실기기에서의 알림 표시'],
     evidence:[{kind:'command',command:'./gradlew testDebugUnitTest',exitCode:0},{kind:'command',command:'./gradlew testDebugUnitTest (수정 전)',exitCode:1,role:'history'},
       {kind:'artifact',path:dir+'/after.png',label:'screenshot'},{kind:'artifact',path:dir+'/mock-settings.png',label:'mockup'},{kind:'artifact',path:dir+'/build.log'}]});
+  return run;
+}
+/** A playable balanced run (src/scope.mjs, src/profile.mjs): design fell back to claude, build fanned out, time and tokens per stage (src/costs.mjs). */
+function speedSample(stamp) {
+  const nodes=profileAssignments(scopedGraph(templateGraph('new-app'),'playable'),'balanced');
+  const run=createRun({id:'preview-speed',goal:'카드 대결 게임 · 첫 플레이 가능한 싱글 버전',projectId:'preview-project-10',now:stamp-12600000,nodes});
+  Object.assign(run,{scope:'playable',profile:'balanced',started:true,status:'completed',workspaceId:'preview-workspace-10',workspacePath:'/example/focus-timer'});
+  const plan=[['research',0,12,14,20],['brief',20,33,34,41],['architecture',41,58,59,66],['design',96,118,119,126],['assets',126,150,151,160],['build',160,214,215,229],['test',229,251,252,261]];
+  run.jobs=[{nodeId:'design',phase:'work',agent:'codex',nonce:'preview-speed-design-0',startedAt:iso(stamp-12600000+41*60000),state:'awaiting-report',promptSeen:false,lastAgentEventAt:stamp-12600000+43*60000,blocker:{kind:'hook-review',agent:'codex'}}];
+  for(const [id,start,end,reviewStart,reviewEnd] of plan) {
+    const node=run.nodes.find(item=>item.id===id);
+    fillPassed(node,stamp-12600000+reviewEnd*60000,'preview/speed');
+    node.completedAt=iso(stamp-12600000+reviewEnd*60000);
+    run.jobs.push({nodeId:id,phase:'work',agent:node.agent,nonce:'preview-speed-'+id+'-w',startedAt:iso(stamp-12600000+start*60000),completedAt:iso(stamp-12600000+end*60000),state:'complete',promptSeen:true,outcome:'passed'},
+      {nodeId:id,phase:'review',agent:node.reviewer,nonce:'preview-speed-'+id+'-r',startedAt:iso(stamp-12600000+reviewStart*60000),completedAt:iso(stamp-12600000+reviewEnd*60000),state:'complete',promptSeen:true,outcome:'passed'});
+  }
+  const reason='codex가 시작 화면의 "Hooks need review"에서 멈춰 작업 지시를 실행하지 않았습니다. (미리보기 자료)';
+  for(const id of ['design','assets'])Object.assign(run.nodes.find(node=>node.id===id),{agent:'claude',original:{agent:'codex'},fallback:{from:'codex',to:'claude',at:iso(stamp-12600000+43*60000),reason}});
+  run.fallbacks=[{agent:'codex',to:'claude',at:iso(stamp-12600000+43*60000),reason,stages:['design','assets']}];
+  Object.assign(run.nodes.find(node=>node.id==='build').report,{summary:'싱글 대결 한 판을 끝까지 할 수 있습니다. (미리보기 자료)',changes:['카드 규칙 엔진과 대결 화면을 구현했습니다.'],
+    criteria:[{criterion:'한 판을 끝까지 진행할 수 있다',met:true,evidence:'flutter test test/match_test.dart'}],
+    parallel:{modules:[{name:'카드 규칙 엔진',by:'subagent'},{name:'점수 계산',by:'subagent',model:'claude-sonnet-5-5'},{name:'대결 화면',by:'subagent'},{name:'통합·상태 연결',by:'main'}],ranInParallel:['카드 규칙 엔진','점수 계산','대결 화면'],note:'엔진·점수·화면은 파일이 겹치지 않아 나눔'}});
+  const tokens={research:[96000,38000],brief:[71000,29000],architecture:[188000,61000],design:[142000,40000],assets:[121000,35000],build:[1340000,210000],test:[402000,96000]};
+  const session=(nodeId,phase,latest)=>({agent:'claude',sessionId:'preview-speed-'+nodeId+'-'+phase,hostId:'local',baseline:0,latest,observedAt:iso(stamp-60000),
+    owners:[{nonce:'preview-speed-'+nodeId+'-'+phase[0],nodeId,phase,attempt:1,startedAt:iso(stamp-12600000)}]});
+  run.usage={source:'ok',checkedAt:iso(stamp-60000),unmapped:[],sessions:Object.entries(tokens).flatMap(([id,[work,review]])=>[session(id,'work',work),session(id,'review',review)])};
   return run;
 }
 /** A cancel the store could not save yet, on a run whose agent session a follow-up took over (review H-1, H-3). */

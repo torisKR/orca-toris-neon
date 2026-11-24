@@ -22,9 +22,9 @@ export const TEAMS = [
 const OTHER_TEAM = { id: 'other', name: '추가 단계', mark: '·', stages: [], craft: '사용자 정의 단계' };
 export const STATE_LABELS = {
   waiting: '대기', queued: '검토 대기', working: '작업 중', reviewing: '검토 중',
-  passed: '통과', attention: '확인 필요', approval: '승인 대기',
+  passed: '통과', attention: '확인 필요', approval: '승인 대기', skipped: '건너뜀',
 };
-export const STATE_GLYPHS = { waiting: '○', queued: '◐', working: '●', reviewing: '◉', passed: '✓', attention: '!', approval: '?' };
+export const STATE_GLYPHS = { waiting: '○', queued: '◐', working: '●', reviewing: '◉', passed: '✓', attention: '!', approval: '?', skipped: '–' };
 export const LIVE_LABELS = {
   working: '작업 중', reviewing: '검토 중', handed: '검토로 넘김', waiting: '대기',
   undelivered: '지시 전달 전', attention: '확인 필요', done: '완료',
@@ -55,6 +55,7 @@ export function currentJob(run, node) {
 export function stageState(node) {
   if (node.active) return node.active.phase === 'review' ? 'reviewing' : 'working';
   if (node.status === 'passed') return 'passed';
+  if (node.status === 'skipped') return 'skipped';
   if (['blocked', 'failed'].includes(node.status)) return 'attention';
   if (node.status === 'awaiting-approval') return 'approval';
   if (node.status === 'review') return 'queued';

@@ -60,13 +60,18 @@ export function budgetInstruction(node, phase) {
     ' 예산을 넘길 것 같으면 범위를 줄이고 남은 사항을 보고서 next에 적은 뒤 마치세요.';
 }
 
+// A review must not pass what the next stage will fail (src/followups.mjs).
+const CLASSIFY = '검토 보고서의 후속 과제는 "followUps" 배열(최대 ' + MAX_FOLLOW_UPS + '개)에 항목마다 분류해 적으세요: ' +
+  '이 단계의 완료 조건을 깨는 결함은 {"text": "무엇이 어떻게 깨지는지", "class": "defect", "criterion": "깨지는 완료 조건"} — Neon이 이 검토를 코드 결함으로 실패 처리하고 이 단계에서 고치게 합니다(다음 단계에서 발견하는 것보다 쌉니다). ' +
+  '완료 조건이 아닌 개선점·확인 사항은 {"text": "…", "class": "later"} — 기록으로 다음 관련 단계에 전달되며, 다음 단계는 이것만으로 실패시킬 수 없습니다. ' +
+  '다음 단계(예: 테스트)가 실패시킬 것이 보이면 later로 미루지 말고 defect로 적으세요.';
+
 export function reviewInstruction(node) {
   if (!DOCUMENT_STAGES.has(node.id)) {
-    return '구현·검증 단계라 기준을 낮추지 마세요. 직접 실행해 확인하고, 결함이 있으면 failed로 보고하세요.';
+    return '구현·검증 단계라 기준을 낮추지 마세요. 직접 실행해 확인하고, 결함이 있으면 failed로 보고하세요. ' + CLASSIFY;
   }
   return '문서 단계 검토입니다. 다음 단계가 잘못된 것을 만들게 하는 차단 결함만 failed로 보고하세요. ' +
-    '세부 결함, 개선점, 구현이나 테스트에서 확인할 사항은 outcome을 passed로 두고, 보고서의 "followUps": ["…"] 배열(최대 ' + MAX_FOLLOW_UPS + '개, 항목마다 한두 문장)에 적으세요. ' +
-    '후속 과제는 다음 관련 단계의 작업 지시에 전달됩니다.';
+    '세부 결함, 개선점, 구현이나 테스트에서 확인할 사항은 outcome을 passed로 두고 후속 과제로 적으세요. ' + CLASSIFY;
 }
 
 /** Follow-ups recorded by the passed work and review of a stage's direct dependencies. */
@@ -84,5 +89,6 @@ export function followUpsFor(run, node) {
 export function followUpsInstruction(run, node) {
   const items = followUpsFor(run, node);
   if (!items.length) return '';
-  return '선행 단계 검토가 남긴 후속 과제(이 단계에서 해결하거나 확인할 것):\n' + items.map((item) => '- ' + item).join('\n');
+  return '선행 단계 검토가 남긴 후속 과제(이 단계에서 해결하거나 확인할 것):\n' + items.map((item) => '- ' + item).join('\n') +
+    '\n이 후속 과제는 완료 조건이 아닙니다. 이것만으로 이 단계를 실패시키지 말고, 실패는 깨진 완료 조건으로만 보고하세요.';
 }

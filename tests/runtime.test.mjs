@@ -3033,3 +3033,82 @@ test('a person\'s retry at the limit keeps attempt_limit when the result folder 
   await endTurnWithoutSession(h);
   await assert.rejects(h.runtime.handlers['nodes.retry']({ runId: h.getRun().id, nodeId: 'build' }), (error) => error.code === 'attempt_limit' && /notes\.md/.test(error.message));
 });
+
+test('여기까지만 skips the not-started release stages through the handler, records it, and refuses when nothing is left', async () => {
+  // Arrange
+  const h = harness();
+  await h.create([{ id: 'test', title: '테스트', deps: [] }, { id: 'policy', title: '정책', deps: ['test'] }, { id: 'release', title: '출시', deps: ['policy'], write: true }]);
+  const runId = h.getRun().id;
+
+  // Act
+  const run = await h.runtime.handlers['runs.skipRelease']({ runId });
+
+  // Assert
+  assert.deepEqual(run.nodes.map((node) => node.status), ['pending', 'skipped', 'skipped']);
+  assert.ok(h.getRun().events.some((event) => event.type === 'run.scope-reduced'));
+  await assert.rejects(h.runtime.handlers['runs.skipRelease']({ runId }), (error) => error.code === 'conflict');
+});
+
+test('a balanced run launches build work on claude opus high and its review on the other family, both through the hook', async () => {
+  // Arrange
+  const { h, spawned } = hookedHarness();
+  await h.create(undefined, { profile: 'balanced' });
+
+  // Act
+  await h.start();
+  h.report(undefined, { parallel: { modules: [{ name: '앱', by: 'main' }], note: '모듈이 하나뿐' } }); await h.done();
+
+  // Assert
+  assert.deepEqual(spawned, ['claude --model claude-opus-5-5 --effort high', 'codex -m gpt-6.2-sol -c model_reasoning_effort=high']);
+  assert.match(sendCalls(h)[0].input.text + (h.briefs ? [...h.briefs.values()].join('') : ''), /서브에이전트|brief\.md/);
+  assert.equal(h.currentJob().phase, 'review');
+  assert.deepEqual(h.currentJob().launchSettings, { model: 'gpt-6.2-sol', effort: 'high', source: 'profile', profile: 'balanced', applied: true });
+});
+
+test('the person can put an avoided agent back: stages not yet started return to it, and only an avoided agent is accepted', async () => {
+  // Arrange
+  const h = harness();
+  await h.create([{ id: 'design', title: '디자인', deps: [] }, { id: 'assets', title: '에셋', deps: ['design'], write: true }]);
+  h.runtime.dispose();
+  const saved = savedState(h.store);
+  const stored = saved.runs[0];
+  for (const item of stored.nodes) { item.agent = 'claude'; item.original = { agent: 'codex' }; item.fallback = { from: 'codex', to: 'claude', at: NOW, reason: 'hook' }; }
+  stored.avoided = { codex: { at: NOW, to: 'claude' } };
+  writeSaved(h.store, saved);
+  const restarted = createRuntime({ orca: h.orca, now: () => NOW, ensureDirectory: async () => {}, fingerprint: async () => 'source-v1' });
+  await restarted.initialize();
+
+  // Act
+  const run = await restarted.handlers['runs.restoreAgent']({ runId: stored.id, agent: 'codex' });
+
+  // Assert
+  assert.deepEqual(run.nodes.map((item) => item.agent), ['codex', 'codex']);
+  assert.equal(run.avoided, undefined);
+  assert.ok(run.events.some((event) => /codex를 다시 씁니다/.test(event.summary)));
+  await assert.rejects(restarted.handlers['runs.restoreAgent']({ runId: stored.id, agent: 'codex' }), (error) => error.code === 'conflict');
+  restarted.dispose();
+});
+
+test('choosing an agent by hand clears that stage\'s remembered fallback', async () => {
+  const { applyAssignments } = await import('../src/assignments.mjs');
+  const run = { nodes: [{ id: 'design', status: 'pending', agent: 'claude', reviewer: 'claude', original: { agent: 'codex' }, fallback: { from: 'codex', to: 'claude' } }] };
+  applyAssignments(run, { design: { agent: 'codex' } });
+  assert.equal(run.nodes[0].fallback, undefined);
+  assert.equal(run.nodes[0].original, undefined);
+});
+
+test('a review the engine failed on a defect follow-up is recorded as failed on its job and event', async () => {
+  // Arrange
+  const h = harness();
+  await h.create();
+  await h.start();
+  h.report(); await h.done();
+
+  // Act
+  h.report(undefined, { followUps: [{ text: '빈 덱에서 멈춤', class: 'defect', criterion: '한 판을 끝까지 할 수 있다' }] }); await h.done();
+
+  // Assert
+  const review = h.getRun().jobs.find((job) => job.phase === 'review');
+  assert.equal(review.outcome, 'failed');
+  assert.ok(h.getRun().events.some((event) => /검토: failed/.test(event.summary)));
+});

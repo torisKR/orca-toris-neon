@@ -178,3 +178,36 @@ test('the result card names the stored token total, failed attempts and reviews 
   assert.doesNotMatch(none, /토큰/, 'nothing to report: no token line at all');
   assert.match(unavailable, /토큰 집계 불가/);
 });
+
+test('the build result card shows the module split, who did each module and what ran in parallel', () => {
+  // Arrange
+  const report = { outcome: 'passed', parallel: { modules: [{ name: '규칙 엔진', by: 'subagent', model: 'claude-sonnet-5-5' }, { name: '<통합>', by: 'main' }], ranInParallel: ['규칙 엔진'], note: '파일이 겹치지 않음' } };
+
+  // Act
+  const html = stageResult({ id: 'r1' }, { id: 'build', report }, { artifacts: new Map() });
+
+  // Assert
+  assert.match(html, /모듈 분할·병렬 진행/);
+  assert.match(html, /규칙 엔진 · 서브에이전트 \(claude-sonnet-5-5\) · 병렬/);
+  assert.match(html, /&lt;통합&gt; · 주 에이전트/);
+  assert.match(html, /동시에 진행: 규칙 엔진 · 파일이 겹치지 않음/);
+});
+
+test('the run result card shows minutes worked, waiting and tokens per stage and phase with the run total', () => {
+  // Arrange
+  const run = { id: 'r1', status: 'completed', nodes: [{ id: 'design', title: '디자인', status: 'passed', write: false }, { id: 'build', title: '앱 구현', status: 'passed', write: true }, { id: 'test', title: '테스트', status: 'passed' }],
+    costs: { stages: { design: { work: { minutes: 20, tokens: 300_000 }, review: { minutes: 6, tokens: 40_000 }, waitingMinutes: 50, unknown: 0 },
+      build: { work: { minutes: 54, tokens: 1_300_000 }, review: { minutes: 12, tokens: null }, waitingMinutes: 3, unknown: 0 } },
+    total: { workedMinutes: 92, waitingMinutes: 53, tokens: 1_640_000, tokenScope: 'partial', unknown: 1 } } };
+
+  // Act
+  const html = runResult(run, { runs: [run], play: null });
+
+  // Assert
+  assert.match(html, /작업 <strong>92분<\/strong> · 대기 <strong>53분<\/strong> · 토큰 <strong>1\.6M<\/strong>/);
+  assert.match(html, /일부 집계/);
+  assert.match(html, /가장 오래 걸린 단계: 디자인/, "waiting counts: 20+6+50 > 54+12+3");
+  assert.match(html, /<th scope="row">디자인<\/th><td>20분 · 300K<\/td><td>6분 · 40K<\/td><td>50분<\/td>/);
+  assert.match(html, /12분 · <span class="hint">집계 없음<\/span>/);
+  assert.match(html, /끝난 시각이 기록되지 않은 작업 1개/);
+});

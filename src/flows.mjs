@@ -7,6 +7,8 @@
 import { templateGraph } from './engine.mjs';
 import { prepareImprovement } from './improve.mjs';
 import { verifiedEvidence, lastVerifiedCommit } from './reuse.mjs';
+import { normalizeScope, scopedGraph } from './scope.mjs';
+import { normalizeProfile, defaultProfileOf, profileAssignments } from './profile.mjs';
 
 const invalid = (message) => Object.assign(new Error(message), { code: 'invalid_params' });
 const text = (value, label, max) => {
@@ -67,7 +69,15 @@ function withLastVerified(plan, runs) {
 
 /** { goal, projectId, nodes, extra } for runs.create; throws invalid_params with a person-readable reason. */
 export async function planRunInput(input, deps) {
-  return withLastVerified(withParent(await planFlow(input, deps), input, deps.runs), deps.runs);
+  return withProfile(withLastVerified(withParent(await planFlow(input, deps), input, deps.runs), deps.runs), input, deps);
+}
+/** Speed and cost profile (src/profile.mjs): the request's, else the plugin setting. A custom graph keeps its own assignments. */
+async function withProfile(plan, input, deps) {
+  if (input.nodes && input.profile === undefined) return plan;
+  let chosen;
+  try { chosen = normalizeProfile(input.profile); } catch (error) { throw invalid(error.message); }
+  const { profile, warning } = chosen ? { profile: chosen } : await defaultProfileOf(deps.settings);
+  return { ...plan, nodes: profileAssignments(plan.nodes, profile, input.assignments ?? {}), extra: { ...plan.extra, profile, ...(warning ? { profileWarning: warning } : {}) } };
 }
 async function planFlow(input, deps) {
   if (input.fromDiagnosis) return fromDiagnosis(input.fromDiagnosis, deps.runs);
@@ -85,7 +95,8 @@ async function planFlow(input, deps) {
     const nodes = templateGraph('improve', { kind: prep.kind, ...prep.options, web: prep.improvement.platform === 'web' });
     return { goal, projectId, nodes, extra: { template: 'improve', improvement: prep.improvement } };
   }
-  let nodes;
-  try { nodes = input.nodes ?? templateGraph(template); } catch (error) { throw invalid(error.message); }
-  return { goal, projectId, nodes, extra: {} };
+  // A new app ends at test unless the person asked for the release stages (src/scope.mjs).
+  if (input.nodes) return { goal, projectId, nodes: input.nodes, extra: {} };
+  try { return { goal, projectId, nodes: scopedGraph(templateGraph(template), input.scope), extra: { scope: normalizeScope(input.scope) } }; }
+  catch (error) { throw invalid(error.message); }
 }

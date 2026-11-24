@@ -21,7 +21,7 @@ export const KINDS = [
   ['policy', '정책·권한 점검', '권한·targetSdk·데이터 보안·결제 정책을 점검만 합니다'],
 ];
 export const KIND_NAMES = Object.fromEntries(KINDS.map(([id, label]) => [id, label]));
-const TYPES = [['new-app', '새 앱 만들기', '아이디어에서 출시까지'], ['improve', '기존 앱 개선하기', '출시한 앱을 종류별로 개선'],
+const TYPES = [['new-app', '새 앱 만들기', '아이디어에서 플레이 가능한 첫 버전까지 (출시는 선택)'], ['improve', '기존 앱 개선하기', '출시한 앱을 종류별로 개선'],
   ['diagnose', '진단만 하기', '개선 후보만 찾고 바꾸지 않음'], ['resume', '이어하기', '끝나지 않은 흐름을 다시 시작']];
 
 export function flowTypeSwitch(type) {
@@ -64,12 +64,16 @@ export function resumeList(runs) {
 export function newRunPayload(values) {
   const template = ['improve', 'diagnose'].includes(values.flowType) ? values.flowType : 'new-app';
   const stages = TEMPLATE_STAGES[template === 'new-app' ? 'new-app' : 'improve'];
-  const assignments = Object.fromEntries(stages.map((id) => [id, { agent: values.agent, reviewer: values.reviewer }]));
+  // An empty choice leaves the stage to the run's profile (src/profile.mjs); an explicit one wins.
+  const pick = { ...(values.agent ? { agent: values.agent } : {}), ...(values.reviewer ? { reviewer: values.reviewer } : {}) };
+  const assignments = Object.keys(pick).length ? Object.fromEntries(stages.map((id) => [id, pick])) : {};
   const data = { template, projectId: values.projectId, assignments,
     maxConcurrency: Number(values.maxConcurrency), maxAttempts: Number(values.maxAttempts), maxRepairLoops: Number(values.maxRepairLoops) };
   if (template !== 'diagnose' || values.goal?.trim()) data.goal = values.goal;
   if (values.baseBranch?.trim()) data.baseBranch = values.baseBranch.trim();
   if (values.parentRunId) data.parentRunId = values.parentRunId;
+  if (template === 'new-app') data.scope = values.scope === 'release' ? 'release' : 'playable'; // src/scope.mjs
+  if (['fast', 'balanced', 'saver'].includes(values.profile)) data.profile = values.profile; // else the plugin setting
   if (values.requestId) data.requestId = values.requestId; // one per opened form: a resubmit returns the run it made
   if (template === 'improve') {
     if (!KIND_NAMES[values.kind]) throw new Error('개선 종류를 고르세요.');

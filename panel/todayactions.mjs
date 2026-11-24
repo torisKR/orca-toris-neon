@@ -72,8 +72,8 @@ export function runActions(run) {
 
 /** A Today run card: where it stands and its one next action. */
 export function todayRunCard(run) {
-  const node = run.nodes?.find((n) => ['running', 'review', 'blocked', 'failed', 'awaiting-approval'].includes(n.status)) ?? run.nodes?.find((n) => n.status !== 'passed');
-  const done = run.nodes?.filter((n) => n.status === 'passed').length ?? 0, total = run.nodes?.length ?? 0;
+  const node = run.nodes?.find((n) => ['running', 'review', 'blocked', 'failed', 'awaiting-approval'].includes(n.status)) ?? run.nodes?.find((n) => !['passed', 'skipped'].includes(n.status));
+  const done = run.nodes?.filter((n) => n.status === 'passed').length ?? 0, total = run.nodes?.filter((n) => n.status !== 'skipped').length ?? 0;
   return '<article class="card accent"><div class="card-head"><div class="grow"><div class="card-title goal-title" title="' + e(goalTitle(run.goal)) + '">' + e(goalTitle(run.goal)) + '</div>' +
     '<div class="card-subtitle">' + e(run.status === 'completed' ? '완료된 결과' : node ? '다음 지점 · ' + title(node) : '전체 흐름을 확인해 주세요') + '</div></div>' + badge(run.status) + '</div>' +
     '<div class="progress" aria-label="' + done + '/' + total + '단계 완료"><span style="width:' + (total ? done / total * 100 : 0) + '%"></span></div>' +

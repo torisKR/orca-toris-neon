@@ -7,6 +7,7 @@
  * account ids, names and credentials are never read into the record. Pure.
  */
 import path from 'node:path';
+import { stageCosts } from './costs.mjs';
 import { usageSummary } from './usage.mjs';
 import { milestones } from './milestones.mjs';
 
@@ -109,6 +110,7 @@ export function historyRecord(run, { exportedAt, receiptRoot, home, play = null,
     milestones: milestones(run).map(({ id, label, state, detail }) => ({ id, label, state, detail })),
     stages: (run.nodes ?? []).map((node) => stageOf(node, context, thumbnails)),
     tokens: run.usage ? usageSummary(run.usage) : null,
+    costs: stageCosts(run, { now: Date.parse(exportedAt) || Date.now() }), // minutes worked/waiting and tokens per stage (src/costs.mjs)
     play: playObservations(run, play), ...(playError ? { playError } : {}),
   };
   return redactDeep(record, context);

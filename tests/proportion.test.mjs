@@ -36,13 +36,14 @@ test('a work brief states the time, the scope and what is enough; research colle
   assert.equal(budgetInstruction({ id: 'custom' }, 'work'), '');
 });
 
-test('document reviews fail only blocking defects and record the rest as follow-ups; build and test reviews stay strict', () => {
+test('document reviews fail only blocking defects and record the rest as follow-ups; build and test reviews stay strict and classify theirs', () => {
   const doc = reviewInstruction({ id: 'architecture' });
   assert.match(doc, /차단/);
   assert.match(doc, /followUps/);
   assert.match(doc, /passed/);
   const strict = reviewInstruction({ id: 'build' });
-  assert.doesNotMatch(strict, /followUps/);
+  assert.match(strict, /기준을 낮추지/);
+  assert.match(strict, /"class": "defect"/, 'a strict review classifies follow-ups instead of passing a defect on');
   assert.match(strict, /failed/);
 });
 
@@ -83,5 +84,6 @@ test('update stages have budgets; audit and plan are documents, monetization and
   for (const id of ['identity', 'plan', 'monetization', 'catalog']) assert.ok(STAGE_BUDGETS[id]?.work > 0 && STAGE_BUDGETS[id].review > 0, id);
   assert.ok(DOCUMENT_STAGES.has('identity') && DOCUMENT_STAGES.has('plan'));
   assert.equal(DOCUMENT_STAGES.has('monetization'), false);
-  assert.doesNotMatch(reviewInstruction({ id: 'monetization' }), /followUps/);
+  assert.match(reviewInstruction({ id: 'monetization' }), /기준을 낮추지/);
+  assert.doesNotMatch(reviewInstruction({ id: 'monetization' }), /차단 결함만/);
 });

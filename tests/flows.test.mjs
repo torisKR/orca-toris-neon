@@ -23,7 +23,11 @@ function diagnosisRun(status = 'passed') {
 
 test('each flow type plans its graph from the template: new app, an improvement kind, diagnose-only', async () => {
   const fresh = await planRunInput({ goal: '새 앱', projectId: 'p1' }, deps());
-  assert.equal(fresh.nodes.length, 11);
+  assert.equal(fresh.nodes.length, 7); // playable by default: ends at test
+  assert.equal(fresh.extra.scope, 'playable');
+  const shipping = await planRunInput({ goal: '새 앱', projectId: 'p1', scope: 'release' }, deps());
+  assert.equal(shipping.nodes.length, 11);
+  await assert.rejects(planRunInput({ goal: '새 앱', projectId: 'p1', scope: 'store' }, deps()), /범위/);
   const fix = await planRunInput({ template: 'improve', kind: 'bugfix', goal: '알림 중복 수정', projectId: 'p1' }, deps());
   assert.deepEqual(fix.nodes.map((node) => node.id), ['identity', 'reproduce', 'build', 'test']);
   assert.equal(fix.extra.template, 'improve');

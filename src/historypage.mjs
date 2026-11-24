@@ -7,8 +7,8 @@ import { e, localDate } from '../panel/kit.mjs';
 import { compactTokens } from '../panel/tokens.mjs';
 
 const OUTCOMES = { passed: '통과', failed: '실패', blocked: '중단' };
-const STATUS = { completed: '완료', cancelled: '취소', passed: '통과', failed: '실패', blocked: '확인 필요', pending: '대기', review: '검토', 'awaiting-approval': '승인 대기', running: '진행 중' };
-const MILESTONE = { done: '완료', partial: '진행 중', not_done: '안 됨', approved: '승인' };
+const STATUS = { completed: '완료', cancelled: '취소', passed: '통과', failed: '실패', blocked: '확인 필요', pending: '대기', review: '검토', 'awaiting-approval': '승인 대기', running: '진행 중', skipped: '건너뜀' };
+const MILESTONE = { done: '완료', partial: '진행 중', not_done: '안 됨', approved: '승인', skipped: '건너뜀' };
 const STYLE = `:root{--bg:#fafaf9;--fg:#1c1917;--muted:#57534e;--line:#d6d3d1;--ok:#166534;--bad:#b91c1c;--card:#fff}
 @media (prefers-color-scheme: dark){:root{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--line:#44403c;--ok:#86efac;--bad:#fca5a5;--card:#292524}}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,"Apple SD Gothic Neo",sans-serif}
@@ -55,6 +55,17 @@ function tokens(summary) {
   const total = summary.total === null || summary.total === undefined ? '집계 없음' : compactTokens(summary.total) + ' (' + Math.round(summary.total).toLocaleString('ko-KR') + ' 토큰)';
   return '<p>토큰 ' + e(total) + ' · 범위 ' + e(summary.scope) + '</p>';
 }
+const tokenCell = (value) => value === null || value === undefined ? '—' : compactTokens(value);
+/** Where time and tokens went per stage (src/costs.mjs). */
+function costs(value) {
+  const rows = Object.entries(value?.stages ?? {});
+  if (!rows.length) return '<p class="muted">단계별 시간 기록 없음</p>';
+  const total = value.total;
+  return '<p>작업 ' + e(total.workedMinutes) + '분 · 대기 ' + e(total.waitingMinutes) + '분 · 토큰 ' + e(tokenCell(total.tokens)) + (total.unknown ? ' · 끝난 시각을 모르는 작업 ' + e(total.unknown) + '개는 시간에서 뺌' : '') + '</p>' +
+    '<div class="scroll"><table><caption class="sr-only">단계별 시간과 토큰</caption><thead><tr><th scope="col">단계</th><th scope="col">작업</th><th scope="col">검토</th><th scope="col">대기</th></tr></thead><tbody>' +
+    rows.map(([id, row]) => '<tr><th scope="row">' + e(id) + '</th><td>' + e(row.work.minutes) + '분 · ' + e(tokenCell(row.work.tokens)) + '</td><td>' + e(row.review.minutes) + '분 · ' + e(tokenCell(row.review.tokens)) + '</td><td>' + e(row.waitingMinutes) + '분</td></tr>').join('') +
+    '</tbody></table></div>';
+}
 function play(observations) {
   if (!observations.length) return '<p class="muted">이 실행과 연결된 Play 관측값 없음</p>';
   return observations.map((app) => '<h3>' + e(app.packageName) + '</h3><ul>' + app.tracks.map((track) => '<li>' + e(track.track) + ' · 관측 ' + time(track.observedAt) + (track.stale ? ' (오래된 관측값)' : '') +
@@ -69,6 +80,6 @@ export function historyPage(record) {
     '<p class="snapshot"><strong>내보낸 시점의 스냅샷</strong>입니다. 내보낸 시각 ' + time(record.exportedAt) + ' 이후의 진행은 들어 있지 않습니다. 읽기 전용이며, 이 페이지에서 실행을 바꿀 수 없습니다.</p>' +
     '<h1>' + e(run.goal) + '</h1><p class="muted">실행 ' + e(run.id) + ' · ' + e(STATUS[run.status] ?? run.status) + ' · 만든 시각 ' + time(run.createdAt) + ' · 마지막 변경 ' + time(run.updatedAt) + '</p>' +
     (record.milestones.length ? '<p>' + record.milestones.map((item) => e(item.label) + ' ' + e(MILESTONE[item.state] ?? item.state) + (item.detail ? ' (' + e(item.detail) + ')' : '')).join(' · ') + '</p>' : '') +
-    '<h2>단계</h2>' + record.stages.map(stage).join('') + '<h2>토큰</h2>' + tokens(record.tokens) + '<h2>Play 관측</h2>' + (record.playError ? '<p class="bad">' + e(record.playError) + ' 아래 값은 비어 있을 수 있습니다.</p>' : '') + play(record.play) +
+    '<h2>단계</h2>' + record.stages.map(stage).join('') + '<h2>토큰</h2>' + tokens(record.tokens) + '<h2>단계별 시간·토큰</h2>' + costs(record.costs) + '<h2>Play 관측</h2>' + (record.playError ? '<p class="bad">' + e(record.playError) + ' 아래 값은 비어 있을 수 있습니다.</p>' : '') + play(record.play) +
     '<p class="muted">파일 경로는 작업 공간 기준이며, 결과 폴더의 파일은 "결과 폴더/"로 표시합니다. 비밀값·키·토큰·서비스 계정과 Play 계정 정보는 내보내지 않습니다.</p></main></body></html>\n';
 }

@@ -163,6 +163,7 @@ test('creating an app graph sends assignments and numeric limits but never start
   assert.equal(Object.keys(input.assignments).length,11);
   assert.equal(input.template,'new-app');
   assert.deepEqual(input.assignments.build,{agent:'cursor',reviewer:'claude'});
+  assert.equal(input.scope,'playable','a new app is a playable first version unless release is chosen');
   assert.equal(h.requests('runs.start').length,0);
   assert.equal(h.requests('agent.launch').length,0);
 });
@@ -1158,4 +1159,113 @@ test('a retry that gave back attempts which never started says so',async()=>{
   h.app.querySelector=selector=>['#retry-ack','#retry-stop'].includes(selector)?{checked:true}:null;
   await h.click(renderedAction(h.app.innerHTML,'retry-node'));
   assert.equal(h.toast.textContent,message);
+});
+
+test('the new app form offers playable (default) or release, and says release can follow as its own run',async()=>{
+  // Arrange
+  const h=await harness();
+
+  // Act
+  await h.click({action:'new-run'});
+  const html=h.app.innerHTML;
+  await h.submit(h.form('new-run',{goal:'게임',projectId:'project-1',agent:'codex',reviewer:'codex',scope:'release',maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'3'}));
+
+  // Assert
+  assert.match(html,/name="scope" value="playable" checked/);
+  assert.match(html,/출시 업데이트/);
+  assert.equal(h.requests('runs.create')[0].input.scope,'release');
+});
+
+test('여기까지만 appears only while release stages are unstarted and asks the worker to skip them',async()=>{
+  // Arrange
+  const state=baseState();const run=workflow();
+  run.nodes.push({id:'policy',title:'정책',deps:['build'],agent:'claude',reviewer:'codex',status:'pending',attempts:0,reviewAttempts:0,active:null},
+    {id:'release',title:'출시',deps:['policy'],agent:'claude',reviewer:'codex',status:'pending',attempts:0,reviewAttempts:0,active:null});
+  const started={...workflow(),id:'run-2',nodes:[{...run.nodes[2],status:'running',active:{phase:'work',nonce:'x'}}]};
+  state.runs=[run,started];
+  const h=await harness({state});
+
+  // Act
+  await h.click({action:'open-run',run:'run-1'});
+  const skip=renderedAction(h.app.innerHTML,'skip-release');
+  await h.click(skip);
+  await h.click({action:'open-run',run:'run-2'});
+
+  // Assert
+  assert.deepEqual(h.requests('runs.skipRelease')[0].input,{runId:'run-1'});
+  assert.doesNotMatch(h.app.innerHTML,/data-action="skip-release"/,'a started release stage is not skippable');
+});
+
+test('leaving the agents to the profile sends no assignments and the chosen profile; the run view shows each resolved model and why',async()=>{
+  // Arrange
+  const state=baseState();const run=workflow();
+  run.profile='balanced';
+  run.launchPlan={research:{work:{agent:'claude',model:'claude-sonnet-5-5',effort:'medium',source:'profile',why:'프로필 균형'},review:{agent:'codex',model:'gpt-6.2-sol',effort:'medium',source:'profile',why:'프로필 균형 · 교차 검토'}},
+    build:{work:{agent:'claude',model:'claude-opus-5-5',effort:'xhigh',source:'stage',why:'단계 지정'},review:{agent:'codex',model:'gpt-6.2-sol',effort:'high',source:'profile',why:'프로필 균형 · 교차 검토'}}};
+  state.runs=[run];
+  const h=await harness({state});
+
+  // Act
+  await h.click({action:'new-run'});
+  const form=h.app.innerHTML;
+  await h.submit(h.form('new-run',{goal:'게임',projectId:'project-1',agent:'',reviewer:'',profile:'saver',maxConcurrency:'2',maxAttempts:'3',maxRepairLoops:'3'}));
+  await h.click({action:'open-run',run:'run-1'});
+  const view=h.app.innerHTML;
+
+  // Assert
+  assert.match(form,/<option value="">프로필에 맡김<\/option>/);
+  assert.match(form,/name="profile"/);
+  const input=h.requests('runs.create')[0].input;
+  assert.deepEqual(input.assignments,{});
+  assert.equal(input.profile,'saver');
+  assert.match(view,/단계별 모델 · 프로필 균형 · 구현 병렬 최대 3개/);
+  assert.match(view,/claude-opus-5-5 · xhigh<\/span><br><span class="hint">단계 지정/);
+  assert.match(view,/교차 검토/);
+});
+
+test('a fallback off the image agent is visible on the run, can be undone, and the result card offers to redo design and assets on codex',async()=>{
+  // Arrange
+  const state=baseState();const run=workflow();
+  run.projectId='project-1';run.profile='balanced';run.status='completed';
+  run.nodes=[{id:'design',title:'디자인',deps:[],agent:'claude',reviewer:'claude',status:'passed',attempts:1,reviewAttempts:1,active:null,
+    fallback:{from:'codex',to:'claude',at:NOW,reason:'codex가 Hooks need review에서 멈춤'},original:{agent:'codex'},report:{outcome:'passed',summary:'시안',changes:['시안 3장']}},
+    {id:'test',title:'테스트',deps:['design'],agent:'claude',reviewer:'codex',status:'passed',attempts:1,reviewAttempts:1,active:null}];
+  const live={...workflow(),id:'run-2',status:'running',avoided:{codex:{at:NOW,to:'claude'}}};
+  state.runs=[run,live];
+  const h=await harness({state,responses:{'runs.create':()=>({...workflow(),id:'run-3'})}});
+
+  // Act
+  await h.click({action:'open-run',run:'run-2'});
+  const liveHtml=h.app.innerHTML;
+  await h.click(renderedAction(liveHtml,'restore-agent'));
+  await h.click({action:'open-run',run:'run-1'});
+  const doneHtml=h.app.innerHTML;
+  await h.click(renderedAction(doneHtml,'redo-visual'));
+
+  // Assert
+  assert.match(liveHtml,/codex를 쓸 수 없어 claude로 진행합니다/);
+  assert.deepEqual(h.requests('runs.restoreAgent')[0].input,{runId:'run-2',agent:'codex'});
+  assert.match(doneHtml,/디자인: codex → claude · 이미지 생성 도구 없이 진행/);
+  const input=h.requests('runs.create')[0].input;
+  assert.deepEqual([input.template,input.kind,input.parentRunId,input.requestId,input.profile],['improve','design','run-1','redo-visual.run-1','balanced']);
+  assert.deepEqual(input.assignments,{design:{agent:'codex'},assets:{agent:'codex'}});
+});
+
+test('a loaded run detail (the raw run) still shows the summary\'s resolved models and time and tokens per stage',async()=>{
+  // Arrange: runs.get returns the raw run without the derived views
+  const state=baseState();const run=workflow();
+  run.status='completed';run.nodes=run.nodes.map(node=>({...node,status:'passed'}));run.nodes[1].write=true;
+  run.profile='saver';run.launchPlan={build:{work:{agent:'claude',model:'claude-opus-5-5',effort:'medium',source:'profile',why:'프로필 절약'},review:{agent:'claude',model:'claude-sonnet-5-5',effort:'medium',source:'profile',why:'프로필 절약'}}};
+  run.costs={stages:{build:{work:{minutes:40,tokens:500000},review:{minutes:9,tokens:null},waitingMinutes:2,unknown:0}},total:{workedMinutes:49,waitingMinutes:2,tokens:500000,tokenScope:'complete',unknown:0}};
+  state.runs=[run];
+  const raw={...copy(run)};delete raw.launchPlan;delete raw.costs;
+  const h=await harness({state,responses:{'runs.get':()=>copy(raw)}});
+
+  // Act
+  await h.click({action:'open-run',run:'run-1'});await h.settle();
+
+  // Assert
+  assert.ok(h.requests('runs.get').length>=1);
+  assert.match(h.app.innerHTML,/단계별 모델 · 프로필 절약/);
+  assert.match(h.app.innerHTML,/작업 <strong>49분<\/strong>/);
 });

@@ -9,6 +9,7 @@ import { todayRunCard, noteAction } from './todayactions.mjs';
 import { playLinkBlock, linkKey } from './playlinks.mjs';
 import { operationsOverview, runOperationsLine, diskBlock, diskSummary } from './operations.mjs';
 import { exportControls, exportHistory } from './history.mjs';
+import { scopeField, scopeLine, profileField, modelPlan, fallbackLine, redoVisualInput } from './runplan.mjs';
 const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
 const bridge = window.orca;
@@ -46,7 +47,7 @@ const playFiltersForSelect = [
 ];
 const playNameOrder = new Intl.Collator('ko-KR',{numeric:true,sensitivity:'base'});
 const searchable = value => value.normalize('NFKC').toLowerCase();
-const assignmentMutable = node => !node.active && !['passed','awaiting-approval'].includes(node.status);
+const assignmentMutable = node => !node.active && !['passed','awaiting-approval','skipped'].includes(node.status);
 const ownedTerminal = id => (ui.state?.runs??[]).some(r=>(r.jobs??[]).some(j=>j.terminalId===id));
 const draft = (form,name,fallback='') => ui.drafts[form+'.'+name]??fallback;
 const providers = () => (ui.state?.providers??['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro']).map(p=>typeof p==='string'?p:p.id);
@@ -60,7 +61,8 @@ const tokensOf = item => item?.tokenUsage ?? ui.state?.runs?.find(r=>r.id===item
 const run = () => {
   const summary=ui.state?.runs?.find(item=>item.id===ui.runId)??orderedRuns()[0];
   const cached=details.get(summary?.id);
-  return cached?.revision===revision()&&Array.isArray(cached.value?.nodes)?cached.value:summary;
+  // A runs.get detail is the raw run: keep the summary's derived views (models per stage, time and tokens per stage).
+  return cached?.revision===revision()&&Array.isArray(cached.value?.nodes)?{...cached.value,launchPlan:summary.launchPlan,costs:summary.costs}:summary;
 };
 function acceptState(state) {
   if(typeof state?.revision==='number'&&state.revision<revision())return false;
@@ -279,9 +281,9 @@ function renderStudio() {
   let html='<section class="hero flow-tab"><div class="hero-row"><h1>Auto App</h1>'+button('+ 새 흐름','new-run','','small')+'</div></section>';
   if(ui.newRun) return html+newRunForm();
   const item=run();
-  if(!item) return html+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 여섯 팀, 11개 단계의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
+  if(!item) return html+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 조사부터 테스트까지(출시 준비를 고르면 출시까지)의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
   const nodes=item.nodes??[],selected=selectedNode(item),ctx=flowContext(item);
-  html+=runPicker(item)+'<div class="studio-overview">'+runSummaryCard(item,nodes)+collabStrip(item,ctx)+'</div>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError,tokens:tokensOf(item)})+(item.template==='diagnose'?candidateList(item):'');
+  html+=runPicker(item)+'<div class="studio-overview">'+runSummaryCard(item,nodes)+collabStrip(item,ctx)+'</div>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError,tokens:tokensOf(item)})+modelPlan(item)+(item.template==='diagnose'?candidateList(item):'');
   if(['completed','cancelled'].includes(item.status)) html+='<div class="actions">'+(item.stopFailures?.length?'':button('완료된 실행 보관','archive-run','data-run="'+e(item.id)+'"','small'))+exportControls(item.id,ui.exportConfirm,goalTitle(item.goal))+'</div>';
   if(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId) html+=attachCard(item,ctx);
   html+=teamNavigator(item,ctx)+'<div class="studio-columns">'+relay(item,ctx)+inspector(item,selected,ctx)+'</div>';
@@ -290,7 +292,7 @@ function renderStudio() {
 }
 function selectedNode(item) {
   const nodes=item.nodes??[];
-  const selected=nodes.find(n=>n.id===ui.nodeId)??nodes.find(n=>n.active)??nodes.find(n=>n.status!=='passed')??nodes[0];
+  const selected=nodes.find(n=>n.id===ui.nodeId)??nodes.find(n=>n.active)??nodes.find(n=>!['passed','skipped'].includes(n.status))??nodes[0];
   if(ui.nodeId!==selected?.id)ui.agentRole=null;
   ui.nodeId=selected?.id;
   return selected;
@@ -323,18 +325,18 @@ function stopBadge(item) {
   return badge(item.status);
 }
 function runSummaryCard(item,nodes) {
-  const done=nodes.filter(n=>n.status==='passed').length;
+  const done=nodes.filter(n=>n.status==='passed').length,skipped=nodes.filter(n=>n.status==='skipped').length,counted=nodes.length-skipped;
   // A run whose workspace was never created restarts with the same start button.
   const startable=item.status==='ready'||(!item.workspaceId&&item.status==='blocked'&&item.workspaceCreation?.state!=='uncertain');
   // A short title; the full goal (often thousands of characters) only on demand, here only.
   const short=goalTitle(item.goal);
   const goal='<div class="card-title goal-title">'+e(short)+'</div>'+(item.goal.trim()!==short?'<details class="goal-detail" data-disclosure="goal:'+e(item.id)+'"><summary>전체 목표 보기 · '+item.goal.length.toLocaleString('ko-KR')+'자</summary><p class="note-line goal-full">'+e(item.goal)+'</p></details>':'');
-  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(nodes.length,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+nodes.length+' 단계 통과</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+preflightSection(item)+'<div class="actions">'+
+  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(counted,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+counted+' 단계 통과'+(skipped?' · 건너뜀 '+skipped:'')+'</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+preflightSection(item)+'<div class="actions">'+
     (startable?button(item.workspaceId?'계속 실행':'앱 제작 시작','start-run','data-run="'+e(item.id)+'"','primary'):'')+
     (!startable&&['paused','blocked'].includes(item.status)?button(item.status==='blocked'?'상태 확인 후 재개':'재개','resume-run','data-run="'+e(item.id)+'"','primary'):'')+
     (['running','ready','blocked'].includes(item.status)?button('새 배정 멈춤','pause-run','data-run="'+e(item.id)+'" title="새 단계 배정만 멈춥니다. 작업 중인 에이전트는 계속 작업합니다."'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+
     (item.workspaceId?button('작업 공간 열기','open-workspace','data-workspace="'+e(item.workspaceId)+'"'):'')+(!['cancelled','completed'].includes(item.status)?button('실행 취소','cancel-run','data-run="'+e(item.id)+'"','danger'):'')+'</div>'+
-    autonomyLine(item)+cleanupLine(item)+cleanupResult(summaryOf(item))+runOperationsLine(summaryOf(item))+storageLine(item)+diskBlock(disks.get(item.id),{runId:item.id})+
+    autonomyLine(item)+fallbackLine(item)+scopeLine(item)+cleanupLine(item)+cleanupResult(summaryOf(item))+runOperationsLine(summaryOf(item))+storageLine(item)+diskBlock(disks.get(item.id),{runId:item.id})+
     (item.status==='paused'?'<p class="hint spacer">새 단계 배정만 멈췄습니다. 이미 작업 중인 에이전트는 계속 작업하고 완료 보고서를 남길 수 있습니다. 모두 멈추려면 실행 취소를 누르세요.</p>':'')+(item.runtimeMessage?'<div class="callout error" role="status">'+e(item.runtimeMessage)+'</div>':'')+
     (item.stopFailures?.length?'<div class="callout error"><strong>'+(item.cancelUnsaved?'취소가 아직 저장되지 않았습니다.':'일부 에이전트의 종료를 확인하지 못했습니다.')+'</strong>'+item.stopFailures.map(f=>'<p>'+e(f.message)+'</p>'+(f.terminalId?button('해당 에이전트 확인','focus-terminal','data-terminal="'+e(f.terminalId)+'"','small'):button('Orca 작업 공간 확인','open-workspace','data-workspace="'+e(item.workspaceId)+'"','small'))).join('')+'</div>':'')+'</div>';
 }
@@ -418,7 +420,7 @@ function newRunForm() {
   const head='<section class="card accent"><div class="section-heading"><div><p class="eyebrow">'+({improve:'IMPROVE AN APP',diagnose:'DIAGNOSE',resume:'RESUME'}[type]??'NEW APP FLOW')+'</p><h2>'+({improve:'어떤 앱을 개선할까요?',diagnose:'어떤 앱을 진단할까요?',resume:'어떤 흐름을 이어갈까요?'}[type]??'어떤 앱을 만들까요?')+'</h2></div>'+button('닫기','close-new','','small')+'</div>'+flowTypeSwitch(type);
   if(type==='resume')return head+resumeList(ui.state?.runs)+'</section>';
   ui.drafts['new-run.requestId']??='form-'+(globalThis.crypto?.randomUUID?.()??Date.now().toString(36)+Math.random().toString(36).slice(2));
-  return head+'<form id="new-run"><input type="hidden" name="flowType" value="'+e(type)+'"><input type="hidden" name="requestId" value="'+e(ui.drafts['new-run.requestId'])+'">'+parentNotice()+'<label class="label" for="app-goal">'+(diagnose?'진단 메모 (선택)':improve?'개선 목표와 완료 기준':'앱 목표와 완료 기준')+'</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" '+(diagnose?'':'required ')+'maxlength="6000" placeholder="'+(diagnose?'예: 최근 리뷰에 앱이 느리다는 말이 많아요. 그쪽을 먼저 봐 주세요.':improve?'예: 물주기 앱의 홈 화면을 새 디자인으로 바꾸고, 알림 시간 설정과 광고 제거 결제를 추가하고 싶어요. 기존 사용자 기록은 그대로 유지해야 해요.':'예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.')+'">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">'+(existing?'이미 출시한 앱의 저장소를 고르세요. 커밋이 있어야 하며, 시작 시 별도 브랜치와 작업 공간에서 개선합니다.':'프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.')+'</p>'+(improve?improveFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):diagnose?diagnoseFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):'')+'<div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent">'+providerOptions(draft('new-run','agent','codex'))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer">'+providerOptions(draft('new-run','reviewer','codex'))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
+  return head+'<form id="new-run"><input type="hidden" name="flowType" value="'+e(type)+'"><input type="hidden" name="requestId" value="'+e(ui.drafts['new-run.requestId'])+'">'+parentNotice()+'<label class="label" for="app-goal">'+(diagnose?'진단 메모 (선택)':improve?'개선 목표와 완료 기준':'앱 목표와 완료 기준')+'</label><textarea class="field" style="min-height:125px" id="app-goal" name="goal" '+(diagnose?'':'required ')+'maxlength="6000" placeholder="'+(diagnose?'예: 최근 리뷰에 앱이 느리다는 말이 많아요. 그쪽을 먼저 봐 주세요.':improve?'예: 물주기 앱의 홈 화면을 새 디자인으로 바꾸고, 알림 시간 설정과 광고 제거 결제를 추가하고 싶어요. 기존 사용자 기록은 그대로 유지해야 해요.':'예: Flutter로 캐릭터와 대화하는 사주 앱을 만들고 싶어요. 첫 버전은 생년월일 입력, 채팅, 결과 저장까지. Android 실기기에서 확인해 주세요.')+'">'+e(draft('new-run','goal'))+'</textarea><label class="label" for="app-project">Orca에 등록된 Git 프로젝트</label><select class="field" id="app-project" name="projectId" required><option value="">프로젝트 선택</option>'+options(projects,draft('new-run','projectId'))+'</select><p class="hint">'+(existing?'이미 출시한 앱의 저장소를 고르세요. 커밋이 있어야 하며, 시작 시 별도 브랜치와 작업 공간에서 개선합니다.':'프로젝트에 첫 커밋이 있어야 합니다. 시작 시 별도 브랜치와 작업 공간을 만듭니다.')+'</p>'+(improve?improveFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):diagnose?diagnoseFields({draft:(name,fallback)=>draft('new-run',name,fallback),play:ui.play}):scopeField((name,fallback)=>draft('new-run',name,fallback)))+profileField((name,fallback)=>draft('new-run',name,fallback))+'<div class="field-grid"><div><label class="label" for="app-agent">기본 작업 에이전트</label><select class="field" id="app-agent" name="agent"><option value="">프로필에 맡김</option>'+providerOptions(draft('new-run','agent',''))+'</select></div><div><label class="label" for="app-reviewer">독립 검토 에이전트</label><select class="field" id="app-reviewer" name="reviewer"><option value="">프로필에 맡김</option>'+providerOptions(draft('new-run','reviewer',''))+'</select></div></div><details class="spacer"><summary>동시 실행과 반복 한도</summary><div class="field-grid"><div><label class="label" for="app-concurrency">동시 실행 수</label><select class="field" id="app-concurrency" name="maxConcurrency">'+options([1,2,3,4,5,6],draft('new-run','maxConcurrency',2))+'</select></div><div><label class="label" for="app-attempts">단계별 최대 시도</label><select class="field" id="app-attempts" name="maxAttempts">'+options([1,2,3,4,5],draft('new-run','maxAttempts',3))+'</select></div><div><label class="label" for="app-loops">테스트 → 구현 수정 한도</label><select class="field" id="app-loops" name="maxRepairLoops">'+options([0,1,2,3,4,5],draft('new-run','maxRepairLoops',3))+'</select></div><div><label class="label" for="app-base">기준 브랜치 (선택)</label><input class="field" id="app-base" name="baseBranch" value="'+e(draft('new-run','baseBranch'))+'" placeholder="프로젝트 기본값"></div></div></details><div class="callout"><strong>담당자와 검토자를 분리합니다.</strong><br>작업 종료만으로 통과 처리하지 않습니다. 산출물과 검증 근거를 확인하고, 독립 검토를 거친 다음 후속 단계를 엽니다.</div><div class="actions"><button type="submit" class="button primary">그래프 만들기 →</button></div><p class="hint">그래프를 만든 뒤 역할별 배정을 바꾸고 직접 실행을 시작할 수 있습니다.</p></form></section>';
 }
 function selectedPlayAccount() {
   const accounts=ui.play?.accounts??[];
@@ -551,7 +553,7 @@ function renderAgents() {
   if(item) {
     selectedNode(item);const ctx=flowContext(item);
     html+='<div class="agent-overview">'+runPicker(item)+collabStrip(item,ctx)+teamNavigator(item,ctx)+'</div><div class="people">'+people(item,ctx)+'</div>';
-    html+='<section class="section"><details class="card" data-disclosure="assignments"><summary>전체 배정 · '+(item.nodes?.length??0)+'개 단계</summary><p class="hint">모델과 추론 설정은 각 에이전트의 Orca 설정을 따릅니다. 검토자는 매번 별도 세션으로 시작합니다.</p>'+assignmentForm(item,item.nodes??[],ctx)+'</details></section>';
+    html+='<section class="section"><details class="card" data-disclosure="assignments"><summary>전체 배정 · '+(item.nodes?.length??0)+'개 단계</summary><p class="hint">모델과 추론 강도는 실행의 속도·비용 프로필을 따르고, 여기서 단계별로 고르면 그 선택이 우선합니다. 검토자는 매번 별도 세션으로 시작합니다.</p>'+assignmentForm(item,item.nodes??[],ctx)+'</details></section>';
   } else html+=empty('아직 흐름이 없습니다','Auto App에서 흐름을 만들면 팀별 담당자와 검토자가 여기에 나타납니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
   html+='<section class="section"><details class="card" data-disclosure="workspace-agents"><summary>현재 작업 공간의 Orca 에이전트 · '+agents.length+'</summary>';
   html+=agents.length?'<div class="agent-grid">'+agents.map(a=>'<div class="card agent-card"><div class="card-head"><h3>'+e(a.title??a.agent??'Agent')+'</h3>'+badge(a.state)+'</div><p>'+e(a.agent??'')+' · '+e(localDate(a.stateStartedAt))+'</p>'+(a.terminalId&&ownedTerminal(a.terminalId)?'<div class="actions">'+button('열기','focus-terminal','data-terminal="'+e(a.terminalId)+'"','small')+'</div>':'')+'</div>').join('')+'</div>':'<p class="hint">현재 공간에서 확인되는 에이전트가 없습니다.</p>';
@@ -632,6 +634,7 @@ app.addEventListener('click',async event=>{
   if(action==='new-run'){leaveView();delete ui.drafts['new-run.parentRunId'];ui.newRun=true;ui.tab='studio';render();return;}
   if(action==='resume-existing'){const item=(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(item?.status==='paused')await request('runs.resume',{runId:item.id});leaveView();ui.runId=target.dataset.run;ui.newRun=false;render();await loadSelectedDetail();return;}
   if(action==='pick-candidate'){const created=await request('runs.create',{fromDiagnosis:{runId:target.dataset.run,index:Number(target.dataset.index)}});leaveView();ui.runId=created.id;ui.nodeId=null;toast('후보로 개선 흐름을 만들었습니다. 같은 후보를 다시 고르면 이 흐름이 열립니다.');render();await loadSelectedDetail();return;}
+  if(action==='redo-visual'){const item=(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(!item)return;const created=await request('runs.create',redoVisualInput(item));leaveView();ui.runId=created.id;ui.nodeId=null;toast('codex로 디자인·에셋을 다시 만드는 개선 흐름을 만들었습니다. 시작은 직접 누르세요.');render();await loadSelectedDetail();return;}
   if(action==='load-artifact'){await loadArtifact(target.dataset.run,target.dataset.path);return;}
   if(action==='export-history'){target.disabled=true;const done=await exportHistory({runId:target.dataset.run,confirm:target.dataset.confirm==='true',request}).catch(err=>({pending:null,error:err.message}));ui.exportConfirm=done.pending??null;render();(done.pending?app.querySelector('[data-action="export-history"][data-confirm="true"]'):[...app.querySelectorAll('[data-action="export-history"]')].find(item=>item.dataset.run===target.dataset.run))?.focus?.();toast(done.error?'내보내지 않았습니다: '+done.error:done.message,Boolean(done.error));return;}
   if(action==='improve-result'){const item=run()?.id===target.dataset.run?run():(ui.state?.runs??[]).find(r=>r.id===target.dataset.run);if(!item)return;leaveView();Object.assign(ui.drafts,{'new-run.flowType':'improve','new-run.projectId':item.projectId,'new-run.parentRunId':item.id});ui.newRun=true;ui.tab='studio';render();document.querySelector('#app-goal')?.focus?.();if(!ui.play){try{ui.play=await request('play.list');}catch(err){toast('Play 계정을 불러오지 못했습니다: '+err.message);}render();}return;}
@@ -684,6 +687,8 @@ app.addEventListener('click',async event=>{
     }
     else if(action==='toggle-terminal-cleanup'){const enabled=target.dataset.enabled==='true';await request('runs.setTerminalCleanup',{runId:target.dataset.run,enabled});toast(enabled?'끝난 에이전트 터미널을 자동으로 닫습니다.':'끝난 에이전트 터미널을 열어 둡니다.');}
     else if(action==='toggle-autonomy'){const enabled=target.dataset.enabled==='true';await request('runs.setAutonomous',{runId:target.dataset.run,enabled});toast(enabled?'자율 진행을 켰습니다. 외부 제출 전까지 사람 없이 진행합니다.':'자율 진행을 껐습니다.');}
+    else if(action==='restore-agent'){await request('runs.restoreAgent',{runId:target.dataset.run,agent:target.dataset.agent});toast(target.dataset.agent+'를 다시 씁니다. 아직 시작하지 않은 단계를 원래 배정으로 되돌렸습니다.');}
+    else if(action==='skip-release'){await request('runs.skipRelease',{runId:target.dataset.run});toast('출시 단계를 건너뛰었습니다. 테스트를 통과하면 실행이 끝납니다.');}
     else if(action==='archive-run'){await request('runs.archive',{runId:target.dataset.run});ui.runId=null;toast('기록을 보존하고 실행을 보관했습니다.');}
     else if(action==='release-slot'){if(app.querySelector('#release-ack-'+CSS.escape(target.dataset.nonce))?.checked!==true)throw new Error('Orca에서 실행 중인 에이전트가 없는지 확인한 후 체크해 주세요.');await request('jobs.releaseUncertain',{runId:target.dataset.run,nonce:target.dataset.nonce,confirmed:true,by:'panel'});toast('확인한 내용으로 슬롯을 해제했습니다. 누가·언제 해제했는지 실행 기록에 남겼습니다.');}
     else if(action==='open-workspace')await request('workspace.open',{workspaceId:target.dataset.workspace});

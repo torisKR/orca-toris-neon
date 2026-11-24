@@ -17,6 +17,8 @@ const result = (run, id, outcome = 'passed', extras = {}) => {
     runId: run.id, nodeId: id, phase: active.phase, nonce: active.nonce, attempt: active.attempt,
     outcome, summary: id + ' ' + outcome,
     evidence: outcome === 'passed' ? [{ kind: 'artifact', path: 'artifacts/' + id + '.md' }] : [],
+    // A failed test names the completion criterion it breaks (src/followups.mjs).
+    ...(id === 'test' && outcome === 'failed' && active.phase === 'work' ? { criteria: [{ criterion: '핵심 흐름이 동작한다', met: false }] } : {}),
     ...extras,
   };
 };

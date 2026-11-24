@@ -7,6 +7,8 @@
 import { e, button, title, goalTitle, localDate } from './kit.mjs';
 import { runTokens } from './tokens.mjs';
 import { kindResult } from './kindresult.mjs';
+import { redoVisualButton } from './runplan.mjs';
+import { costBlock } from './costs.mjs';
 
 const ARTIFACT_LABELS = { screenshot: '실제 화면', mockup: '시안' };
 const MEDIA = /\.(png|jpe?g|webp|gif|mp4|webm)$/i;
@@ -46,6 +48,11 @@ const checks = (evidence) => {
   return run.length ? '<ul class="checks">' + run.map((item) => '<li><code>' + e(item.command) + '</code> · 종료 코드 ' + e(item.exitCode) + '</li>').join('') + '</ul>' : '';
 };
 
+/** The build's module split (src/fanout.mjs): who did each module, and what ran at the same time. */
+const parallel = (value) => '<ul class="checks">' + value.modules.map((item) => '<li>' + e(item.name) + ' · ' + (item.by === 'subagent' ? '서브에이전트' + (item.model ? ' (' + e(item.model) + ')' : '') : '주 에이전트') +
+  (value.ranInParallel?.includes(item.name) ? ' · 병렬' : '') + '</li>').join('') + '</ul>' +
+  '<p class="hint">' + (value.ranInParallel?.length ? '동시에 진행: ' + value.ranInParallel.map(e).join(', ') : '병렬로 진행한 모듈 없음') + (value.note ? ' · ' + e(value.note) : '') + '</p>';
+
 /** Stable element id for an artifact, so focus can land on it after it loads. */
 export const artifactCacheKey = (runId, file) => JSON.stringify([runId, file]);
 export const artifactId = (runId, file) => 'artifact-' + [...artifactCacheKey(runId, file)].reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 7).toString(36);
@@ -73,13 +80,14 @@ function artifactView(runId, item, artifacts) {
 export function stageResult(run, node, { artifacts }) {
   const report = node.report;
   const shown = (report?.evidence ?? []).filter((item) => item.kind === 'artifact' && (MEDIA.test(item.path) || TEXT.test(item.path)));
-  if (!report || !(report.changes || report.criteria || report.beforeAfter || report.notVerified || shown.length)) return '';
+  if (!report || !(report.changes || report.criteria || report.beforeAfter || report.notVerified || report.parallel || shown.length)) return '';
   const id = 'result-' + e(run.id + '-' + node.id);
   return '<section class="result-card" aria-labelledby="' + id + '"><h4 id="' + id + '">' + e(title(node)) + ' 결과</h4>' +
     section('바뀐 것', report.changes?.length ? list(report.changes) : '') +
     section('완료 기준', report.criteria?.length ? criteria(report.criteria) : '') +
     section('이전 → 이후', (report.beforeAfter?.length ? beforeAfter(report.beforeAfter) : '') + shown.map((item) => artifactView(run.id, item, artifacts)).join('')) +
     section('실행한 검증', checks(report.evidence ?? [])) +
+    section('모듈 분할·병렬 진행', report.parallel?.modules?.length ? parallel(report.parallel) : '') +
     section('검증하지 못한 것', report.notVerified ? (report.notVerified.length ? list(report.notVerified) : '<p class="hint">보고서에 적힌 항목이 없습니다.</p>') : '') +
     '<div class="actions">' + button('이 결과 더 개선하기', 'improve-result', 'data-run="' + e(run.id) + '" aria-label="이 결과 더 개선하기: ' + e(title(node)) + '"', 'small') + '</div></section>';
 }
@@ -125,7 +133,8 @@ export function runResult(run, { runs, play, playError, tokens = null }) {
     kind +
     // Failed attempts, fixes and reviews included: the stored summary, never a fresh estimate.
     (tokens && (tokens.counts?.sessions || tokens.counts?.unmapped || tokens.scope === 'unavailable') ? runTokens(tokens, { id: run.id, label: '집계된 토큰' }) : '') +
+    costBlock(run) + // where time and tokens went, per stage and phase (src/costs.mjs)
     (parent || children.length ? '<div class="result-chain"><h4>개선 이력</h4>' + (parent ? '<p>이전 결과: ' + chainLink(parent) + '</p>' : '') +
       (children.length ? '<p>이어서 개선: ' + children.map(chainLink).join(' ') + '</p>' : '') + '</div>' : '') +
-    (label ? '<div class="actions">' + button('이 결과 더 개선하기', 'improve-result', 'data-run="' + e(run.id) + '"', 'small primary') + '</div>' : '') + '</section>';
+    (label ? '<div class="actions">' + button('이 결과 더 개선하기', 'improve-result', 'data-run="' + e(run.id) + '"', 'small primary') + redoVisualButton(run) + '</div>' : '') + '</section>';
 }

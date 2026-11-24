@@ -103,3 +103,24 @@ test('the static page marks the snapshot and its export time, escapes every valu
   assert.match(html, /245K/);
   assert.match(html, /prefers-color-scheme: dark/);
 });
+
+test('the record keeps minutes worked, waiting and tokens per stage, and a skipped release stage is never shown as passed', () => {
+  // Arrange
+  const run = finishedRun({ jobs: [
+    { nodeId: 'build', phase: 'work', startedAt: '2026-11-23T00:00:00.000Z', completedAt: '2026-11-23T00:40:00.000Z', promptSeen: true, outcome: 'passed', state: 'complete' },
+    { nodeId: 'build', phase: 'review', startedAt: '2026-11-23T00:45:00.000Z', completedAt: '2026-11-23T00:55:00.000Z', promptSeen: true, outcome: 'passed', state: 'complete' }] });
+  run.nodes.push({ id: 'listing', title: '스토어 자료', status: 'skipped', deps: ['build'] });
+
+  // Act
+  const record = historyRecord(run, where);
+  const page = historyPage(record);
+
+  // Assert
+  assert.deepEqual(record.costs.stages.build, { work: { minutes: 40, tokens: 200_000 }, review: { minutes: 10, tokens: 45_000 }, waitingMinutes: 5, unknown: 0 });
+  assert.equal(record.costs.total.workedMinutes, 50);
+  assert.match(page, /단계별 시간·토큰/);
+  assert.match(page, /작업 50분 · 대기 5분 · 토큰 245K/);
+  assert.match(page, /스토어 자료 <span class="muted">· 건너뜀/);
+  assert.equal(record.stages.find((item) => item.id === 'listing').status, 'skipped');
+  assert.equal(record.stages.find((item) => item.id === 'listing').work, null, 'no verdict for a stage that never ran');
+});

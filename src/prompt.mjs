@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { AUTONOMY_BRIEF } from './autonomy.mjs';
 import { visualInstruction } from './visual.mjs';
+import { fanoutInstruction } from './fanout.mjs';
 import { budgetInstruction, reviewInstruction, followUpsInstruction } from './proportion.mjs';
 import { IMPROVE_BRIEFS, improvementContext, billingSkillInstruction } from './improve.mjs';
 import { kindInstruction } from './kinds.mjs';
@@ -14,7 +15,7 @@ export const STAGE_BRIEFS = {
   design: 'MVP 화면 흐름, 각 화면의 레이아웃·상태·접근성·피드백, 일관된 색상·간격·타이포그래피와 에셋 명세를 산출하세요. 개발자가 구현할 수 있는 구체적인 명세가 필요합니다.',
   assets: '승인된 화면/에셋 명세에 맞는 실제 앱 에셋을 만들고 소스에 연결하세요. 사용한 생성/편집 스킬과 라이선스, 파일 크기·해상도·투명도 검증을 기록하세요.',
   build: '명세와 기존 프로젝트 규칙에 따라 작동하는 앱을 구현하세요. 임시 버튼·가짜 데이터·미구현 TODO로 완료하지 마세요. 실패 feedback이 있으면 재현하고 최소 수정 후 관련 테스트를 실행하세요.',
-  test: '저장소에 맞는 실제 빌드·단위/통합 테스트와 핵심 사용자 흐름을 검증하세요. 코드를 직접 수정하지 말고 실패를 재현 명령·로그·기대/실제 결과와 함께 failed로 보고해 구현 단계가 고치게 하세요.',
+  test: '저장소에 맞는 실제 빌드·단위/통합 테스트와 핵심 사용자 흐름을 검증하세요. 코드를 직접 수정하지 말고 실패를 재현 명령·로그·기대/실제 결과와 함께 failed로 보고해 구현 단계가 고치게 하세요. 실패마다 어떤 완료 조건(제품 기획의 수용 조건, 구현 단계의 완료 조건)을 깨는지 criteria에 {"criterion": "완료 조건", "met": false, "evidence": "재현 명령과 결과"}로 적으세요. 선행 검토의 후속 과제(later)는 완료 조건이 아니므로 그것만으로 실패시키지 마세요.',
   policy: '현재 소스의 AndroidManifest, SDK, 광고·결제·인증·개인정보·계정 삭제와 데이터 흐름을 점검하세요. 최신 공식 Play 정책 근거와 확인 날짜를 쓰고, 실제 Console 확인이 없으면 검토/승인 상태를 추정하지 마세요.',
   listing: '검증된 실제 앱 기능에 맞는 한국어/영어 스토어 설명, 스크린샷 촬영 목록, 변경 로그, 개인정보·지원 링크 점검과 출시 체크리스트를 만드세요. 존재하지 않는 기능이나 지표를 쓰지 마세요.',
   internal: '현재 검증된 앱의 내부 테스트용 빌드/설치 안내·아티팩트·버전·패키지 정보를 준비하고 재현 가능한 로그를 남기세요.',
@@ -86,6 +87,7 @@ export function buildNodePrompt(run, node, job) {
     'JSON 보고서는 다른 임시 파일에 먼저 쓴 후 위 경로로 원자적으로 교체하세요. 보고서를 저장한 뒤 작업을 종료하세요.',
     '다음 단계는 Toris Neon이 검증 후 배정합니다. 직접 다음 에이전트를 실행하지 마세요.',
     visualInstruction(job),
+    fanoutInstruction(run, node, job),
     billingSkillInstruction(job),
     eccInstruction(job)
   ].filter(Boolean).join('\n\n');

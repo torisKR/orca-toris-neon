@@ -6,6 +6,7 @@
 import { approveNode } from './engine.mjs';
 import { catalogNotice } from './catalog.mjs';
 import { milestoneText } from './milestones.mjs';
+import { moveAway, restoreAgent, usableAgain } from './fallback.mjs';
 
 /** Bounds so a run can never loop or spend without limit. Shown in the run card. */
 export const AUTONOMY_LIMITS = {
@@ -66,20 +67,8 @@ function retryAction(run, node, state) {
     ...(blocker && switchTo ? { avoid: blocker.agent, notice: { key: 'screen:' + blocker.agent + ':' + blocker.kind, body: reason } } : {}) };
 }
 
-/** The rest of the run stops using an agent stuck on such a screen; returns what moved. */
-function avoidAgent(run, agent, replacement) {
-  const moved = [];
-  for (const node of run.nodes) {
-    if (node.active || node.status === 'passed') continue;
-    for (const key of ['agent', 'reviewer']) {
-      if (node[key] === agent) { node[key] = replacement; moved.push(node.id + (key === 'reviewer' ? ' 검토' : '')); }
-    }
-  }
-  return moved;
-}
-
-/** What an autonomous run does next, from its stored state only. */
-export function planAutonomy(run) {
+/** What an autonomous run does next, from its stored state and the jobs of every run (usable again). */
+export function planAutonomy(run, { jobs = [] } = {}) {
   if (!run.autonomous || ['paused', 'cancelled'].includes(run.status)) return [];
   const state = run.autonomy ?? {};
   if (run.status === 'completed') {
@@ -87,7 +76,8 @@ export function planAutonomy(run) {
     // What actually finished (src/milestones.mjs), so "완료" never stands for a submission that did not happen.
     return [{ type: 'complete', body: (run.template === 'improve' ? '앱 업데이트 실행을 마쳤습니다. ' : '앱 제작 실행을 마쳤습니다. ') + milestoneText(run) }];
   }
-  const actions = [];
+  // An avoided agent that works again takes back the stages not yet started (src/fallback.mjs).
+  const actions = Object.keys(run.avoided ?? {}).filter((agent) => usableAgain(run, agent, jobs)).map((agent) => ({ type: 'restore', agent }));
   for (const node of run.nodes) {
     if (node.status === 'awaiting-approval' && !node.approval && node.humanApproval) {
       // Play Console products: only the person can act. One notice says exactly what to do.
@@ -111,7 +101,7 @@ export function planAutonomy(run) {
 /**
  * Applies a plan. ops: getRun(id), replaceRun(run), retryStage(run, nodeId) → run (throws
  * 'conflict' while a previous agent may still be running), appendEvent(run, text, extra),
- * notify(title, body), now().
+ * notify(title, body), now(), allJobs() → the jobs of every run (an avoided agent working again).
  */
 export function createSupervisor(ops) {
   const state = (run) => (run.autonomy ??= {});
@@ -127,8 +117,9 @@ export function createSupervisor(ops) {
     const next = structuredClone(run);
     const node = next.nodes.find((item) => item.id === action.nodeId);
     const before = node[action.field];
+    // Recorded on the stages and the run, each remembering its original agent (src/fallback.mjs).
+    const moved = action.avoid ? moveAway(next, action.avoid, action.switchTo, { at: new Date(ops.now()).toISOString(), reason: action.reason }).filter((id) => id !== action.nodeId) : [];
     if (action.switchTo) node[action.field] = action.switchTo;
-    const moved = action.avoid ? avoidAgent(next, action.avoid, action.switchTo) : [];
     if (action.extendRepairLoop) next.maxRepairLoops += 1;
     // The plugin's own budget (AUTONOMY_LIMITS) bounds these; the stage's attempt counter must
     // leave room for one more attempt so the engine accepts the retry.
@@ -162,9 +153,13 @@ export function createSupervisor(ops) {
     /** One pass over a run; returns true when it changed anything. */
     async supervise(runId) {
       let changed = false;
-      for (const action of planAutonomy(ops.getRun(runId))) {
+      for (const action of planAutonomy(ops.getRun(runId), { jobs: ops.allJobs?.() ?? [] })) {
         let run = ops.getRun(runId);
-        if (action.type === 'approve') {
+        if (action.type === 'restore') {
+          run = structuredClone(run);
+          const restored = restoreAgent(run, action.agent, { at: new Date(ops.now()).toISOString(), why: action.agent + '가 다시 작업을 시작했습니다' });
+          ops.appendEvent(run, '자율 진행: ' + action.agent + '가 다시 작동해 ' + action.agent + '를 다시 씁니다. 아직 시작하지 않은 단계를 원래 배정으로 되돌렸습니다' + (restored.length ? ': ' + restored.join(', ') : ' (되돌릴 단계 없음)') + '.', {});
+        } else if (action.type === 'approve') {
           run = approveNode(run, action.nodeId, { note: action.note, now: ops.now() });
           ops.appendEvent(run, action.note, { nodeId: action.nodeId, autonomy: true });
         } else if (action.type === 'retry') {

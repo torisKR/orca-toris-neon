@@ -11,7 +11,7 @@ import {
 } from './teams.mjs';
 
 const terminalStates = ['cancelled', 'completed'];
-const assignmentMutable = (node) => !node.active && !['passed', 'awaiting-approval'].includes(node.status);
+const assignmentMutable = (node) => !node.active && !['passed', 'awaiting-approval', 'skipped'].includes(node.status);
 const since = (iso, now) => iso ? '<time data-since="' + e(iso) + '" datetime="' + e(iso) + '">' + e(elapsed(iso, now)) + '</time>' : '';
 // Elapsed time with the stage's budget (src/proportion.mjs) when the job carries one.
 const sinceWithBudget = (view, now) => since(view.startedAt, now) + (view.budgetMinutes ? ' / 예산 ' + e(view.budgetMinutes) + '분' : '');
@@ -214,7 +214,7 @@ function handoffs(item, sources, ctx, vertical = false) {
 export function teamNavigator(item, ctx) {
   return '<nav class="team-navigator" aria-label="팀으로 이동">' + teamLanes(item).map(({ team, nodes }) => {
     const selected = nodes.find((node) => node.id === ctx.selectedId);
-    const destination = selected ?? nodes.find((node) => node.active) ?? nodes.find((node) => node.status !== 'passed') ?? nodes[0];
+    const destination = selected ?? nodes.find((node) => node.active) ?? nodes.find((node) => !['passed', 'skipped'].includes(node.status)) ?? nodes[0];
     return '<button type="button" class="flow-endpoint team-' + e(team.id) + '" data-action="select-node" data-node="' + e(destination.id) +
       '"' + (selected ? ' aria-current="location"' : '') + '>' + mark() + '<span>' + e(team.name) + '</span></button>';
   }).join('') + '</nav>';
@@ -227,7 +227,7 @@ export function relay(item, ctx) {
     const passed = nodes.filter((node) => node.status === 'passed').length;
     const busy = nodes.some((node) => node.active);
     return '<li class="lane team-' + e(team.id) + (busy ? ' is-busy' : '') + '"><section class="team-sheet">' +
-      teamHead(team, passed + ' / ' + nodes.length + ' 통과') +
+      teamHead(team, nodes.every((node) => node.status === 'skipped') ? '건너뜀' : passed + ' / ' + nodes.filter((node) => node.status !== 'skipped').length + ' 통과') +
       '<ol class="lane-stages">' + nodes.map((node) => stageButton(item, node, ctx, related, back)).join('') + '</ol></section>' +
       handoffs(item, nodes, ctx, true) + '</li>';
   }).join('') + '</ol>';
@@ -395,7 +395,7 @@ export function people(item, ctx) {
     const working = members.filter((member) => ['working', 'reviewing'].includes(member.live)).length;
     const passed = nodes.filter((node) => node.status === 'passed').length;
     return '<section class="team-block team-' + e(team.id) + '" aria-labelledby="team-' + e(team.id) + '"><div class="team-sheet">' +
-      teamHead(team, working ? working + '명 진행 중' : passed === nodes.length ? '완료' : '대기', 'team-' + team.id) +
+      teamHead(team, working ? working + '명 진행 중' : nodes.every((node) => node.status === 'skipped') ? '건너뜀' : passed === nodes.filter((node) => node.status !== 'skipped').length ? '완료' : '대기', 'team-' + team.id) +
       '<ul class="pairs">' + pairs.join('') + '</ul></div>' + handoffs(item, nodes, ctx) + '</section>';
   }).join('');
 }
