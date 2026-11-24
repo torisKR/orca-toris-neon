@@ -22,11 +22,23 @@ function recovery(run) {
   return null;
 }
 
-/** { type: recover|external|resume|followup|stage|open, node?, text?, screen? } of a Today run. */
+/** A finished diagnosis: how many candidates it recorded, or plainly that it recorded none. */
+function diagnosisNote(run) {
+  if (run.template !== 'diagnose') return { text: '' };
+  const candidates = (run.nodes ?? []).find((node) => node.id === 'diagnose')?.report?.candidates;
+  const count = Array.isArray(candidates) ? candidates.length : 0;
+  return count ? { text: '개선 후보 ' + count + '개 · 흐름을 열어 후보를 골라 시작하세요. ' }
+    : { warn: true, text: '구조화된 개선 후보가 기록되지 않았습니다. 진단 보고서(verification.md)의 후보를 개선 목표에 붙여 넣어 시작하세요. ' };
+}
+
+/** { type: recover|external|resume|followup|stage|open, node?, text?, screen?, warn? } of a Today run. */
 export function runAction(run) {
   const recover = recovery(run);
   if (recover) return { type: 'recover', node: recover.node ?? null, text: recover.text, screen: null };
-  if (run.status === 'completed') return { type: 'followup', node: null, text: '이 결과를 기준으로 새 개선 작업을 시작할 수 있습니다. 이전 결과는 그대로 남습니다.', screen: null };
+  if (run.status === 'completed') {
+    const note = diagnosisNote(run);
+    return { type: 'followup', node: null, text: note.text + '이 결과를 기준으로 새 개선 작업을 시작할 수 있습니다. 이전 결과는 그대로 남습니다.', screen: null, ...(note.warn ? { warn: true } : {}) };
+  }
   const nodes = run.nodes ?? [];
   const external = nodes.find(isExternal);
   if (external) return { type: 'external', node: external, screen: PLAY_SCREEN.has(external.id) ? 'play' : null,
@@ -54,7 +66,7 @@ export function runActions(run) {
     stage: stageButton('단계 열기'),
     open: '',
   }[action.type];
-  const tone = ['recover', 'external', 'stage'].includes(action.type) ? 'callout warning' : 'hint';
+  const tone = action.warn || ['recover', 'external', 'stage'].includes(action.type) ? 'callout warning' : 'hint';
   return (action.text ? '<p class="' + tone + '">' + e(action.text) + '</p>' : '') + '<div class="actions">' + buttons + button('흐름 열기 →', 'open-run', id('흐름 열기'), action.type === 'open' ? 'primary' : '') + '</div>';
 }
 

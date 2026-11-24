@@ -26,7 +26,8 @@ export function requestKey(input = {}) {
 function fromDiagnosis({ runId, index }, runs) {
   const source = runs.find((run) => run.id === runId && run.template === 'diagnose');
   const report = source?.nodes.find((node) => node.id === 'diagnose');
-  if (!source || report?.status !== 'passed' || !Array.isArray(report.report?.candidates)) throw invalid('검토를 통과한 진단 실행에서만 개선을 시작할 수 있습니다.');
+  if (!source || report?.status !== 'passed') throw invalid('검토를 통과한 진단 실행에서만 개선을 시작할 수 있습니다.');
+  if (!Array.isArray(report.report?.candidates) || !report.report.candidates.length) throw invalid('이 진단은 구조화된 개선 후보를 기록하지 않았습니다. 진단 보고서의 후보를 개선 목표에 붙여 넣어 시작하세요.');
   const candidate = report.report.candidates[index];
   if (!Number.isInteger(index) || !candidate) throw invalid('진단 실행에 해당 개선 후보가 없습니다.');
   const goal = [candidate.title, '문제: ' + candidate.problem, '근거: ' + candidate.evidence, '사용자 영향: ' + candidate.impact,

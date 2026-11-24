@@ -2,7 +2,7 @@
  * The new-flow form's two kinds of flow and the person-only product catalog approval.
  * The panel names a template (src/engine.mjs); it never sends its own stage list.
  */
-import { e, options } from './kit.mjs';
+import { e, options, button } from './kit.mjs';
 
 // Mirrors src/engine.mjs DEFAULT_GRAPH and IMPROVE_GRAPH (the panel cannot import worker files);
 // tests/panel.test.mjs keeps them equal. Used only to address per-stage assignments.
@@ -83,11 +83,25 @@ export function newRunPayload(values) {
   return data;
 }
 
+/**
+ * A passed diagnosis that recorded no candidates (reports written before the field was required):
+ * say so, open the report that holds them, and start an improvement from pasted candidate text
+ * through the existing improve form, linked to this diagnosis as its parent.
+ */
+function noCandidates(item) {
+  return '<section class="card candidates"><h3>개선 후보</h3><p class="callout warning" role="status">구조화된 개선 후보가 기록되지 않았습니다. ' +
+    '이 진단은 후보를 보고서(verification.md)에만 적어서 여기서 바로 시작할 수 없습니다.</p>' +
+    '<p class="hint">진단 결과에서 verification.md를 열어 후보 하나를 고른 뒤, 개선 목표에 그 내용을 붙여 넣어 시작하세요. 이 진단 결과는 이전 결과로 함께 전달됩니다.</p>' +
+    '<div class="actions">' + button('진단 결과 열기', 'inspect-stage', 'data-node="diagnose"', 'small') +
+    button('후보를 붙여 넣어 개선 시작', 'improve-result', 'data-run="' + e(item.id) + '"', 'small primary') + '</div></section>';
+}
+
 /** A passed diagnosis's candidates, each startable as its own improvement run. */
 export function candidateList(item) {
   const node = item.nodes.find((entry) => entry.id === 'diagnose');
-  const candidates = node?.status === 'passed' ? node.report?.candidates ?? [] : [];
-  if (!candidates.length) return '';
+  if (node?.status !== 'passed') return '';
+  const candidates = Array.isArray(node.report?.candidates) ? node.report.candidates : [];
+  if (!candidates.length) return noCandidates(item);
   return '<section class="card candidates"><h3>개선 후보 ' + candidates.length + '개</h3><ol>' + candidates.map((c, index) =>
     '<li><strong>' + e(c.title) + '</strong> <span class="badge">' + e(KIND_NAMES[c.kind] ?? c.kind) + '</span>' +
     '<dl><dt>문제</dt><dd>' + e(c.problem) + '</dd><dt>근거</dt><dd>' + e(c.evidence) + '</dd><dt>사용자 영향</dt><dd>' + e(c.impact) + '</dd><dt>변경 범위</dt><dd>' + e(c.scope) + '</dd><dt>검증 방법</dt><dd>' + e(c.verify) + '</dd></dl>' +

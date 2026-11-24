@@ -396,7 +396,8 @@ function approvalForm(item,node) {
 function parentNotice() {
   const id=draft('new-run','parentRunId');if(!id)return'';
   const parent=(ui.state?.runs??[]).find(r=>r.id===id);
-  return '<input type="hidden" name="parentRunId" value="'+e(id)+'"><div class="callout"><strong>이전 결과에서 이어서 개선합니다.</strong><br>'+e(parent?goalTitle(parent.goal):id)+' · 이전 실행과 보고서는 그대로 두고 새 실행으로 만듭니다.</div>';
+  const paste=parent?.template==='diagnose'?'<br>진단 보고서(verification.md)의 후보 하나를 골라 개선 목표에 그 내용을 붙여 넣고, 후보에 맞는 개선 종류를 고르세요.':'';
+  return '<input type="hidden" name="parentRunId" value="'+e(id)+'"><div class="callout"><strong>이전 결과에서 이어서 개선합니다.</strong><br>'+e(parent?goalTitle(parent.goal):id)+' · 이전 실행과 보고서는 그대로 두고 새 실행으로 만듭니다.'+paste+'</div>';
 }
 const ARTIFACT_CACHE=8;
 // One artifact at a time, only when asked; never part of a state push (src/artifacts.mjs).

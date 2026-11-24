@@ -443,7 +443,7 @@ test('the product catalog stage is an approval only a person can give', () => {
   assert.equal(catalog.humanApproval, true);
 });
 
-test('identity and diagnosis reports are checked: an identity object and 1-5 candidates of a known kind', () => {
+test('identity and diagnosis reports are checked: an identity object and 3-5 candidates of a known kind', () => {
   const reportFor = (id, extra) => {
     let run = make({ nodes: graph([id]) });
     run = claimNode(run, id, { nonce: nonce(), now: NOW });
@@ -453,10 +453,12 @@ test('identity and diagnosis reports are checked: an identity object and 1-5 can
   assert.equal(ok.nodes[0].report.identity.stack, 'Kotlin/Compose');
   assert.throws(reportFor('identity', { identity: 'Kotlin' }), thrown('invalid_report'));
   const candidate = { title: '알림이 두 번 울림', kind: 'bugfix', problem: 'p', evidence: 'e', impact: 'i', scope: 's', verify: 'v' };
-  assert.equal(reportFor('diagnose', { candidates: [candidate, { ...candidate, title: '느린 시작', kind: 'performance' }] })().nodes[0].report.candidates.length, 2);
-  assert.throws(reportFor('diagnose', { candidates: [{ ...candidate, kind: 'rewrite' }] }), thrown('invalid_report'));
+  const three = [candidate, { ...candidate, title: '느린 시작', kind: 'performance' }, { ...candidate, title: '출시 테스트 없음', kind: 'release' }];
+  assert.equal(reportFor('diagnose', { candidates: three })().nodes[0].report.candidates.length, 3);
+  assert.throws(reportFor('diagnose', { candidates: three.slice(0, 2) }), thrown('invalid_report'));
+  assert.throws(reportFor('diagnose', { candidates: [...three.slice(0, 2), { ...candidate, kind: 'rewrite' }] }), thrown('invalid_report'));
   assert.throws(reportFor('diagnose', { candidates: Array(6).fill(candidate) }), thrown('invalid_report'));
-  assert.throws(reportFor('diagnose', { candidates: [{ ...candidate, verify: '' }] }), thrown('invalid_report'));
+  assert.throws(reportFor('diagnose', { candidates: [...three.slice(0, 2), { ...candidate, verify: '' }] }), thrown('invalid_report'));
 });
 
 test('a monetization report may carry the proposed Play products; their shape is checked', () => {

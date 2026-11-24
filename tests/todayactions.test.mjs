@@ -75,3 +75,19 @@ test('an unsaved cancel is a recovery that says the cancel is not saved yet, not
   assert.match(action.text, /취소를 아직 저장하지 못했습니다/);
   assert.doesNotMatch(action.text, /종료를 확인하지 못했습니다/);
 });
+
+test('a finished diagnosis on Today says how many candidates it recorded, or clearly that it recorded none', () => {
+  // Arrange
+  const diagnosis = (report) => run('completed', [stage('identity', { status: 'passed' }), stage('diagnose', { status: 'passed', report })], { template: 'diagnose' });
+  const recorded = diagnosis({ outcome: 'passed', candidates: [{ title: 'a' }, { title: 'b' }, { title: 'c' }] });
+  const missing = diagnosis({ outcome: 'passed', summary: '후보는 verification.md에만 있음' });
+  // Act
+  const withCandidates = runAction(recorded), without = runAction(missing);
+  // Assert
+  assert.equal(withCandidates.type, 'followup');
+  assert.match(withCandidates.text, /개선 후보 3개/);
+  assert.match(without.text, /구조화된 개선 후보가 기록되지 않았습니다/);
+  assert.ok(actionsOf(runActions(missing)).includes('improve-result'), 'the recovery reuses the improve form');
+  assert.match(runActions(missing), /class="callout warning"/, 'shown as a warning, not a quiet hint');
+  assert.doesNotMatch(runActions(recorded), /callout warning/);
+});

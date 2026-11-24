@@ -4,6 +4,7 @@
  * processes, reads files, or treats an agent's "done" status as verification.
  */
 import { kindFieldsOf, requireKindProof } from './kinds.mjs';
+import { candidatesOf, requireCandidates } from './candidates.mjs';
 export const RUN_VERSION = 1;
 export const DEFAULT_TIME_ZONE = 'Asia/Seoul';
 export const DEFAULT_GRAPH = [
@@ -445,15 +446,6 @@ function identityOf(value) {
     return [key, reportText(String(item), 'identity.' + key, 600)];
   }));
 }
-const CANDIDATE_FIELDS = ['title', 'problem', 'evidence', 'impact', 'scope', 'verify'];
-/** Diagnosis output: up to five improvements, each a kind the person can start. */
-function candidatesOf(value) {
-  if (!Array.isArray(value) || !value.length || value.length > 5) fail('invalid_report', 'candidates는 1~5개의 개선 후보 배열이어야 합니다.');
-  return value.map(item => {
-    if (!item || typeof item !== 'object' || !Object.hasOwn(IMPROVE_KINDS, item.kind)) fail('invalid_report', '개선 후보의 kind는 ' + Object.keys(IMPROVE_KINDS).join(', ') + ' 중 하나여야 합니다.');
-    return { kind: item.kind, ...Object.fromEntries(CANDIDATE_FIELDS.map(field => [field, reportText(item[field], '후보 ' + field, field === 'title' ? 160 : 1500)])) };
-  });
-}
 function productsOf(report) {
   if (!Array.isArray(report.products) || report.products.length > 20) fail('invalid_report', 'products는 최대 20개의 상품 배열이어야 합니다.');
   const products = report.products.map(item => {
@@ -514,9 +506,11 @@ function normalizeReport(run, nodeId, report) {
     ...(report.products === undefined ? {} : { products: productsOf(report) }),
     ...(report.identity === undefined ? {} : { identity: identityOf(report.identity) }),
     ...resultFieldsOf(report),
-    ...(report.candidates === undefined ? {} : { candidates: candidatesOf(report.candidates) }), ...kindFieldsOf(report),
+    // Only a passed report's candidates can be started; a failed or blocked one's are dropped, not refused.
+    ...(report.candidates === undefined ? {} : { candidates: report.outcome === 'passed' ? candidatesOf(report.candidates, Object.keys(IMPROVE_KINDS)) : undefined }), ...kindFieldsOf(report),
   };
   requireKindProof(run, nodeId, clean); // design, performance and release proof (src/kinds.mjs)
+  requireCandidates(run, nodeId, clean); // a passed diagnosis carries 3-5 startable candidates (src/candidates.mjs)
   return clean;
 }
 

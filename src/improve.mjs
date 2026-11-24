@@ -2,7 +2,8 @@
  * Improving an app that already ships (template 'improve', src/engine.mjs IMPROVE_GRAPH): the update
  * briefs, what an update run's prompts say about the app, and validation of the new-flow input.
  */
-import { templateGraph } from './engine.mjs';
+import { templateGraph, IMPROVE_KINDS } from './engine.mjs';
+import { candidatesContract } from './candidates.mjs';
 import { fileIo } from './ecc.mjs';
 import { projectPlatform, WEB_RELEASE_DONE, WEB_NOTE } from './kinds.mjs';
 
@@ -24,7 +25,7 @@ const PACKAGE = /^[A-Za-z]\w*(?:\.[A-Za-z]\w*)+$/;
 /** What each stage of an update does; replaces the new-app brief for the same stage id. */
 export const IMPROVE_BRIEFS = Object.freeze({
   identity: '이 앱이 무엇인지 확인하세요(소스는 바꾸지 마세요): 현재 커밋과 미커밋 변경 여부, 스택(Kotlin/Compose, Flutter, Godot 등), applicationId/패키지명, 실제 빌드 대상과 검증 방법(명령·기기·에뮬레이터), 이번 변경이 건드리는 사용자 흐름, 저장 데이터와 광고·결제를 건드리는지, 기존 출시 도구와 대상. 빌드와 기존 테스트를 실제로 실행해 확인하세요. 보고서에 "identity": {"commit", "dirty", "stack", "packageName", "buildTarget", "verify", "flows": [...], "storedData": true|false, "billing", "ads", "releaseTooling", "releaseTarget"}를 넣으세요. 서명 비밀값은 적지 마세요.',
-  diagnose: '정체성 확인 결과를 바탕으로 이 앱의 개선 후보 3~5개를 찾으세요(소스는 바꾸지 마세요). 각 후보는 보고서 "candidates" 배열에 {"title", "kind": bugfix|feature|design|performance|maintenance|release, "problem", "evidence"(실제로 확인한 근거), "impact"(사용자 영향), "scope"(바꿀 범위), "verify"(어떻게 검증할지)}로 적고, 근거가 약한 추측은 넣지 마세요.',
+  diagnose: '정체성 확인 결과를 바탕으로 이 앱의 근거 있는 개선 후보 3~5개를 찾으세요(소스는 바꾸지 마세요). 근거가 약한 추측은 넣지 마세요. ' + candidatesContract(Object.keys(IMPROVE_KINDS)),
   reproduce: '보고된 증상을 실제로 재현하세요. 재현 절차, 수정 전 실패를 보여 주는 테스트나 로그·스크린샷을 결과 디렉터리에 남기고, 같은 절차를 수정 후에 다시 쓸 수 있게 적으세요. 재현되지 않으면 그 사실과 시도한 조건을 blocked가 아닌 근거와 함께 보고하세요.',
   measure: '개선 전 기준 성능을 측정하세요: 측정 환경(기기·빌드 종류·데이터 양), 측정 방법과 명령, 여러 번 잰 실제 수치. 같은 조건으로 수정 후에 다시 잴 수 있게 절차를 남기세요.',
   plan: '진단 결과로 선택된 개선 영역의 범위를 plan.md에 정하세요: 영역별 변경 목록, 수용 조건, 회귀 위험과 보호 방법, 제외 범위. 결제 추가가 선택됐다면 모델(일회성 잠금 해제, 소모성, 구독, 광고 제거, 보상형 광고)을 근거와 함께 고르고, 상품 제안(productId, type inapp|subs, 가격, 구독이면 basePlanId)을 보고서의 "products" 배열로도 제출하세요. 가격은 제안이며 상품 등록은 사용자가 합니다.',

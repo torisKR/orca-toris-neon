@@ -903,6 +903,33 @@ test('a passed diagnosis shows its candidates; picking one asks the worker to st
   assert.deepEqual(h.requests('runs.create')[0].input.fromDiagnosis,{runId:'run-1',index:1});
 });
 
+test('a passed diagnosis that recorded no candidates says so and starts an improvement from pasted candidate text',async()=>{
+  // Arrange: the live defect: candidates only in verification.md, none in the report.
+  const state=baseState();const run=workflow();run.template='diagnose';run.status='completed';run.projectId='project-1';
+  run.nodes=[{id:'identity',title:'앱 정체성 확인',deps:[],agent:'codex',reviewer:'codex',status:'passed',attempts:1,reviewAttempts:1,active:null},
+    {id:'diagnose',title:'진단·개선 후보',deps:['identity'],agent:'codex',reviewer:'codex',status:'passed',attempts:1,reviewAttempts:1,active:null,
+      report:{outcome:'passed',summary:'후보 5개',evidence:[{kind:'artifact',path:'/r/run-1/diagnose/verification.md'}]}}];
+  state.runs=[run];
+  const h=await harness({state});
+  // Act
+  await h.click({action:'open-run',run:'run-1'});
+  const html=h.app.innerHTML;
+  // Assert: the card says none were recorded and points to the report instead of showing nothing.
+  const card=html.match(/<section class="card candidates">[\s\S]*?<\/section>/)?.[0]??'';
+  assert.match(card,/구조화된 개선 후보가 기록되지 않았습니다/);
+  assert.match(card,/verification\.md/);
+  assert.doesNotMatch(card,/data-action="pick-candidate"/);
+  assert.match(card,/data-action="inspect-stage"[^>]*data-node="diagnose"/,'opens the diagnosis result where verification.md can be read');
+  assert.match(card,/data-action="improve-result"[^>]*data-run="run-1"|data-run="run-1"[^>]*data-action="improve-result"/);
+  await h.click({action:'improve-result',run:'run-1'});await h.settle();
+  const form=h.app.innerHTML;
+  assert.match(form,/name="parentRunId" value="run-1"/);
+  assert.match(form,/후보 하나를 골라.*붙여 넣/);
+  await h.submit(h.form('new-run',{flowType:'improve',kind:'release',goal:'후보 1. 출시 안전망 복구',projectId:'project-1',parentRunId:'run-1',agent:'codex',reviewer:'codex',maxConcurrency:2,maxAttempts:3,maxRepairLoops:3}));
+  assert.equal(h.requests('runs.create')[0].input.parentRunId,'run-1');
+  assert.equal(h.requests('runs.create')[0].input.kind,'release');
+});
+
 test('the panel\'s template stage lists match the engine\'s',async()=>{
   const {TEMPLATE_STAGES}=await import('../panel/newflow.mjs');
   const {DEFAULT_GRAPH,IMPROVE_STAGE_IDS}=await import('../src/engine.mjs');

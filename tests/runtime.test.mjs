@@ -2620,6 +2620,39 @@ test('picking a diagnosis candidate creates one linked improvement run of the ca
   restarted.dispose();
 });
 
+test('a diagnosis stage is briefed with the candidates schema, and a passed report without it goes back to the same agent', async () => {
+  // Arrange: a diagnose run whose identity stage already passed, started after a restart.
+  const h = harness();
+  await h.runtime.initialize();
+  const diag = await h.runtime.handlers['runs.create']({ template: 'diagnose', projectId: 'p1', autonomous: true });
+  const saved = savedState(h.store);
+  Object.assign(saved.runs[0].nodes.find((item) => item.id === 'identity'), { status: 'passed', report: { outcome: 'passed', summary: '정체성', evidence: [] } });
+  writeSaved(h.store, saved);
+  h.runtime.dispose();
+  const restarted = restartRuntime(h, { receiptRoot: '/private/neon/runs', writeBrief: async (file, text) => { h.briefs.set(file, text); } });
+  await restarted.initialize();
+  await restarted.handlers['runs.start']({ runId: diag.id });
+  await restarted.drain();
+  const job = restarted.getState().runs[0].jobs.at(-1);
+  assert.equal(job.nodeId, 'diagnose');
+  const brief = h.briefs.get(job.receiptDirectory + '/brief.md') ?? launchCalls(h)[0].input.prompt ?? sendCalls(h)[0]?.input.text;
+  assert.match(brief, /"candidates": \[/, 'the diagnose brief, not the stage title');
+
+  // Act: the agent writes a passed report with its candidates only in verification.md.
+  await turn(h, 'working', NOW + 1); await restarted.drain();
+  h.report(job);
+  await h.done(job); await restarted.drain();
+
+  // Assert: the same agent is asked to add the field; no new attempt is launched.
+  const run = restarted.getState().runs[0];
+  assert.equal(launchCalls(h).length, 1, 'no rerun of the stage');
+  assert.equal(run.nodes.find((item) => item.id === 'diagnose').active.nonce, job.nonce);
+  const [fix] = fixRequests(h);
+  assert.equal(fix.input.terminalId, job.terminalId);
+  assert.match(fix.input.text, /candidates/);
+  restarted.dispose();
+});
+
 test('the summary shows the configured limits', async () => {
   const { projectState } = await import('../src/views.mjs');
   const summary = projectState({ version: 1, revision: 1, runs: [], archivedRuns: [] }, 'summary', { activeJobs: 3, heavyJobs: 2 });

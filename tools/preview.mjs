@@ -74,8 +74,8 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     run.jobs=run.nodes.filter(node=>node.status==='passed').map(node=>({nodeId:node.id,nonce:'preview-archive-'+index+'-'+node.id,state:'completed'}));
     return run;
   });
-  const improved=improvementSample(stamp),diagnosed=diagnosisSample(stamp);
-  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
+  const improved=improvementSample(stamp),diagnosed=diagnosisSample(stamp),unstructured=unstructuredDiagnosisSample(stamp);
+  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,improved,diagnosed,unstructured,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
     agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
@@ -361,6 +361,16 @@ function diagnosisSample(stamp) {
     {kind:'performance',title:'첫 실행이 3초 넘게 걸림',problem:'메모 전체를 시작 시점에 읽습니다.',evidence:'콜드 스타트 3.4초 (Pixel 6, 5회 평균)',impact:'첫 화면 이탈',scope:'MemoRepository 초기 로딩',verify:'같은 기기에서 콜드 스타트 재측정'},
     {kind:'bugfix',title:'긴 메모 저장 시 마지막 줄 유실',problem:'4,000자 이상에서 잘립니다.',evidence:'재현 테스트 실패 로그',impact:'사용자 데이터 손실',scope:'MemoEditor 저장 경로',verify:'4,000자 메모 저장 후 재열기 테스트'},
     {kind:'design',title:'다크 모드 대비 부족',problem:'본문 대비 3.1:1',evidence:'대비 측정 스크린샷',impact:'읽기 어려움',scope:'테마 색상',verify:'대비 4.5:1 이상 측정'}];
+  return run;
+}
+
+// A diagnosis written before candidates were required: they live only in verification.md.
+function unstructuredDiagnosisSample(stamp) {
+  const run=diagnosisSample(stamp);
+  Object.assign(run,{updatedAt:iso(stamp-60000),id:'preview-diagnose-unstructured',goal:'달빛 습관 진단: 후보가 보고서에만 남은 이전 진단',projectId:'preview-project',workspacePath:'/example/moon-habit',improvement:{...run.improvement,projectName:'moon-habit'}});
+  const report=run.nodes.find(node=>node.id==='diagnose').report;
+  delete report.candidates;
+  report.summary='개선 후보 5개를 verification.md에 정리했다: 1) 출시 안전망 복구 2) 현장 오류 관측 3) debug 빌드의 서명 의존 제거 4) SDK 갱신 5) 서버 용량.';
   return run;
 }
 

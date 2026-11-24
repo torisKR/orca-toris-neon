@@ -74,3 +74,16 @@ test('"improve this result" plans a new run linked to the previous one, carrying
   await assert.rejects(planRunInput({ template: 'new-app', goal: 'x', projectId: 'p1', parentRunId: 'run-prev' }, deps([parent])), /개선 흐름/);
   await assert.rejects(planRunInput({ template: 'diagnose', goal: 42, projectId: 'p1' }, deps([parent])), (error) => error.code === 'invalid_params');
 });
+
+test('a passed diagnosis that recorded no candidates can still start an improvement from pasted text, linked to it', async () => {
+  // Arrange: the live defect: candidates only in verification.md, the summary names them.
+  const diagnosis = diagnosisRun();
+  diagnosis.nodes.find((node) => node.id === 'diagnose').report = { outcome: 'passed', summary: '후보: 1) 출시 안전망 복구 2) 현장 오류 관측', changes: [], notVerified: [] };
+  // Act
+  const plan = await planRunInput({ template: 'improve', kind: 'release', goal: '후보 1. 출시 안전망 복구', projectId: 'p1', parentRunId: 'diag-1' }, deps([diagnosis]));
+  // Assert
+  assert.equal(plan.extra.template, 'improve');
+  assert.equal(plan.extra.parentRunId, 'diag-1');
+  assert.match(plan.extra.improvement.parent.summary, /출시 안전망 복구/, 'the diagnosis result travels with the new run');
+  await assert.rejects(planRunInput({ fromDiagnosis: { runId: 'diag-1', index: 0 } }, deps([diagnosis])), /기록하지 않았습니다/, 'picking needs recorded candidates, and says so');
+});
