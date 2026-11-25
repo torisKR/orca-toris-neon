@@ -52,11 +52,11 @@ const storage = JSON.stringify({
   'toris-neon.play.cache.v1.acc': { version: 1, checkedAt: '2026-11-24T00:00:00Z', apps: [{ packageName: 'com.x.y', name: 'Y', tracks: [] }] },
 });
 
-test('storage.json is parsed into runs, archived runs and the Play cache without account details', () => {
+test('storage.json is parsed into runs, archived runs and the Play cache without developer ids', () => {
   const state = parseStorage(storage);
   assert.deepEqual(state.runs.map((run) => run.id), ['r1']);
   assert.deepEqual(state.archivedRuns.map((run) => run.id), ['r0']);
-  assert.deepEqual(state.play.accounts, [{ id: 'acc', checkedAt: '2026-11-24T00:00:00Z', apps: [{ packageName: 'com.x.y', name: 'Y', tracks: [] }] }]);
+  assert.deepEqual(state.play.accounts, [{ id: 'acc', name: 'Private Name', checkedAt: '2026-11-24T00:00:00Z', apps: [{ packageName: 'com.x.y', name: 'Y', tracks: [] }] }]);
 });
 
 test('a half-written storage.json is retried, and reported after the last try', async () => {

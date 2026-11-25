@@ -42,7 +42,7 @@ export function parseStorage(text) {
   const archivedRuns = (runtime.archived ?? []).map((id) => store['toris-neon.archive.' + id]?.run).filter(Boolean);
   const accounts = (store['toris-neon.play.accounts.v1']?.accounts ?? []).map((account) => {
     const cache = store['toris-neon.play.cache.v1.' + account.id];
-    return { id: account.id, checkedAt: cache?.checkedAt ?? null, apps: cache?.apps ?? [] };
+    return { id: account.id, name: account.name ?? null, checkedAt: cache?.checkedAt ?? null, apps: cache?.apps ?? [] };
   });
   return { runs, archivedRuns, play: { accounts, links: [] } };
 }
@@ -62,7 +62,7 @@ export async function neonState({ request = neonRequest, storage = readStorage }
   try {
     const [full, play] = await Promise.all([request('state.get', { view: 'full' }), request('play.list')]);
     return { source: 'rpc', error: null, runs: full.runs, archivedRuns: full.archivedRuns, build: full.build ?? null,
-      play: { accounts: play.accounts.map(({ id, checkedAt, apps }) => ({ id, checkedAt, apps })), links: play.links ?? [] } };
+      play: { accounts: play.accounts.map(({ id, name, checkedAt, apps }) => ({ id, name: name ?? null, checkedAt, apps })), links: play.links ?? [] } };
   } catch (error) {
     return { source: 'storage', error: 'Neon RPC 실패: ' + String(error.message).slice(0, 200), build: null, ...await storage() };
   }
