@@ -12,6 +12,7 @@ import { readArtifact, ARTIFACT_LIMITS } from '../src/artifacts.mjs';
 import { goalTitle, nodeNames } from '../panel/kit.mjs';
 import { buildApps, needsAttention, tokensByDay, projectIdOf } from './join.mjs';
 import { readReleaseNotes, labelAccounts, watchFor } from './releases.mjs';
+import { readBacklog, backlogSummary, backlogFor } from './backlog.mjs';
 import { PATHS, HOME, cached, neonState, orcaJson, inspectSource, gitActivity, dirtyCount, mapLimited, receiptsOf } from './sources.mjs';
 
 const TIMELINE_DAYS = 14;
@@ -58,10 +59,12 @@ export function createModel() {
   const journal = cached(() => readWorklogs(PATHS.journal, days(TIMELINE_DAYS)), 300_000);
   const disk = cached(loadDisk, 600_000);
   const notes = cached(() => readReleaseNotes(), 60_000);
+  const backlog = cached(() => readBacklog(), 60_000);
   const settle = (source) => source().catch((error) => ({ value: null, at: 0, error: String(error.message) }));
 
   async function snapshot() {
-    const [n, o, g, j, d, r] = await Promise.all([neon, orca, git, journal, disk, notes].map(settle));
+    const [n, o, g, j, d, r, b] = await Promise.all([neon, orca, git, journal, disk, notes, backlog].map(settle));
+    const work = { items: b.value?.items ?? [], error: b.error ?? b.value?.error ?? null };
     const state = n.value ?? { runs: [], archivedRuns: [], play: { accounts: [], links: [] } };
     const { projects = [], worktrees = [] } = o.value ?? {};
     const dirty = g.value?.dirty ?? new Map(), activity = g.value?.activity ?? new Map();
@@ -76,7 +79,7 @@ export function createModel() {
     const commits = new Map([...activity].map(([id, value]) => [id, value?.last ?? null]));
     const releases = releaseView(r, state.play.accounts);
     const apps = buildApps({ projects, playApps, links: state.play.links, runs, worktrees: trees, commits })
-      .map((app) => ({ ...app, watch: watchFor(app, releases) }))
+      .map((app) => ({ ...app, watch: watchFor(app, releases), backlog: backlogFor(app, work.items) }))
       .toSorted((a, b) => recentOf(b).localeCompare(recentOf(a)));
     const today = dayKey(), week = days(7);
     const tokens = tokensByDay([...state.runs, ...state.archivedRuns], (ms) => dayKey(ms));
@@ -90,6 +93,7 @@ export function createModel() {
         { name: 'git', at: g.at, source: 'git log/status', error: g.error },
         { name: '작업 일지', at: j.at, source: 'toris-docs', error: j.error },
         { name: '심사 감시 목록', at: r.value?.watchAt ?? 0, source: 'auto-app memory/review-watch.md', error: releases.error, note: '파일을 고친 시각' },
+        { name: '자동 개발 백로그', at: b.value?.at ?? 0, source: 'auto-app memory/backlog.md', error: work.error, note: '파일을 고친 시각' },
       ],
       build: state.build ?? null,
       overview: {
@@ -100,6 +104,7 @@ export function createModel() {
           .map((agent) => ({ ...agent, project: names.get(tree.projectId) ?? tree.name, workspace: tree.name }))),
         passedToday: runs.flatMap((run) => (run.nodes ?? []).filter((node) => node.status === 'passed' && node.completedAt && dayKey(Date.parse(node.completedAt)) === today)
           .map((node) => ({ runId: run.id, project: run.projectName, stage: nodeNames[node.id] ?? node.title }))),
+        autodev: { ...backlogSummary(work.items), error: work.error },
         releases: { inReview: releases.inReview, done: releases.done.slice(0, 6), outside: releases.outside, error: releases.error, deploysError: releases.deploysError },
         counts: { apps: apps.length, play: playApps.length, projects: projects.length, matched: apps.filter((app) => app.projectId && app.play.length).length },
       },
