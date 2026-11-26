@@ -20,14 +20,14 @@ const cells = (line) => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).m
 const isTableLine = (line) => line.trim().startsWith('|');
 const isRule = (line) => /^[\s:|-]+$/.test(line) && line.includes('-');
 
-/** First markdown table in `lines` as objects keyed by COLUMNS (unknown headers dropped); null when there is none. */
-export function parseTable(lines) {
+/** First markdown table in `lines` as objects keyed by `columns` (unknown headers dropped); null when there is none. */
+export function parseTable(lines, columns = COLUMNS) {
   const start = lines.findIndex(isTableLine);
   if (start < 0) return null;
   const block = lines.slice(start);
   const end = block.findIndex((line) => !isTableLine(line));
   const [head, ...body] = (end < 0 ? block : block.slice(0, end)).filter((line) => !isRule(line));
-  const keys = cells(head).map((title) => Object.keys(COLUMNS).find((key) => COLUMNS[key].test(title)) ?? null);
+  const keys = cells(head).map((title) => Object.keys(columns).find((key) => columns[key].test(title)) ?? null);
   return body.map((line) => Object.fromEntries(cells(line).flatMap((value, index) => keys[index] && value ? [[keys[index], value]] : [])));
 }
 
@@ -102,7 +102,7 @@ export function labelAccounts(watch, labels = new Map()) {
   };
 }
 
-async function readSmall(file) {
+export async function readSmall(file) {
   const stat = await fs.stat(file);
   if (stat.size > MAX_BYTES) throw new Error(path.basename(file) + '이 512KB를 넘어 읽지 않았습니다');
   return { text: await fs.readFile(file, 'utf8'), at: stat.mtimeMs };

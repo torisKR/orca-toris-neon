@@ -53,6 +53,23 @@ function releases(r) {
     (done ? '<h3 class="sub">최근 끝난 것</h3><ul class="list cols">' + done + '</ul>' : '') + outside;
 }
 
+const WORK = { running: ['진행 중', 'ok'], pr: ['PR 열림', 'warn'], blocked: ['막힘', 'bad'], ready: ['대기', ''], done: ['끝남', 'ok'], unknown: ['상태 미상', 'warn'] };
+const workChip = (item) => '<span class="chip ' + WORK[item.state][1] + '">' + WORK[item.state][0] + '</span>';
+const prNumber = (link) => /\/pull\/(\d+)/.exec(link)?.[1];
+const workLink = (link) => link ? ' <a href="' + e(link) + '" target="_blank" rel="noopener noreferrer">' + e(prNumber(link) ? 'PR #' + prNumber(link) : '링크') + '</a>' : '';
+const workCard = (item, tone = '') => '<li class="card ' + tone + '"><h3>' + workChip(item) + e(item.app ?? '앱 미상') +
+  ' <small class="muted">' + e([item.priority != null ? '우선 ' + item.priority : null, item.kind].filter(Boolean).join(' · ')) + '</small></h3>' +
+  '<div style="font-size:12.5px">' + e(item.goal ?? '') + '</div>' +
+  (item.detail || item.link ? '<div style="font-size:12.5px;margin-top:3px"><span class="muted">' + e(item.detail ?? '') + '</span>' + workLink(item.link) + '</div>' : '') +
+  (item.memo ? '<details><summary>메모</summary><p style="font-size:12.5px">' + e(item.memo) + '</p></details>' : '') + '</li>';
+function autodev(a) {
+  const counts = '<div class="row" style="font-size:12px">' + Object.entries(WORK).filter(([state]) => state !== 'unknown' || a.counts.unknown)
+    .map(([state, [label]]) => '<span class="chip">' + e(label) + ' ' + a.counts[state] + '</span>').join('') + '</div>';
+  return (a.error ? unread('자동 개발 백로그', a.error) : '') +
+    (a.active.length ? '<ul class="list cols">' + a.active.map((item) => workCard(item, 'amber')).join('') + '</ul>' : a.error ? '' : empty('오늘 진행 중인 자동 개발 작업이 없습니다.')) +
+    (a.next ? '<h3 class="sub">다음 차례</h3><ul class="list">' + workCard(a.next) + '</ul>' : '') + (a.total ? counts : '');
+}
+
 function overview() {
   const o = snap.overview;
   const blocked = o.active.filter((run) => run.status === 'blocked').length;
@@ -67,6 +84,7 @@ function overview() {
   const passed = o.passedToday.map((item) => '<li class="card">' + runLink(item.runId, item.project ?? '') + ' · ' + e(item.stage) + '</li>').join('');
   return '<div class="tiles">' + tiles + '</div>' + freshness() +
     section('확인 필요', attention ? '<ul class="list cols">' + attention + '</ul>' : empty('지금 확인할 것이 없습니다.'), 'Neon 실행 · Play 심사/거부') +
+    section('자동 개발', autodev(o.autodev), '매일 03:00 KST · 하루 1건 · auto-app 백로그') +
     section('출시·심사', releases(o.releases), 'auto-app 심사 감시 목록') +
     section('진행 중인 Neon 실행', o.active.length ? '<ul class="list">' + o.active.map(runCard).join('') + '</ul>' : empty('진행 중인 Neon 실행이 없습니다.')) +
     section('지금 일하는 에이전트', agents ? '<ul class="list">' + agents + '</ul>' : empty('작업 중으로 보고된 에이전트가 없습니다.'), 'Orca 작업 공간 전체(Neon 밖 포함)') +
@@ -91,6 +109,8 @@ function appCard(app) {
     '<dt>Neon</dt><dd>' + (run ? badge(run.status) + ' ' + runLink(run.id, run.passed + '/' + run.total + ' 단계') + ' · ' + ago(run.updatedAt) + (app.runCount > 1 ? ' · 실행 ' + app.runCount + '개' : '') + bar(Array.from({ length: run.total }, (_, i) => i < run.passed ? 'passed' : '')) : '<span class="muted">실행 없음</span>') + '</dd>' +
     '<dt>커밋</dt><dd>' + (commit ? ago(commit.at) + ' · <span class="muted">' + e(commit.subject) + '</span>' : '<span class="muted">—</span>') + '</dd>' +
     '<dt>작업 공간</dt><dd>' + (app.projectId ? app.workspaces + '개' + (app.activeWorkspaces ? ' · 활성 ' + app.activeWorkspaces : '') + (app.workingAgents ? ' · <b>에이전트 작업 중 ' + app.workingAgents + '</b>' : '') + (app.dirty ? ' · 미커밋 ' + app.dirty : '') : '—') + '</dd>' +
+    (app.backlog.length ? '<dt>자동 개발</dt><dd>' + workChip(app.backlog[0]) + ' ' + e(app.backlog[0].goal ?? '') + workLink(app.backlog[0].link) +
+      (app.backlog.length > 1 ? ' <span class="muted">외 ' + (app.backlog.length - 1) + '건</span>' : '') + '</dd>' : '') +
     (app.watch ? '<dt>심사</dt><dd>' + watchLine(app.watch) + '</dd>' : '') +
     (app.play.length ? '<dt>Play</dt><dd>' + app.play.map((item) => e(item.packageName) + ' · ' + e(item.account ?? '') + ' · 관측 ' + ago(item.observedAt)).join('<br>') + '</dd>' : '') +
     '</dl></article>';

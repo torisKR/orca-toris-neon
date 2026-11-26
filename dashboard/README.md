@@ -21,6 +21,7 @@
 - **소스**: `android/app/build.gradle(.kts)`의 `applicationId`, `export_presets.cfg`의 `package/unique_name`으로 Play 패키지와 매칭하고 스택(Godot·Flutter·Android·Web)을 판별합니다.
 - **작업 일지**: `~/projects/toris-docs/journal/dev/<프로젝트>/YYYY-MM-DD.md`
 - **출시·심사**: `~/.orca/bots/auto-app/memory/review-watch.md`(「심사 중」·「끝난 것」 표, 「감시 밖에서 본 것」 목록)와 있으면 `deploys.md`(표 또는 `- 날짜 · 앱 · 버전 · 트랙 · 커밋 · 결과` 한 줄씩). 열은 머리글 낱말로 찾으므로 순서가 바뀌어도 읽고, 파일·표·열을 못 찾으면 그 부분만 "읽지 못함"으로 표시합니다(`dashboard/releases.mjs`). 심사 중 행은 package로 앱에 붙고, 끝난 것은 이름이 정확히 같을 때만 붙습니다.
+- **자동 개발**: `~/.orca/bots/auto-app/memory/backlog.md`의 표(우선 · 앱(Orca 프로젝트) · 종류 · 목표 · 상태 · 메모). 상태는 `ready`, `running(item N)`, `pr(링크)`, `done(링크)`, `blocked(이유)`이고 그 밖의 낱말은 "상태 미상"으로 보입니다. 개요에는 진행 중(running·pr) 작업, 다음 ready 1건, 상태별 개수를 보이고(루프는 매일 03:00 KST 하루 1건), 앱 카드에는 앱·프로젝트·Play 이름이 같은 행(대소문자·공백·`_`/`-`·괄호 메모 무시)의 상태와 목표를 붙입니다. 상태 칸의 http(s) 링크는 PR 링크로 보입니다(`dashboard/backlog.mjs`).
 - 캐시 TTL: Neon 20초, Orca 1분, 심사 감시 목록 1분, git 2분, 일지 5분, 디스크 10분. 만료된 값은 바로 보여 주고 백그라운드에서 갱신합니다.
 
 앱 매칭 순서: Neon Play 연결(`playlinks`) → 소스의 패키지 ID → 이름(패키지 마지막 부분 ↔ 프로젝트 이름, 후보가 하나일 때만). 매칭되지 않은 Play 앱과 프로젝트도 각자 한 줄로 보입니다.
