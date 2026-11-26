@@ -11,6 +11,7 @@ import { measureTree } from '../src/disk.mjs';
 import { readArtifact, ARTIFACT_LIMITS } from '../src/artifacts.mjs';
 import { goalTitle, nodeNames } from '../panel/kit.mjs';
 import { buildApps, needsAttention, tokensByDay, projectIdOf } from './join.mjs';
+import { readReleaseNotes, labelAccounts, watchFor } from './releases.mjs';
 import { PATHS, HOME, cached, neonState, orcaJson, inspectSource, gitActivity, dirtyCount, mapLimited, receiptsOf } from './sources.mjs';
 
 const TIMELINE_DAYS = 14;
@@ -56,10 +57,11 @@ export function createModel() {
   const git = cached(async () => loadGit((await orca()).value), 120_000);
   const journal = cached(() => readWorklogs(PATHS.journal, days(TIMELINE_DAYS)), 300_000);
   const disk = cached(loadDisk, 600_000);
+  const notes = cached(() => readReleaseNotes(), 60_000);
   const settle = (source) => source().catch((error) => ({ value: null, at: 0, error: String(error.message) }));
 
   async function snapshot() {
-    const [n, o, g, j, d] = await Promise.all([neon, orca, git, journal, disk].map(settle));
+    const [n, o, g, j, d, r] = await Promise.all([neon, orca, git, journal, disk, notes].map(settle));
     const state = n.value ?? { runs: [], archivedRuns: [], play: { accounts: [], links: [] } };
     const { projects = [], worktrees = [] } = o.value ?? {};
     const dirty = g.value?.dirty ?? new Map(), activity = g.value?.activity ?? new Map();
@@ -72,7 +74,9 @@ export function createModel() {
     const trees = worktrees.map((tree) => ({ ...tree, dirty: dirty.get(tree.path) ?? null }));
     const playApps = state.play.accounts.flatMap((account, index) => account.apps.map((app) => ({ ...app, account: 'Play 계정 ' + (index + 1) })));
     const commits = new Map([...activity].map(([id, value]) => [id, value?.last ?? null]));
+    const releases = releaseView(r, state.play.accounts);
     const apps = buildApps({ projects, playApps, links: state.play.links, runs, worktrees: trees, commits })
+      .map((app) => ({ ...app, watch: watchFor(app, releases) }))
       .toSorted((a, b) => recentOf(b).localeCompare(recentOf(a)));
     const today = dayKey(), week = days(7);
     const tokens = tokensByDay([...state.runs, ...state.archivedRuns], (ms) => dayKey(ms));
@@ -85,6 +89,7 @@ export function createModel() {
         { name: 'Orca 프로젝트·작업 공간', at: o.at, source: 'orca CLI', error: o.error },
         { name: 'git', at: g.at, source: 'git log/status', error: g.error },
         { name: '작업 일지', at: j.at, source: 'toris-docs', error: j.error },
+        { name: '심사 감시 목록', at: r.value?.watchAt ?? 0, source: 'auto-app memory/review-watch.md', error: releases.error, note: '파일을 고친 시각' },
       ],
       build: state.build ?? null,
       overview: {
@@ -95,6 +100,7 @@ export function createModel() {
           .map((agent) => ({ ...agent, project: names.get(tree.projectId) ?? tree.name, workspace: tree.name }))),
         passedToday: runs.flatMap((run) => (run.nodes ?? []).filter((node) => node.status === 'passed' && node.completedAt && dayKey(Date.parse(node.completedAt)) === today)
           .map((node) => ({ runId: run.id, project: run.projectName, stage: nodeNames[node.id] ?? node.title }))),
+        releases: { inReview: releases.inReview, done: releases.done.slice(0, 6), outside: releases.outside, error: releases.error, deploysError: releases.deploysError },
         counts: { apps: apps.length, play: playApps.length, projects: projects.length, matched: apps.filter((app) => app.projectId && app.play.length).length },
       },
       apps,
@@ -105,7 +111,7 @@ export function createModel() {
         workspaces: trees.filter((tree) => !tree.main || tree.live || tree.dirty).map((tree) => ({ ...tree, project: names.get(tree.projectId) ?? null }))
           .toSorted((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0)),
       },
-      timeline: timeline({ runs: [...state.runs, ...state.archivedRuns], names, activity, journal: j.value ?? [], projectOf }),
+      timeline: timeline({ runs: [...state.runs, ...state.archivedRuns], names, activity, journal: j.value ?? [], deploys: releases.deploys, projectOf }),
     };
   }
 
@@ -144,6 +150,15 @@ export function createModel() {
   return { snapshot, runDetail, file };
 }
 
+/** The release notes for the page, account names already replaced by Neon's "Play 계정 N" order. */
+function releaseView(notes, accounts) {
+  const labels = new Map(accounts.map((account, index) => [account.name, 'Play 계정 ' + (index + 1)]).filter(([name]) => name));
+  const value = notes.value ?? {};
+  const watch = value.watch ? labelAccounts(value.watch, labels) : { inReview: [], done: [], outside: [], errors: [] };
+  const error = notes.error ?? value.watchError ?? (watch.errors.join(' · ') || null);
+  return { ...watch, error, deploys: value.deploys ?? [], deploysError: value.deploysError ?? null };
+}
+
 const recentOf = (app) => [app.lastCommit?.at, app.lastRun?.updatedAt, ...app.play.map((play) => play.observedAt)].filter(Boolean).sort().at(-1) ?? '';
 const runRow = (run) => ({ id: run.id, goal: run.goal, project: run.projectName, status: run.status, archived: Boolean(run.archived),
   passed: run.passedCount ?? 0, total: run.nodeCount ?? 0, updatedAt: run.updatedAt, tokens: run.tokenUsage?.total ?? null,
@@ -172,7 +187,7 @@ async function cardView(run, card) {
     notVerified: result.notVerified ?? null, evidence };
 }
 
-function timeline({ runs, names, activity, journal, projectOf }) {
+function timeline({ runs, names, activity, journal, deploys = [], projectOf }) {
   const span = new Set(days(TIMELINE_DAYS));
   const byDay = new Map([...span].map((day) => [day, []]));
   const add = (day, item) => byDay.get(day)?.push(item);
@@ -200,6 +215,9 @@ function timeline({ runs, names, activity, journal, projectOf }) {
   for (const log of journal) {
     const heading = log.text.split('\n').map((line) => line.replace(/^#+\s*/, '').trim()).find(Boolean) ?? '';
     add(log.day, { kind: 'journal', at: log.day + 'T23:59:00+09:00', project: log.project, text: heading.slice(0, 140), count: log.text.split('\n').filter((line) => /^\s*[-*]\s/.test(line)).length });
+  }
+  for (const deploy of deploys) {
+    add(deploy.date, { kind: 'deploy', at: deploy.date + 'T12:00:00+09:00', project: deploy.app, text: [deploy.version, deploy.track, deploy.result, deploy.commit].filter(Boolean).join(' · ') });
   }
   return [...byDay].map(([day, items]) => ({ day, items: items.toSorted((a, b) => String(b.at).localeCompare(String(a.at))) })).filter((entry) => entry.items.length);
 }

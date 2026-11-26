@@ -80,6 +80,7 @@ function appRow({ key, project, play, match }, { runs, worktrees, commits, now }
   return {
     key, match,
     name: plays[0]?.name ?? project?.name ?? '이름 없음',
+    packageIds: [...new Set([...plays.map((item) => item.packageName), ...(project?.packageIds ?? [])])],
     projectId: project?.id ?? null, projectName: project?.name ?? null, stack: project?.stack ?? null,
     play: plays,
     lastRun: lastRun && { id: lastRun.id, goal: lastRun.goal, status: lastRun.status, archived: Boolean(lastRun.archived),

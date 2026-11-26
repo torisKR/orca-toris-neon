@@ -40,6 +40,19 @@ function freshness() {
     snap.freshness.filter((item) => item.error).map((item) => '<p class="err" style="font-size:12px">' + e(item.name + ': ' + item.error) + '</p>').join('');
 }
 
+const unread = (what, error) => '<p class="err" style="font-size:12.5px">' + e(what) + ' 읽지 못함: ' + e(error) + '</p>';
+function releases(r) {
+  const review = r.inReview.map((row) => '<li class="card amber"><h3><span class="chip warn">심사 중</span>' + e(row.app) + ' <small class="muted">' + e([row.version, row.account].filter(Boolean).join(' · ')) + '</small></h3>' +
+    (row.next ? '<div style="font-size:12.5px">다음: ' + e(row.next) + '</div>' : '') +
+    (row.memo && row.memo !== row.next ? '<details><summary>메모 전체</summary><p style="font-size:12.5px">' + e(row.memo) + '</p></details>' : '') + '</li>').join('');
+  const done = r.done.map((row) => '<li class="card"><div class="row"><span class="chip ok">끝남</span><b>' + e(row.app) + '</b><span class="muted" style="font-size:12px">' + e([row.version, row.day].filter(Boolean).join(' · ')) + '</span></div>' +
+    '<div class="muted ellipsis" style="font-size:12.5px;margin-top:3px">' + e(row.result ?? '') + '</div></li>').join('');
+  const outside = r.outside.length ? '<details><summary>감시 밖에서 본 것 ' + r.outside.length + '개</summary><ul class="crit">' + r.outside.map((line) => '<li>' + e(line) + '</li>').join('') + '</ul></details>' : '';
+  return (r.error ? unread('심사 감시 목록', r.error) : '') + (r.deploysError ? unread('배포 기록', r.deploysError) : '') +
+    (review ? '<ul class="list cols">' + review + '</ul>' : r.error ? '' : empty('심사 중인 앱이 없습니다.')) +
+    (done ? '<h3 class="sub">최근 끝난 것</h3><ul class="list cols">' + done + '</ul>' : '') + outside;
+}
+
 function overview() {
   const o = snap.overview;
   const blocked = o.active.filter((run) => run.status === 'blocked').length;
@@ -54,11 +67,16 @@ function overview() {
   const passed = o.passedToday.map((item) => '<li class="card">' + runLink(item.runId, item.project ?? '') + ' · ' + e(item.stage) + '</li>').join('');
   return '<div class="tiles">' + tiles + '</div>' + freshness() +
     section('확인 필요', attention ? '<ul class="list cols">' + attention + '</ul>' : empty('지금 확인할 것이 없습니다.'), 'Neon 실행 · Play 심사/거부') +
+    section('출시·심사', releases(o.releases), 'auto-app 심사 감시 목록') +
     section('진행 중인 Neon 실행', o.active.length ? '<ul class="list">' + o.active.map(runCard).join('') + '</ul>' : empty('진행 중인 Neon 실행이 없습니다.')) +
     section('지금 일하는 에이전트', agents ? '<ul class="list">' + agents + '</ul>' : empty('작업 중으로 보고된 에이전트가 없습니다.'), 'Orca 작업 공간 전체(Neon 밖 포함)') +
     section('토큰', '<p class="muted" style="font-size:12.5px">오늘 ' + tokens(o.tokens.today) + ' · 최근 7일 ' + tokens(o.tokens.week) + ' — Neon 실행 세션만, 세션 첫 배정일 기준. Neon 밖 Orca 작업의 토큰은 포함하지 않습니다.</p>') +
     (passed ? section('오늘 통과한 단계', '<ul class="list">' + passed + '</ul>') : '');
 }
+
+const watchLine = (watch) => watch.state === 'review'
+  ? '<span class="chip warn">심사 중</span> ' + e(watch.version ?? '') + (watch.next ? '<div class="muted">다음: ' + e(watch.next) + '</div>' : '')
+  : '<span class="chip ok">끝남</span> ' + e([watch.version, watch.day].filter(Boolean).join(' · ')) + (watch.result ? '<div class="muted ellipsis">' + e(watch.result) + '</div>' : '');
 
 function appCard(app) {
   const play = app.play.map((item) => '<span class="badge ' + e(item.production[0]) + '">' + e(item.production.map((status) => PLAY_ROW[status] ?? status).join(' · ')) + '</span>' +
@@ -73,6 +91,7 @@ function appCard(app) {
     '<dt>Neon</dt><dd>' + (run ? badge(run.status) + ' ' + runLink(run.id, run.passed + '/' + run.total + ' 단계') + ' · ' + ago(run.updatedAt) + (app.runCount > 1 ? ' · 실행 ' + app.runCount + '개' : '') + bar(Array.from({ length: run.total }, (_, i) => i < run.passed ? 'passed' : '')) : '<span class="muted">실행 없음</span>') + '</dd>' +
     '<dt>커밋</dt><dd>' + (commit ? ago(commit.at) + ' · <span class="muted">' + e(commit.subject) + '</span>' : '<span class="muted">—</span>') + '</dd>' +
     '<dt>작업 공간</dt><dd>' + (app.projectId ? app.workspaces + '개' + (app.activeWorkspaces ? ' · 활성 ' + app.activeWorkspaces : '') + (app.workingAgents ? ' · <b>에이전트 작업 중 ' + app.workingAgents + '</b>' : '') + (app.dirty ? ' · 미커밋 ' + app.dirty : '') : '—') + '</dd>' +
+    (app.watch ? '<dt>심사</dt><dd>' + watchLine(app.watch) + '</dd>' : '') +
     (app.play.length ? '<dt>Play</dt><dd>' + app.play.map((item) => e(item.packageName) + ' · ' + e(item.account ?? '') + ' · 관측 ' + ago(item.observedAt)).join('<br>') + '</dd>' : '') +
     '</dl></article>';
 }
@@ -84,7 +103,7 @@ function appsPage() {
     if (query && ![app.name, app.projectName, ...app.play.map((item) => item.packageName)].some((text) => String(text ?? '').toLowerCase().includes(query))) return false;
     if (filters.only === 'neon') return Boolean(app.lastRun);
     if (filters.only === 'active') return app.activeWorkspaces > 0 || app.workingAgents > 0;
-    if (filters.only === 'play') return app.play.some((item) => item.stale || item.production.join() !== 'published');
+    if (filters.only === 'play') return app.watch?.state === 'review' || app.play.some((item) => item.stale || item.production.join() !== 'published');
     if (filters.only === 'loose') return !app.projectId || (!app.play.length && app.stack);
     return true;
   };
@@ -152,7 +171,7 @@ function opsPage() {
     section('작업 공간', '<ul class="list">' + spaces + '</ul>', ops.workspaces.length + '개 · Neon·오케스트레이션·수동 작업 포함, 최근 활동 순');
 }
 
-const KIND = { neon: ['Neon', 'ok'], git: ['커밋', ''], journal: ['일지', 'warn'] };
+const KIND = { neon: ['Neon', 'ok'], git: ['커밋', ''], journal: ['일지', 'warn'], deploy: ['배포', 'ok'] };
 function timelinePage() {
   return snap.timeline.map((entry) => '<section class="day"><h3>' + e(entry.day) + '</h3><ul class="list">' + entry.items.map((item) =>
     '<li class="card"><div class="row"><span class="chip ' + KIND[item.kind][1] + '">' + KIND[item.kind][0] + (item.count > 1 ? ' ' + item.count : '') + '</span><b>' + (item.runId ? runLink(item.runId, item.project ?? '') : e(item.project ?? '')) + '</b>' +
