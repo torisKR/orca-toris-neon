@@ -1,0 +1,130 @@
+/* Neon pixel workshop (docs/design/pixel-ui/SPEC.md). Everything is scoped to .px-*; loaded after the
+   existing sheets. The pixel pieces keep the dark workbench in both themes (the SPEC's light-mode rule). */
+:root {
+  --px-bg: #10141f; --px-panel: #181f2e; --px-raised: #202a3d; --px-well: #111927;
+  --px-line: #34425b; --px-strong-line: #677c9b; --px-shadow: #090d16;
+  --px-text: #f1f4fa; --px-muted: #aab8cf; --px-neutral: #bac5d8;
+  --px-focus: #88ebfa; --px-good: #7ce9c6; --px-review: #d7c8ff; --px-warn: #ffce80; --px-stop: #ff9ca5;
+  --px-warn-bg: #2c241e; --px-stop-bg: #302129; --px-work-bg: #182e35;
+  --px-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.px-banner, .px-workshop, .px-attention, .px-runs, .px-desks, .px-team-room, .px-stamp { color-scheme: dark; }
+
+/* Shared: square 1px borders, a 2px pixel shadow, tone = state colour (team colour stays on the sprite). */
+.px-banner, .px-workshop, .px-run-row, .px-desks, .px-team-card, .px-attention-item, .px-station, .px-chip {
+  border: 1px solid var(--px-strong-line); border-radius: 0; box-shadow: 0 2px 0 var(--px-shadow);
+  background-color: var(--px-panel); color: var(--px-text);
+}
+.px-station, .px-chip, .px-team-card, .px-attention-item, .px-run-title { font: inherit; cursor: pointer; text-align: left; }
+:is(.px-station, .px-chip, .px-team-card, .px-attention-item, .px-run-title):focus-visible { outline: 2px solid var(--px-focus); outline-offset: 2px; }
+:is(.px-station, .px-chip, .px-team-card, .px-attention-item):hover { background-color: var(--px-raised); }
+[data-tone="good"] { --px-tone: var(--px-good); }
+[data-tone="review"] { --px-tone: var(--px-review); }
+[data-tone="warn"], [data-tone="watch"] { --px-tone: var(--px-warn); }
+[data-tone="stop"] { --px-tone: var(--px-stop); }
+[data-tone="neutral"] { --px-tone: var(--px-neutral); }
+:is(.px-station, .px-banner, .px-attention-item, .px-team-card, .px-chip)[data-tone="good"] { background-color: var(--px-work-bg); }
+:is(.px-station, .px-banner, .px-attention-item, .px-team-card, .px-chip):is([data-tone="warn"], [data-tone="watch"]) { background-color: var(--px-warn-bg); }
+:is(.px-station, .px-banner, .px-attention-item, .px-team-card, .px-chip)[data-tone="stop"] { background-color: var(--px-stop-bg); }
+:is(.px-station, .px-banner, .px-attention-item)[data-tone]:not([data-tone="neutral"]) { border-color: var(--px-tone); }
+.px-state { display: block; color: var(--px-tone, var(--px-neutral)); font-size: 12px; line-height: 16px; font-weight: 700; }
+.px-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 16px 0 8px; }
+.px-section-head h2, .px-desks h2, .px-workshop-head h2 { font-size: 15px; line-height: 22px; font-weight: 700; margin: 0; }
+.px-count, time[data-px-since], time[data-px-ago] { font-variant-numeric: tabular-nums; }
+.px-count { color: var(--px-muted); font-size: 11px; }
+.px-station-text, .px-attention-text, .px-team-text, .px-banner-text { min-width: 0; word-break: keep-all; overflow-wrap: anywhere; }
+
+/* Run header */
+.px-banner { margin: 12px 0 8px; padding: 10px 12px; border-left-width: 4px; }
+.px-banner-main { display: flex; gap: 12px; align-items: center; }
+.px-banner-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 700; color: var(--px-tone, var(--px-text)); }
+.px-banner-detail, .px-person { margin: 2px 0 0; font-size: 12px; line-height: 16px; color: var(--px-muted); }
+.px-person { color: var(--px-text); font-weight: 700; }
+.px-banner-meta { margin: 8px 0 0; padding-top: 6px; border-top: 1px solid var(--px-line); font-size: 11px; line-height: 16px; color: var(--px-muted); }
+.px-run-actions { margin: 0 0 8px; gap: 6px; }
+.px-run-actions .button { min-height: 36px; padding: 4px 10px; font-size: 12px; }
+
+/* Workshop */
+.px-workshop { container: px-workshop / inline-size; margin: 8px 0 12px; padding: 9px; }
+.px-workshop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.px-floor { padding: 8px; background-color: var(--px-well); background-image: radial-gradient(var(--px-line) 1px, transparent 1px); background-size: 12px 12px; }
+.px-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: stretch; }
+.px-row.is-chain { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; }
+.px-cell[data-col="left"] { grid-column: 1; }
+.px-cell[data-col="right"] { grid-column: 2; }
+.px-row.is-chain .px-cell[data-col="right"] { grid-column: 3; }
+.px-cell[data-col="center"] { grid-column: 1 / -1; justify-self: center; width: calc((100% - 8px) / 2); }
+.px-arrow { color: var(--px-strong-line); font-weight: 700; }
+.px-arrow[data-done="true"] { color: var(--px-good); }
+.px-rail { width: 2px; height: 12px; margin: 0 auto; background: repeating-linear-gradient(var(--px-strong-line) 0 3px, transparent 3px 6px); }
+.px-rail[data-done="true"] { background: var(--px-good); }
+.px-station { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 52px; padding: 6px 8px; }
+.px-station[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--px-text), 0 2px 0 var(--px-shadow); }
+.px-team { display: block; color: var(--px-muted); font-size: 10px; line-height: 14px; }
+.px-name { display: block; font-size: 13px; line-height: 19px; font-weight: 700; }
+.px-tip { position: absolute; left: 0; top: calc(100% + 4px); z-index: 20; display: none; width: max-content; max-width: min(280px, 90vw);
+  padding: 6px 8px; background: var(--px-bg); color: var(--px-text); border: 1px solid var(--px-strong-line); box-shadow: 0 2px 0 var(--px-shadow);
+  font-size: 11px; line-height: 16px; font-weight: 400; white-space: normal; }
+.px-cell[data-col="right"] .px-tip { left: auto; right: 0; }
+.px-station:is(:hover, :focus-visible) .px-tip { display: block; }
+.px-station.px-tip-off .px-tip { display: none; }
+.px-repair { margin: 8px 0 0; font-size: 12px; color: var(--px-warn); }
+.px-release { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--px-line); }
+.px-release > summary { min-height: 36px; display: flex; align-items: center; cursor: pointer; color: var(--px-muted); }
+.px-release[open] > summary { margin-bottom: 8px; }
+@container px-workshop (min-width: 440px) {
+  .px-station .px-sprite { --px-cell: 64px; }
+  .px-station { min-height: 76px; }
+}
+
+/* 오늘 이어하기 */
+.px-attention-list, .px-team-grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.px-attention-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 56px; padding: 8px 10px; border-left-width: 4px; }
+.px-attention-text { flex: 1; }
+.px-attention-text strong { font-size: 13px; line-height: 19px; }
+.px-attention-text small { display: block; color: var(--px-muted); font-size: 11px; line-height: 16px; }
+.px-attention-text .px-kind { color: var(--px-tone); }
+.px-chevron { color: var(--px-muted); font-size: 18px; }
+.px-run-row { padding: 9px; margin-bottom: 8px; }
+.px-run-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.px-run-title { padding: 0; min-height: 36px; background: none; border: 0; color: var(--px-text); font-size: 13px; font-weight: 700; }
+.px-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.px-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 4px 8px 4px 4px; border-color: var(--px-line);
+  color: var(--px-tone, var(--px-text)); font-size: 12px; font-weight: 700; }
+
+/* 에이전트 */
+.px-desks { padding: 10px 12px; margin: 12px 0; }
+.px-desk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 8px 0; }
+.px-desk { padding: 8px; background: var(--px-well); border: 1px solid var(--px-line); }
+.px-desk-label { display: block; font-size: 12px; font-weight: 700; }
+.px-desk-count { font: 700 15px/22px var(--px-mono); color: var(--px-good); }
+.px-over { display: block; color: var(--px-stop); font-size: 12px; font-weight: 700; }
+.px-desk-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.px-team-card { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 56px; padding: 8px 10px; }
+.px-team-text { flex: 1; }
+.px-team-text small { display: block; color: var(--px-muted); font-size: 11px; line-height: 16px; }
+.px-team-card .px-state { text-align: right; }
+@media (min-width: 480px) { .px-team-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Play Store stamps: a printed mark and words, no motion. */
+.px-stamp { display: inline-flex; align-items: center; gap: 4px; padding: 1px 5px; border: 1px solid var(--px-tone, var(--px-neutral));
+  background: var(--px-bg); color: var(--px-tone, var(--px-neutral)); font-size: 10px; line-height: 16px; font-weight: 700; white-space: nowrap; }
+.px-stamp[data-status="in_review"] { border-style: dashed; }
+.px-stamp[data-status="approved_not_published"] { border-style: double; border-width: 3px; padding: 0 4px; }
+.px-stamp[data-status="no_production"] { border-style: dotted; }
+.play-app-icon { flex: 0 0 auto; }
+/* Narrow sidebar: the stamps move under the app name instead of squeezing the package name. */
+@media (max-width: 419px) {
+  .play-app-row { flex-wrap: wrap; }
+  .play-app-name { flex-basis: calc(100% - 72px); }
+  .play-app-status { order: 3; flex-basis: 100%; max-width: none; justify-content: flex-start; padding-left: 40px; }
+  .play-chevron { order: 2; }
+}
+
+/* Folded sections below the scene keep the existing content as it was. */
+.px-fold { margin: 8px 0; }
+.px-fold > summary { min-height: 36px; display: flex; align-items: center; cursor: pointer; font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  .px-station, .px-chip, .px-team-card, .px-attention-item { transition: none; }
+}

@@ -262,7 +262,8 @@ const playRows = html => [...html.matchAll(/data-disclosure="play-app:[^:]+:([^"
 const catalogApp = (packageName,name,production,tracks=[]) => ({packageName,name,status:'published',production,tracks,storeUrl:'https://play.google.com/store/apps/details?id='+packageName});
 const catalogAccount = (id,apps) => ({id,name:id,tracks:['production'],apps});
 const playTrack = extra => ({track:'production',observedAt:NOW,releases:[],...extra});
-const playBadges = (html,packageName) => [...(html.split(':'+packageName+'"')[1]??'').split('</summary>')[0].matchAll(/<span class="badge ([\w_]+)"[^>]*>(?:<span class="sr-only">([^<]*)<\/span>)?([^<]*)<\/span>/g)].map(match=>[match[1],(match[2]??'')+match[3]]);
+// Production stamps (panel/play.mjs): [status, spoken text] per stamp in a row's summary.
+const playBadges = (html,packageName) => [...(html.split(':'+packageName+'"')[1]??'').split('</summary>')[0].matchAll(/<span class="px-stamp"[^>]*data-status="([\w_]+)"[^>]*><span class="px-mark"[^>]*><\/span>(?:<span class="sr-only">([^<]*)<\/span>)?([^<]*)<\/span>/g)].map(match=>[match[1],(match[2]??'')+match[3]]);
 
 test('Play app rows put action and lookup issues above routine production states and keep track details expandable',async()=>{
   const accounts=[catalogAccount('first',[
@@ -574,7 +575,7 @@ test('a failed request from an old tab cannot replace the current page with an e
   await h.settle();
   await h.click({action:'tab',tab:'agents'});
   gate.reject(new Error('stale Play navigation failure'));await prior;await h.flushFrames();
-  assert.ok(h.app.innerHTML.includes('팀별 에이전트'));
+  assert.ok(h.app.innerHTML.includes('<h1>에이전트</h1>'));
   assert.ok(!h.app.innerHTML.includes('stale Play navigation failure'));
 });
 
@@ -585,7 +586,7 @@ test('a stale Today hydration failure during refresh cannot contaminate a later 
   await h.settle();
   await h.click({action:'tab',tab:'agents'});
   gate.reject(new Error('stale Today hydration failure'));await prior;await h.flushFrames();
-  assert.ok(h.app.innerHTML.includes('팀별 에이전트'));
+  assert.ok(h.app.innerHTML.includes('<h1>에이전트</h1>'));
   assert.ok(!h.app.innerHTML.includes('stale Today hydration failure'));
 });
 
@@ -669,7 +670,7 @@ test('the agents tab groups the same stages by team and both tabs jump to each o
   await h.click({action:'open-run',run:'run-1'});
   await h.click({action:'show-agent',node:'build'});
   let html=h.app.innerHTML;
-  assert.match(html,/팀별 에이전트/);
+  assert.match(html,/<h1>에이전트<\/h1>/);
   assert.match(html,/class="pair is-selected" id="pair-build"/);
   assert.match(html,/live-tag is-working">작업 중/);
   await h.click({action:'open-stage',node:'build'});
@@ -1012,9 +1013,9 @@ test('the footer names the running build; the agents tab shows active work again
   const h=await harness({state});
   assert.match(h.app.innerHTML,/v0\.2\.0 · abc1234\+수정 · 개발 폴더/);
   await h.click({action:'tab',tab:'agents'});
-  const html=h.app.innerHTML;
-  assert.match(html,/작업 2 \/ 2/);
-  assert.match(html,/빌드·테스트 1 \/ 1/);
+  const html=h.app.innerHTML,text=html.replace(/<[^>]+>/g,' ').replace(/\s+/g,' '); // the desks (panel/pixelrooms.mjs) split label and count
+  assert.match(text,/전체 작업 2 \/ 2/);
+  assert.match(text,/빌드·테스트 1 \/ 1/);
   assert.match(html,/Neon이 배정하는 작업에만/);
 });
 

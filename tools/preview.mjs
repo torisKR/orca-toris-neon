@@ -16,6 +16,7 @@ import { scopedGraph } from '../src/scope.mjs';
 import { profileAssignments } from '../src/profile.mjs';
 import { summarizeApp } from '../src/play.mjs';
 import { deflateSync, crc32 } from 'node:zlib';
+import { pixelSamples } from './previewpixel.mjs';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
 const clone = value => structuredClone(value);
@@ -78,7 +79,7 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
     return run;
   });
   const improved=improvementSample(stamp),diagnosed=diagnosisSample(stamp),unstructured=unstructuredDiagnosisSample(stamp);
-  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[sample,speedSample(stamp),improved,diagnosed,unstructured,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
+  const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[...pixelSamples(liveAt),sample,speedSample(stamp),improved,diagnosed,unstructured,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
     agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
@@ -435,6 +436,8 @@ const bridge=`(()=>{
   },shell:{openExternal:async()=>({opened:false})}};
 })();`;
 
+// panel/pixel: an allowlist of the shipped atlas files, never an arbitrary path.
+const PIXEL_ASSETS=new Set(['/pixel/sprites.css','/pixel/demo.html','/pixel/marks.png',...['plan','arch','design','build','money','qa','ship','other'].map(team=>'/pixel/crew-'+team+'.png')]);
 function servePreview() {
   const root=fileURLToPath(new URL('../',import.meta.url)),model=createPreviewModel({ liveAt: Date.now() });
   const server=http.createServer(async(req,res)=>{
@@ -453,9 +456,10 @@ function servePreview() {
         res.end(JSON.stringify(result));return;
       }
       if(req.method!=='GET'){res.writeHead(405);res.end();return;}
-      // The panel's own files only: index.html plus flat panel/*.css|*.mjs names.
-      const file=pathname==='/'?'panel/index.html':/^\/[\w-]+\.(css|mjs)$/.test(pathname)?'panel'+pathname:null;
+      // The panel's own files only: index.html, flat panel/*.css|*.mjs names, and the named pixel assets.
+      const file=pathname==='/'?'panel/index.html':/^\/[\w-]+\.(css|mjs)$/.test(pathname)?'panel'+pathname:PIXEL_ASSETS.has(pathname)?'panel'+pathname:null;
       if(!file){res.writeHead(404);res.end('Not found');return;}
+      if(pathname.endsWith('.png')){res.setHeader('Content-Type','image/png');res.end(await fs.readFile(path.join(root,file)));return;}
       let content;
       try{content=await fs.readFile(path.join(root,file),'utf8');}
       catch(error){if(error.code!=='ENOENT')throw error;res.writeHead(404);res.end('Not found');return;}

@@ -15,6 +15,7 @@ export const localDate = (value,short=false) => {
 export const todayDate = () => dayFormat.format(new Date());
 export const title = node => nodeNames[node.id]??node.title;
 export const button = (text,action,extra='',className='') => '<button type="button" class="button '+className+'" data-action="'+action+'" '+extra+'>'+text+'</button>';
+export const empty = (heading,text,action) => '<div class="empty"><div class="empty-icon">◇</div><h3>'+e(heading)+'</h3><p>'+e(text)+'</p>'+(action??'')+'</div>';
 export const options = (values,selected) => values.map(item => {
   const value=typeof item==='object'?item.value:item,label=typeof item==='object'?item.label:item;
   return '<option value="'+e(value)+'" '+(String(value)===String(selected)?'selected':'')+'>'+e(label)+'</option>';

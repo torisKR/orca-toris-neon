@@ -1,14 +1,19 @@
-import { e, statusNames, badge, localDate, todayDate, title, button, options, goalTitle } from './kit.mjs';
+import { e, statusNames, badge, localDate, todayDate, title, button, options, goalTitle, empty } from './kit.mjs';
+import { playFiltersForSelect, filteredPlayApps, playResultCount, playAppList } from './play.mjs';
 import { flowTypeSwitch, improveFields, diagnoseFields, resumeList, candidateList, newRunPayload, catalogApprovalForm, catalogApprovalInput } from './newflow.mjs';
-import { transitions, snapshotStates, elapsed, eccOverride, stageState, STATE_LABELS } from './teams.mjs';
+import { transitions, snapshotStates, eccOverride, stageState, STATE_LABELS } from './teams.mjs';
 import { collabStrip, relay, inspector, attachCard, people, assignmentForm, teamNavigator } from './flow.mjs';
 import { runResult, artifactCacheKey, artifactId } from './result.mjs';
 import { runTokens } from './tokens.mjs';
 import { preflightBlock, preflightSummary } from './preflight.mjs';
 import { todayRunCard, noteAction } from './todayactions.mjs';
-import { playLinkBlock, linkKey } from './playlinks.mjs';
+import { linkKey } from './playlinks.mjs';
 import { operationsOverview, runOperationsLine, diskBlock, diskSummary } from './operations.mjs';
 import { exportControls, exportHistory } from './history.mjs';
+import { createMotionMemory } from './pixelstate.mjs';
+import { observeRuns, stagesOf, runBanner, workshop, station } from './pixelview.mjs';
+import { attention, runRows, desks, teamRoom, chip, teamCard } from './pixelrooms.mjs';
+import { tickPixels, startTicker } from './pixeltick.mjs';
 import { scopeField, scopeLine, profileField, modelPlan, fallbackLine, redoVisualInput } from './runplan.mjs';
 const app = document.querySelector('#app');
 const toastEl = document.querySelector('#toast');
@@ -23,29 +28,12 @@ let preflightShown = null;
 const detailRequests = new Map();
 const dirtyForms = new Set();
 const disclosures = new Set();
-const stageSnapshots = new Map(), stageMotions = new Map();
+const stageSnapshots = new Map(), stageMotions = new Map(), motion = createMotionMemory();
+// The pixel views read the summary run (waiting, operations, current jobs), never a loaded runs.get detail.
+const pixelCtx = (extra={}) => ({now:Date.now(),memory:motion,limits:ui.state?.limits,cancelling:ui.cancelling,fullTitle:title,selectedId:ui.nodeId,...extra});
 const MOTION_MS = 700;
 let navigation = 0, renderPending = false, detailPending = false, refreshPromise = null, refreshQueued = false, hostRefreshQueued = false;
 const revision = () => ui.state?.revision ?? 0;
-// Row badges follow the production track only (src/playstatus.mjs); lookup_error and stale are the check badges.
-const playStatus = {
-  rejected:{label:'거부됨',priority:0,action:true},
-  approved_not_published:{label:'승인 · 게시 전',priority:2,action:true},
-  lookup_error:{label:'조회 오류',priority:3},
-  draft:{label:'초안',priority:4},
-  stale:{label:'재확인 필요',priority:5},
-  unknown:{label:'미확인',priority:5},
-  in_review:{label:'심사 중',priority:6},
-  published:{label:'게시됨',priority:8},
-  no_production:{label:'프로덕션 없음',priority:9},
-};
-const playFiltersForSelect = [
-  {value:'all',label:'모든 상태'}, {value:'action',label:'조치 필요'}, {value:'lookup',label:'조회 확인'},
-  ...['draft','in_review','published','rejected','approved_not_published','no_production']
-    .map(value=>({value,label:playStatus[value].label})),
-];
-const playNameOrder = new Intl.Collator('ko-KR',{numeric:true,sensitivity:'base'});
-const searchable = value => value.normalize('NFKC').toLowerCase();
 const assignmentMutable = node => !node.active && !['passed','awaiting-approval','skipped'].includes(node.status);
 const ownedTerminal = id => (ui.state?.runs??[]).some(r=>(r.jobs??[]).some(j=>j.terminalId===id));
 const draft = (form,name,fallback='') => ui.drafts[form+'.'+name]??fallback;
@@ -66,6 +54,7 @@ const run = () => {
 function acceptState(state) {
   if(typeof state?.revision==='number'&&state.revision<revision())return false;
   ui.state={...(ui.state??{}),...state};
+  observeRuns(motion,ui.state.runs,Date.now()); // one-shot poses follow pushes, never renders (panel/pixelstate.mjs)
   if(!ui.state.runs?.some(r=>r.id===ui.runId))ui.runId=orderedRuns()[0]?.id??null;
   return true;
 }
@@ -196,7 +185,6 @@ async function moreNotes() {
   } catch(error) {if(epoch===navigation)toast(error.message,true);}
   finally {ui.notesBusy=false;if(epoch===navigation)render();}
 }
-const empty = (heading,text,action) => '<div class="empty"><div class="empty-icon">◇</div><h3>'+e(heading)+'</h3><p>'+e(text)+'</p>'+(action??'')+'</div>';
 function rememberDisclosures(root) {
   for(const element of root.querySelectorAll('details[data-disclosure]')) {
     if(element.open)disclosures.add(element.dataset.disclosure);else disclosures.delete(element.dataset.disclosure);
@@ -232,19 +220,18 @@ function render({background=false}={}) {
 function renderToday() {
   const data=ui.today,runs=ui.state?.runs??[];
   const yesterdayCount=(data?.yesterdayEvents?.length??0)+(data?.worklogs?.filter(w=>w.day===data.yesterdayDate).length??0);
-  const waiting=runs.filter(r=>r.status==='blocked'||r.nodes?.some(n=>n.status==='awaiting-approval')).length;
-  let html='<section class="hero today-hero"><div class="hero-row"><div><p class="eyebrow">YOUR NEXT STEP</p><h1>어제의 맥락, 오늘의 한 걸음.</h1></div><span class="date-pill">'+e(todayDate())+'</span></div><p>남겨둔 다음 행동과 실제 검증 결과를 함께 확인하세요.</p></section><div class="stats"><div class="stat"><span class="stat-label">어제의 기록</span><span class="stat-value">'+yesterdayCount+'<span>건</span></span></div><div class="stat"><span class="stat-label">진행 중</span><span class="stat-value">'+runs.filter(r=>r.status==='running').length+'<span>개</span></span></div><div class="stat"><span class="stat-label">확인 필요</span><span class="stat-value">'+waiting+'<span>건</span></span></div></div>';
+  let html='<section class="hero today-hero"><div class="hero-row"><h1>오늘 이어하기</h1>'+button('+ 새 앱','new-run','','small primary')+'</div><p class="hint">'+e(todayDate())+' · 어제의 기록 '+yesterdayCount+'건</p></section>'+attention(orderedRuns(),pixelCtx())+runRows(orderedRuns(),pixelCtx());
   if(!data)html+=empty(ui.busy?'기록을 읽고 있습니다':'기록을 연결해 주세요','Orca 작업 공간과 날짜별 인계 기록이 이곳에 표시됩니다.');
   else {
     const warnings=data.warnings??[];
     html+=warnings.length>1?'<details class="callout warning warnings-group" data-disclosure="today-warnings"><summary>기록 조회 안내 · '+warnings.length+'건</summary>'+warnings.map(w=>'<p>'+e(w)+'</p>').join('')+'</details>':warnings.map(w=>'<div class="callout warning">'+e(w)+'</div>').join('');
     const incomplete=runs.filter(r=>!['completed','cancelled'].includes(r.status));
-    html+='<div class="section-heading"><div><h2>이어서 할 일</h2><p>가장 최근에 남긴 다음 행동부터 시작하세요.</p></div>'+button('+ 새 앱','new-run','','small')+'</div>';
+    html+='<div class="section-heading"><div><h2>이어서 할 일</h2><p>가장 최근에 남긴 다음 행동부터 시작하세요.</p></div></div>';
     if(!incomplete.length&&!data.notes.length)html+=empty('아직 저장된 이어하기가 없습니다','앱 제작을 시작하거나 현재 프로젝트의 인계 메모를 남겨 주세요.',button('첫 앱 흐름 만들기','new-run','','primary'));
     for(const item of incomplete.slice(0,ui.runLimit??4))html+=todayRunCard(item); // its one next action (panel/todayactions.mjs)
     if(incomplete.length>(ui.runLimit??4))html+=button('진행 중인 흐름 더 보기 · '+incomplete.length+'개','more-runs','','full');
     const finished=runs.filter(r=>r.status==='completed').sort((a,b)=>String(b.updatedAt??'').localeCompare(String(a.updatedAt??''))).slice(0,3);
-    if(finished.length)html+='<h3 class="section-meta">완료된 결과 · 이어서 개선</h3>'+finished.map(todayRunCard).join('');
+    if(finished.length)html+='<details class="card px-fold" data-disclosure="today-finished"><summary>완료된 결과 · 이어서 개선 · '+finished.length+'개</summary>'+finished.map(todayRunCard).join('')+'</details>';
     html+='<div class="note-grid">'+data.notes.map(note=>'<article class="card note-card"><div class="card-head"><div class="grow"><div class="card-title">'+e(note.projectName)+'</div><div class="card-subtitle">'+e(localDate(note.at))+'</div></div>'+badge(note.verificationFreshness)+'</div><div class="next-step"><span class="note-label">다음 행동</span><p>'+e(note.next||'인계 내용을 확인해 주세요.')+'</p></div>'+noteAction(note,providerOptions('codex')).html+'<details class="note-context" data-disclosure="note:'+e(note.workspaceId)+'"><summary>진행 내용과 검증 근거</summary><div class="note-line"><span class="note-label">진행한 일</span>'+e(note.state)+'</div>'+(note.why?'<div class="note-line"><span class="note-label">멈춘 이유</span>'+e(note.why)+'</div>':'')+(note.hold?'<div class="note-line"><span class="note-label">보류한 결정</span>'+e(note.hold)+'</div>':'')+(note.verified?'<div class="evidence">'+e(note.verified)+'</div>':'<p class="hint">저장된 검증 근거가 없습니다.</p>')+'</details></article>').join('')+'</div>';
     if(data.notesPage?.hasMore)html+='<div class="pagination">'+button(ui.notesBusy?'불러오는 중…':'인계 메모 더 보기','more-notes',ui.notesBusy?'disabled':'','full')+'<span class="hint">'+data.notes.length+' / '+data.notesPage.total+'개 표시</span></div>';
     const day=ui.day==='today'?data.date:data.yesterdayDate,events=ui.day==='today'?data.todayEvents:data.yesterdayEvents,logs=(data.worklogs??[]).filter(w=>w.day===day);
@@ -281,12 +268,16 @@ function renderStudio() {
   if(ui.newRun) return html+newRunForm();
   const item=run();
   if(!item) return html+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 조사부터 테스트까지(출시 준비를 고르면 출시까지)의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
-  const nodes=item.nodes??[],selected=selectedNode(item),ctx=flowContext(item);
-  html+=runPicker(item)+'<div class="studio-overview">'+runSummaryCard(item,nodes)+collabStrip(item,ctx)+'</div>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError,tokens:tokensOf(item)})+modelPlan(item)+(item.template==='diagnose'?candidateList(item):'');
-  if(['completed','cancelled'].includes(item.status)) html+='<div class="actions">'+(item.stopFailures?.length?'':button('완료된 실행 보관','archive-run','data-run="'+e(item.id)+'"','small'))+exportControls(item.id,ui.exportConfirm,goalTitle(item.goal))+'</div>';
+  const nodes=item.nodes??[],selected=selectedNode(item),ctx=flowContext(item),live=summaryOf(item),px=pixelCtx(),id=e(item.id);
+  // What is happening first: the header, the run's actions, the workshop, then the selected stage's detail.
+  html+=runPicker(item)+runBanner(live,px)+runActions(item)+workshop(live,px);
   if(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId) html+=attachCard(item,ctx);
-  html+=teamNavigator(item,ctx)+'<div class="studio-columns">'+relay(item,ctx)+inspector(item,selected,ctx)+'</div>';
-  html+='<section class="section"><div class="section-heading"><h2>실행 기록</h2><span class="hint">'+(item.events?.length??0)+'개</span></div>'+renderEvents([...(item.events??[])].reverse(),'아직 실행 기록이 없습니다.','run:'+item.id)+'</section>';
+  html+=inspector(item,selected,ctx);
+  html+='<details class="card px-fold" data-disclosure="setup:'+id+'"'+(item.started?'':' open')+'><summary>'+(FINISHED_RUN.has(item.status)?'실행 설정':'실행 전 점검 · 실행 설정')+'</summary>'+runSummaryCard(item,nodes)+modelPlan(item)+'</details>';
+  html+='<details class="card px-fold" data-disclosure="results:'+id+'"'+(item.status==='completed'?' open':'')+'><summary>결과 · 비용 · 작업 기록</summary>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError,tokens:tokensOf(item)})+(item.template==='diagnose'?candidateList(item):'');
+  if(['completed','cancelled'].includes(item.status)) html+='<div class="actions">'+(item.stopFailures?.length?'':button('완료된 실행 보관','archive-run','data-run="'+id+'"','small'))+exportControls(item.id,ui.exportConfirm,goalTitle(item.goal))+'</div>';
+  html+='<section class="section"><div class="section-heading"><h2>실행 기록</h2><span class="hint">'+(item.events?.length??0)+'개</span></div>'+renderEvents([...(item.events??[])].reverse(),'아직 실행 기록이 없습니다.','run:'+item.id)+'</section></details>';
+  html+='<details class="card px-fold" data-disclosure="relay:'+id+'"><summary>팀별 인계 흐름 · 작업자와 검토자</summary>'+collabStrip(item,ctx)+teamNavigator(item,ctx)+relay(item,ctx)+'</details>';
   return html;
 }
 function selectedNode(item) {
@@ -323,18 +314,21 @@ function stopBadge(item) {
   if(item.status==='cancelled')return '<span class="badge '+(item.cancelUnsaved?'blocked">취소 저장 대기':item.stopFailures?.length?'blocked">종료 확인 필요':'cancelled">취소 완료')+'</span>';
   return badge(item.status);
 }
-function runSummaryCard(item,nodes) {
-  const done=nodes.filter(n=>n.status==='passed').length,skipped=nodes.filter(n=>n.status==='skipped').length,counted=nodes.length-skipped;
+// The run's own controls, kept visible under its header whatever is folded below.
+function runActions(item) {
   // A run whose workspace was never created restarts with the same start button.
   const startable=item.status==='ready'||(!item.workspaceId&&item.status==='blocked'&&item.workspaceCreation?.state!=='uncertain');
+  return '<div class="actions px-run-actions">'+(startable?button(item.workspaceId?'계속 실행':'앱 제작 시작','start-run','data-run="'+e(item.id)+'"','primary'):'')+
+    (!startable&&['paused','blocked'].includes(item.status)?button(item.status==='blocked'?'상태 확인 후 재개':'재개','resume-run','data-run="'+e(item.id)+'"','primary'):'')+
+    (['running','ready','blocked'].includes(item.status)?button('새 배정 멈춤','pause-run','data-run="'+e(item.id)+'" title="새 단계 배정만 멈춥니다. 작업 중인 에이전트는 계속 작업합니다."'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+
+    (item.workspaceId?button('작업 공간 열기','open-workspace','data-workspace="'+e(item.workspaceId)+'"'):'')+(!['cancelled','completed'].includes(item.status)?button('실행 취소','cancel-run','data-run="'+e(item.id)+'"','danger'):'')+'</div>';
+}
+function runSummaryCard(item,nodes) {
+  const done=nodes.filter(n=>n.status==='passed').length,skipped=nodes.filter(n=>n.status==='skipped').length,counted=nodes.length-skipped;
   // A short title; the full goal (often thousands of characters) only on demand, here only.
   const short=goalTitle(item.goal);
   const goal='<div class="card-title goal-title">'+e(short)+'</div>'+(item.goal.trim()!==short?'<details class="goal-detail" data-disclosure="goal:'+e(item.id)+'"><summary>전체 목표 보기 · '+item.goal.length.toLocaleString('ko-KR')+'자</summary><p class="note-line goal-full">'+e(item.goal)+'</p></details>':'');
-  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(counted,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+counted+' 단계 통과'+(skipped?' · 건너뜀 '+skipped:'')+'</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+preflightSection(item)+'<div class="actions">'+
-    (startable?button(item.workspaceId?'계속 실행':'앱 제작 시작','start-run','data-run="'+e(item.id)+'"','primary'):'')+
-    (!startable&&['paused','blocked'].includes(item.status)?button(item.status==='blocked'?'상태 확인 후 재개':'재개','resume-run','data-run="'+e(item.id)+'"','primary'):'')+
-    (['running','ready','blocked'].includes(item.status)?button('새 배정 멈춤','pause-run','data-run="'+e(item.id)+'" title="새 단계 배정만 멈춥니다. 작업 중인 에이전트는 계속 작업합니다."'):'')+button('상태 동기화','refresh-run','data-run="'+e(item.id)+'"')+
-    (item.workspaceId?button('작업 공간 열기','open-workspace','data-workspace="'+e(item.workspaceId)+'"'):'')+(!['cancelled','completed'].includes(item.status)?button('실행 취소','cancel-run','data-run="'+e(item.id)+'"','danger'):'')+'</div>'+
+  return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(counted,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+counted+' 단계 통과'+(skipped?' · 건너뜀 '+skipped:'')+'</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+preflightSection(item)+
     autonomyLine(item)+fallbackLine(item)+scopeLine(item)+cleanupLine(item)+cleanupResult(summaryOf(item))+runOperationsLine(summaryOf(item))+storageLine(item)+diskBlock(disks.get(item.id),{runId:item.id})+
     (item.status==='paused'?'<p class="hint spacer">새 단계 배정만 멈췄습니다. 이미 작업 중인 에이전트는 계속 작업하고 완료 보고서를 남길 수 있습니다. 모두 멈추려면 실행 취소를 누르세요.</p>':'')+(item.runtimeMessage?'<div class="callout error" role="status">'+e(item.runtimeMessage)+'</div>':'')+
     (item.stopFailures?.length?'<div class="callout error"><strong>'+(item.cancelUnsaved?'취소가 아직 저장되지 않았습니다.':'일부 에이전트의 종료를 확인하지 못했습니다.')+'</strong>'+item.stopFailures.map(f=>'<p>'+e(f.message)+'</p>'+(f.terminalId?button('해당 에이전트 확인','focus-terminal','data-terminal="'+e(f.terminalId)+'"','small'):button('Orca 작업 공간 확인','open-workspace','data-workspace="'+e(item.workspaceId)+'"','small'))).join('')+'</div>':'')+'</div>';
@@ -425,70 +419,14 @@ function selectedPlayAccount() {
   const accounts=ui.play?.accounts??[];
   return accounts.find(account=>account.id===ui.accountId)??accounts[0];
 }
-function filteredPlayApps(apps) {
-  const words=searchable(playFilters.query).trim().split(/\s+/).filter(Boolean);
-  const filter=playFilters.status;
-  return apps.filter(item=>{
-    const haystack=searchable((item.name??'')+' '+item.packageName);
-    return words.every(word=>haystack.includes(word));
-  })
-    .map(item=>{
-      const tracks=item.tracks??[];
-      const check=tracks.some(track=>track.error)?'lookup_error':tracks.some(track=>track.stale)?'stale':null;
-      const known=(Array.isArray(item.production)?item.production:[]).map(status=>Object.hasOwn(playStatus,status)?status:'unknown');
-      const production=known.length?known:['unknown'];
-      // An unknown production state next to a check badge would say the same thing twice.
-      const statuses=production[0]==='unknown'&&check?[]:production;
-      const priority=Math.min(...[...statuses,check].filter(Boolean).map(status=>playStatus[status].priority));
-      return {item,statuses,check,priority};
-    })
-    .filter(({statuses,check})=>filter==='all'||statuses.includes(filter)||
-      (filter==='action'&&statuses.some(status=>playStatus[status].action))||(filter==='lookup'&&(check||statuses.includes('unknown'))))
-    .sort((a,b)=>a.priority-b.priority||playNameOrder.compare(a.item.name||a.item.packageName,b.item.name||b.item.packageName)||
-      playNameOrder.compare(a.item.packageName,b.item.packageName));
-}
-function playResultCount(shown,total) {
-  return shown===total?'전체 '+total+'개':total+'개 중 '+shown+'개';
-}
-function playAppList(matches,account) {
-  const accountId=account.id;
-  if(!matches.length)return empty('검색 결과가 없습니다','검색어 또는 상태 필터를 바꿔 보세요.',button('검색 및 필터 초기화','reset-play-filters','','small'));
-  const label=(status,prefix='')=>'<span class="badge '+status+'">'+prefix+playStatus[status].label+'</span>';
-  const production=status=>label(status,'<span class="sr-only">프로덕션: </span>');
-  return '<ul class="play-list" aria-label="Play Store 앱">'+matches.map(({item,statuses,check})=>`<li>
-    <details class="play-app" data-disclosure="play-app:${e(accountId)}:${e(item.packageName)}">
-      <summary class="play-app-row">
-        <span class="play-app-name">
-          <span class="play-title">${e(item.name||item.packageName)}</span>
-          <span class="mono play-package">${e(item.packageName)}</span>
-        </span>
-        <span class="play-app-status" title="프로덕션 트랙 기준">${[...statuses.map(production),...(check?[label(check)]:[])].join(' ')}</span>
-        <span class="play-chevron" aria-hidden="true"></span>
-      </summary>
-      <div class="play-app-tracks">${(item.tracks??[]).map(playTrack).join('')}
-        <div class="actions">${button('스토어 페이지 ↗','external','data-url="'+e(item.storeUrl)+'"','small')}</div>
-        ${playLinkBlock({account,app:item,links:ui.play?.links,projects:ui.state?.projects,internal:ui.internal.get(linkKey(accountId,item.packageName))})}
-      </div>
-    </details></li>`).join('')+'</ul>';
-}
-function playTrack(track) {
-  const releases=track.releases??[];
-  return `<div class="track">
-    <div class="track-header"><strong>${e(track.track)}</strong>${track.stale?badge('stale'):`<span class="hint">${e(localDate(track.observedAt))}</span>`}</div>
-    ${releases.length?releases.map(release=>`<div class="release-row">
-      <span>${e(release.name||'이름 없는 릴리스')}</span><span class="mono">v${e(release.versionCodes.join(', '))}</span>
-      <span class="badge">${e(releaseState(release.state))}</span></div>`).join(''):`<p>${track.error?'조회 결과 없음':'활성 릴리스 없음'}</p>`}
-    ${track.stale?`<p>마지막 성공한 관측 · ${e(localDate(track.observedAt))}</p>`:''}
-    ${track.error?`<p class="play-track-error">${e(track.error.message??track.error)}</p>`:''}
-  </div>`;
-}
+const playContext=()=>({links:ui.play?.links,projects:ui.state?.projects,internal:key=>ui.internal.get(key)});
 function updatePlayResults() {
   const results=app.querySelector('#play-results');
   if(!results)return;
   const account=selectedPlayAccount();
-  const apps=account?.apps??[],matches=filteredPlayApps(apps);
+  const apps=account?.apps??[],matches=filteredPlayApps(apps,playFilters);
   rememberDisclosures(results);
-  results.innerHTML=playAppList(matches,account);
+  results.innerHTML=playAppList(matches,account,playContext());
   restoreDisclosures(results);
   const count=app.querySelector('#play-result-count');
   const nextCount=playResultCount(matches.length,apps.length);
@@ -501,7 +439,7 @@ function renderPlay() {
   if(!ui.play&&!ui.error)return header+'<p class="muted">Play 계정을 불러오고 있습니다.</p>';
   if(!account)return header+empty('Play 개발자 계정을 연결하세요','Google Play API 조회 권한이 있는 서비스 계정이 필요합니다. 자격 증명은 운영체제 키 저장소에 보관합니다.',button('첫 계정 연결','new-account','','primary'));
   const accountData='data-account="'+e(account.id)+'"';
-  const apps=account.apps??[],matches=filteredPlayApps(apps);
+  const apps=account.apps??[],matches=filteredPlayApps(apps,playFilters);
   return header+`<div class="account-switcher" role="group" aria-label="Play 개발자 계정">
     ${accounts.map(item=>button(e(item.name),'select-account','data-account="'+e(item.id)+'" aria-pressed="'+(item.id===account.id)+'"',item.id===account.id?'active':'')).join('')}
     </div>
@@ -532,12 +470,8 @@ function renderPlay() {
           <select class="field" id="play-status-filter">${options(playFiltersForSelect,playFilters.status)}</select>
         </div>
       </div>
-      <div id="play-results">${playAppList(matches,account)}</div>
+      <div id="play-results">${playAppList(matches,account,playContext())}</div>
     </section>`:empty('아직 점검 결과가 없습니다','지금 점검을 눌러 앱 목록과 트랙별 릴리스 상태를 읽어오세요.')}`;
-}
-function releaseState(value) {
-  const names={RELEASE_LIFECYCLE_STATE_DRAFT:'초안',RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW:'심사 제출 전',RELEASE_LIFECYCLE_STATE_IN_REVIEW:'심사 중',RELEASE_LIFECYCLE_STATE_APPROVED_NOT_PUBLISHED:'승인 · 게시 전',RELEASE_LIFECYCLE_STATE_NOT_APPROVED:'승인되지 않음',RELEASE_LIFECYCLE_STATE_PUBLISHED:'게시됨'};
-  return names[value]??({not_sent_for_review:'심사 제출 전',not_approved:'승인되지 않음'})[value]??statusNames[value]??value;
 }
 function accountForm() {
   const id=typeof ui.newAccount==='string'?ui.newAccount:null;
@@ -548,24 +482,32 @@ function accountForm() {
 function renderAgents() {
   const agents=ui.state?.agents??[],item=run();
   const limits=ui.state?.limits;
-  let html='<section class="hero flow-tab"><h1>팀별 에이전트</h1>'+(limits?'<p class="limits-line"><strong>작업 '+e(limits.active)+' / '+e(limits.activeJobs)+'</strong> · 빌드·테스트 '+e(limits.heavy)+' / '+e(limits.heavyJobs)+'<span class="hint"> Neon이 배정하는 작업에만 적용됩니다. 직접 실행한 다른 에이전트는 세지 않습니다. 한도는 플러그인 설정에서 바꿀 수 있습니다.</span></p>':'')+'</section>'+operationsOverview({runs:ui.state?.runs??[],limits,resources:ui.state?.resources,now:Date.now()});
+  let html='<section class="hero flow-tab"><h1>에이전트</h1></section>'+desks(limits);
   if(item) {
-    selectedNode(item);const ctx=flowContext(item);
-    html+='<div class="agent-overview">'+runPicker(item)+collabStrip(item,ctx)+teamNavigator(item,ctx)+'</div><div class="people">'+people(item,ctx)+'</div>';
+    selectedNode(item);const ctx=flowContext(item),id=e(item.id);
+    html+='<div class="agent-overview">'+runPicker(item)+'</div>'+teamRoom(summaryOf(item),pixelCtx());
+    html+='<details class="card px-fold" data-disclosure="operations"><summary>운영 현황 · 슬롯과 터미널</summary>'+operationsOverview({runs:ui.state?.runs??[],limits,resources:ui.state?.resources,now:Date.now()})+'</details>';
+    html+='<details class="card px-fold" data-disclosure="people:'+id+'"'+(ui.peopleOpen===item.id?' open':'')+'><summary>팀별 작업자와 검토자</summary>'+collabStrip(item,ctx)+teamNavigator(item,ctx)+'<div class="people">'+people(item,ctx)+'</div></details>';
     html+='<section class="section"><details class="card" data-disclosure="assignments"><summary>전체 배정 · '+(item.nodes?.length??0)+'개 단계</summary><p class="hint">모델과 추론 강도는 실행의 속도·비용 프로필을 따르고, 여기서 단계별로 고르면 그 선택이 우선합니다. 검토자는 매번 별도 세션으로 시작합니다.</p>'+assignmentForm(item,item.nodes??[],ctx)+'</details></section>';
-  } else html+=empty('아직 흐름이 없습니다','Auto App에서 흐름을 만들면 팀별 담당자와 검토자가 여기에 나타납니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
+  } else html+=operationsOverview({runs:ui.state?.runs??[],limits,resources:ui.state?.resources,now:Date.now()})+empty('아직 흐름이 없습니다','Auto App에서 흐름을 만들면 팀별 담당자와 검토자가 여기에 나타납니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
   html+='<section class="section"><details class="card" data-disclosure="workspace-agents"><summary>현재 작업 공간의 Orca 에이전트 · '+agents.length+'</summary>';
   html+=agents.length?'<div class="agent-grid">'+agents.map(a=>'<div class="card agent-card"><div class="card-head"><h3>'+e(a.title??a.agent??'Agent')+'</h3>'+badge(a.state)+'</div><p>'+e(a.agent??'')+' · '+e(localDate(a.stateStartedAt))+'</p>'+(a.terminalId&&ownedTerminal(a.terminalId)?'<div class="actions">'+button('열기','focus-terminal','data-terminal="'+e(a.terminalId)+'"','small')+'</div>':'')+'</div>').join('')+'</div>':'<p class="hint">현재 공간에서 확인되는 에이전트가 없습니다.</p>';
   html+='<p class="hint spacer">배정 가능한 종류 · '+providers().map(e).join(', ')+'. CLI 설치와 로그인은 Orca에서 먼저 완료해 주세요.</p></details></section>';
   return html;
 }
-// Elapsed times tick locally; nothing is re-requested and typed text is untouched.
-function tickTimes() {
-  const now=Date.now();
-  for(const time of app.querySelectorAll('time[data-since]')){
-    if(document.activeElement?.contains?.(time))continue; // a focused control's text stays stable
-    const text=elapsed(time.dataset.since,now);
-    if(time.textContent!==text)time.textContent=text;
+// One panel timer (panel/pixeltick.mjs): time text in place, and only pieces whose time boundary passed are redrawn.
+function redrawPieces(elements) {
+  const now=Date.now(),ctx=pixelCtx({now});
+  for(const element of elements) {
+    const item=(ui.state?.runs??[]).find(r=>r.id===element.dataset.pxRun),kind=element.dataset.pxPiece;
+    if(!item||!element.isConnected)continue;
+    const stage=stagesOf(item,ctx).find(entry=>entry.node.id===element.dataset.node);
+    const html=kind==='banner'?runBanner(item,ctx):kind==='team'?teamCard(item,element.dataset.pxTeam,ctx)
+      :!stage?'':kind==='station'?station(item,stage.node,stage.view,ctx):kind==='chip'?chip(item,stage.node,stage.view,ctx):'';
+    if(!html)continue;
+    const focused=document.activeElement===element&&element.id;
+    element.outerHTML=html;
+    if(focused)app.querySelector('#'+CSS.escape(element.id))?.focus?.({preventScroll:true});
   }
 }
 function assignmentChange(node,values) {
@@ -614,15 +556,18 @@ app.addEventListener('click',async event=>{
     const switched=nextTab!==ui.tab;
     if(switched)leaveView();
     if(ui.nodeId!==target.dataset.node || switched)clearDraft('approval');
+    if(action==='open-stage'&&target.dataset.run)ui.runId=target.dataset.run; // from 오늘 이어하기: the run of that stage
+    if(action==='show-agent'||target.classList?.contains('px-team-card'))ui.peopleOpen=run()?.id; // the roster opens where focus goes
     ui.nodeId=target.dataset.node;
     ui.agentRole=target.dataset.role==='work'||target.dataset.role==='review'?target.dataset.role:null;
     ui.tab=nextTab;
     render();
-    const selector=action==='inspect-stage'?'#stage-inspector':ui.tab==='studio'?'#stage-'+ui.nodeId
+    const toDetail=action==='inspect-stage'||action==='open-stage'||target.classList?.contains('px-station');
+    const selector=toDetail?'#stage-inspector':ui.tab==='studio'?'#stage-'+ui.nodeId
       :ui.agentRole?'#member-'+ui.nodeId+'-'+ui.agentRole:'#pair-'+ui.nodeId;
     const focus=app.querySelector(selector);
     focus?.focus?.({preventScroll:true});
-    focus?.scrollIntoView?.({block:action==='inspect-stage'?'start':'nearest',behavior:'instant'});
+    focus?.scrollIntoView?.({block:toDetail?'start':'nearest',behavior:'instant'});
     if(switched) {
       const epoch=navigation;
       hydrateTab().then(()=>{if(epoch===navigation)scheduleRender();},error=>{if(epoch===navigation){ui.error=error.message;scheduleRender();}});
@@ -732,6 +677,12 @@ app.addEventListener('click',async event=>{
   } catch(error){toast(error.message??String(error),true);}
   finally{target.disabled=false;}
 });
+app.addEventListener('keydown',event=>{
+  if(event.key!=='Escape')return;
+  const tipped=event.target.closest?.('.px-station');
+  if(tipped){tipped.classList.add('px-tip-off');tipped.addEventListener('blur',()=>tipped.classList.remove('px-tip-off'),{once:true});return;}
+  if(event.target.closest?.('#stage-inspector'))app.querySelector('#station-'+CSS.escape(ui.nodeId??''))?.focus?.();
+});
 app.addEventListener('submit',async event=>{
   const form=event.target;
   event.preventDefault();
@@ -793,4 +744,4 @@ if(bridge?.plugin) {
   ui.error='Orca 연결이 없습니다. Orca에서 Toris Neon 패널을 열어 주세요.';
   render();
 }
-if(typeof setInterval==='function')setInterval(tickTimes,1000);
+startTicker(()=>tickPixels(app,Date.now(),redrawPieces));
