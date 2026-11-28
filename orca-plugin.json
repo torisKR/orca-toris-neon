@@ -17,6 +17,49 @@
     "name": "torisKR",
     "url": "https://toris.kr"
   },
+  "icon": "images/icon.png",
+  "cover": {
+    "path": "images/cover.png",
+    "alt": "Auto App 화면: 샘플 앱의 단계별 작업실과 공급선, 진행 중인 단계 상세"
+  },
+  "screenshots": [
+    {
+      "path": "images/auto-app-live.png",
+      "alt": "Auto App에서 진행 중인 샘플 실행",
+      "caption": "Auto App · 목표를 단계 그래프로 나누고 지금 일하는 에이전트를 보여 줍니다",
+      "theme": "dark"
+    },
+    {
+      "path": "images/supply-lines.png",
+      "alt": "단계 사이 공급선이 결과를 다음 단계로 넘기는 작업실",
+      "caption": "제작 작업실 · 끝난 단계의 결과가 공급선을 따라 다음 단계로 흐릅니다",
+      "theme": "dark"
+    },
+    {
+      "path": "images/approval.png",
+      "alt": "출시 검토 단계가 승인을 기다리는 화면",
+      "caption": "승인 대기 · 출시처럼 되돌리기 어려운 단계는 사람이 범위를 정합니다",
+      "theme": "dark"
+    },
+    {
+      "path": "images/today.png",
+      "alt": "오늘 이어하기 화면의 할 일 목록과 실행 현황",
+      "caption": "오늘 이어하기 · 내가 봐야 할 것과 실행 현황을 한 화면에",
+      "theme": "dark"
+    },
+    {
+      "path": "images/agents.png",
+      "alt": "에이전트 화면의 팀 작업실과 동시 작업 한도",
+      "caption": "에이전트 · 팀별 작업자와 검토자, 동시 작업 한도",
+      "theme": "dark"
+    },
+    {
+      "path": "images/play-store.png",
+      "alt": "Play Store 화면의 앱별 트랙 상태 목록",
+      "caption": "Play Store · 여러 계정의 앱과 트랙 상태를 한 번에 점검합니다",
+      "theme": "dark"
+    }
+  ],
   "capabilities": [
     {
       "kind": "workspace:read"
