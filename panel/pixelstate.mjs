@@ -71,10 +71,10 @@ export function stagePixel({ run, node, job = null, operation = null, waiting = 
   if (cancelling) return view('cancelled', '취소 요청 처리 중');
   if (run.status === 'cancelled') return view('cancelled', '취소됨');
   const uncertain = Boolean(node.launchUncertain || job?.state === 'uncertain' || job?.promptRecovery?.state === 'uncertain' || operation?.condition === 'unclear');
-  const blocker = job?.blocker && BLOCKER_LABELS[job.blocker.kind] ? job.blocker : null;
-  if (blocker) { // a confirmed cause first; an unconfirmed stop is added to it
+  const blocker = job?.blocker ?? null;
+  if (blocker) { // a confirmed cause first; an unconfirmed stop is added to it. A kind this panel does not know still stops.
     const what = [blocker.agent, DIALOG_NAMES[blocker.dialog]].filter(Boolean).join(' · ');
-    return view('blocked', BLOCKER_LABELS[blocker.kind], { detail: what + (uncertain ? ' · 종료 확인 필요' : ''), person: true, blocker });
+    return view('blocked', BLOCKER_LABELS[blocker.kind] ?? '멈춤 · 에이전트 화면', { detail: what + (uncertain ? ' · 종료 확인 필요' : ''), person: true, blocker });
   }
   if (uncertain) return view('blocked', '확인 필요 · ' + (delivered(job) && job.promptSeen ? '작업 신호 종료 불명' : '시작 여부 불명'), { person: true });
   const retries = node.deliveryRetries ?? 0;
@@ -99,6 +99,7 @@ export function stagePixel({ run, node, job = null, operation = null, waiting = 
       retryKind: 'autonomy', retryCount: autonomyRetry, onceScope: 'autonomy' });
   }
   if (node.active || node.pendingReceipt) return assignedView(view, { node, job, operation, phase, startMs, signal, now });
+  if (status === 'running') return view('unknown', '작업 신호 미확인', { detail: '배정 기록 없음' }); // running with nothing assigned is not calm
   if (run.status === 'paused' || waiting === '일시 정지') return view('paused', '새 배정 멈춤');
   const open = (node.deps ?? []).map((id) => (run.nodes ?? []).find((item) => item.id === id)).filter((dep) => dep && !['passed', 'skipped'].includes(dep.status));
   if (waiting === '선행 단계 대기' || open.length) {
@@ -178,6 +179,9 @@ export function runPixel(run, stages, { cancelling = false } = {}) {
     return result(top.view.pose, shortTitle(top.node) + ' · ' + top.view.label, { ...timing(top), person: top.view.person,
       detail: [top.view.hint ?? top.view.detail, urgent.length > 1 ? '확인할 단계 ' + urgent.length + '개' : ''].filter(Boolean).join(' · ') + keep });
   }
+  if (run.runtimeMessage || run.workspaceCreation?.state === 'uncertain') { // a run-level error is not hidden behind work in progress
+    return result('blocked', '확인 필요', { person: true, detail: (run.runtimeMessage || '작업 공간 생성 결과를 확인해 주세요.') + keep });
+  }
   if (run.status === 'paused') return result('paused', '새 배정 멈춤' + keep, { detail: '재개하면 다음 단계를 배정합니다.' });
   if (live.length) {
     const oldest = live.reduce((first, stage) => (stage.view.startedAt ?? Infinity) < (first.view.startedAt ?? Infinity) ? stage : first);
@@ -188,7 +192,6 @@ export function runPixel(run, stages, { cancelling = false } = {}) {
   }
   const starting = stages.find((stage) => stage.view.pose === 'start');
   if (starting) return result('start', shortTitle(starting.node) + ' · 시작 중', { ...timing(starting), detail: starting.view.detail });
-  if (run.runtimeMessage || run.workspaceCreation?.state === 'uncertain') return result('blocked', '확인 필요', { person: true, detail: run.runtimeMessage ?? '작업 공간 생성 결과를 확인해 주세요.' });
   if (!run.started) return result('idle', '시작 전', { detail: '시작하면 첫 단계부터 배정합니다.' });
   const waiting = stages.find((stage) => stage.view.pose === 'queue') ?? stages.find((stage) => stage.view.pose === 'dependency');
   if (waiting) return result(waiting.view.pose, shortTitle(waiting.node) + ' · ' + waiting.view.label, { nodeId: waiting.node.id, detail: waiting.view.detail });

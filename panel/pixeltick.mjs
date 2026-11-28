@@ -9,7 +9,9 @@ import { agoText, sinceText } from './pixelview.mjs';
 export const TICK_MS = 5000;
 
 export function tickPixels(root, now, refresh) {
-  const focused = (element) => globalThis.document?.activeElement?.contains?.(element); // a focused control's text stays stable
+  const active = globalThis.document?.activeElement;
+  // A focused control's own text stays stable; with nothing focused (body) every time keeps moving.
+  const focused = (element) => Boolean(active) && active !== globalThis.document?.body && active.contains?.(element);
   const write = (element, text) => { if (!focused(element) && element.textContent !== text) element.textContent = text; };
   for (const time of root.querySelectorAll('time[data-since]')) write(time, elapsed(time.dataset.since, now));
   for (const time of root.querySelectorAll('time[data-px-since]')) write(time, sinceText(Number(time.dataset.pxSince), now));
@@ -24,7 +26,7 @@ export function startTicker(tick, { document = globalThis.document, timers = glo
   let timer = null;
   const sync = () => {
     const visible = document?.visibilityState !== 'hidden';
-    if (visible && timer === null) { tick(); timer = timers.setInterval(tick, TICK_MS); }
+    if (visible && timer === null) { timer = timers.setInterval(tick, TICK_MS); tick(); } // a failing first tick cannot stop the timer
     else if (!visible && timer !== null) { timers.clearInterval(timer); timer = null; }
   };
   document?.addEventListener?.('visibilitychange', sync);

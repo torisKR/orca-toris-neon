@@ -11,6 +11,7 @@ const iso = (ms) => new Date(ms).toISOString();
 const ctx = (extra = {}) => ({ now: NOW, memory: createMotionMemory(), limits: null, cancelling: new Set(), fullTitle: (node) => node.title, selectedId: null, ...extra });
 function stuckRun() {
   const run = createRun({ id: 'r1', goal: '샘플 앱', projectId: 'p', now: NOW - 3_600_000 });
+  for (const node of run.nodes) { node.agent = 'codex'; node.reviewer = 'claude'; }
   Object.assign(run, { started: true, status: 'running', jobs: [], waiting: {}, operations: [] });
   for (const id of ['research', 'brief']) run.nodes.find((node) => node.id === id).status = 'passed';
   Object.assign(run.nodes.find((node) => node.id === 'design'), { status: 'running', deliveryRetries: 2, active: { nonce: 'n3', phase: 'work', startedAt: iso(NOW - 78_000) } });
@@ -86,7 +87,7 @@ test('Neon\'s desks show real counts, never added together, and say when a count
 test('the team room shows every team; a team without a stage is unassigned', () => {
   const html = teamRoom(stuckRun(), ctx());
   assert.equal((html.match(/class="px-team-card"/g) ?? []).length, 7);
-  assert.match(html, /aria-label="디자인팀 · 화면 설계 · 시작 지연 · 재시도 2\/3"/);
+  assert.match(html, /aria-label="디자인팀 · 화면 설계 · codex · 시작 지연 · 재시도 2\/3"/, 'the name carries what the card shows');
   assert.match(html, /수익화팀<\/strong><small>배정된 단계 없음<\/small><\/span><span class="px-state">미배정/);
 });
 
@@ -106,6 +107,20 @@ test('the tick rewrites time text in place and hands back only the pieces whose 
   assert.equal(since.textContent, '1분 18초');
   assert.equal(ago.textContent, '18초 전');
   assert.deepEqual(handed, [due]);
+});
+
+test('with nothing focused every time keeps moving; only a focused control keeps its own text', () => {
+  const body = { contains: () => true };
+  const time = element('time[data-px-ago]', { pxAgo: String(NOW - 18_000) }, 'old');
+  const saved = globalThis.document;
+  globalThis.document = { body, activeElement: body };
+  try {
+    tickPixels(fakeRoot([time]), NOW, () => {});
+    assert.equal(time.textContent, '18초 전');
+    globalThis.document = { body, activeElement: { contains: (node) => node === time } };
+    tickPixels(fakeRoot([time]), NOW + 60_000, () => {});
+    assert.equal(time.textContent, '18초 전', 'the focused control keeps its text');
+  } finally { globalThis.document = saved; }
 });
 
 test('the ticker runs every 5 s only while the panel is visible', () => {

@@ -55,7 +55,7 @@ export function runRows(runs, ctx) {
   return '<section class="px-runs" aria-labelledby="px-runs-title"><div class="px-section-head"><h2 id="px-runs-title">실행 현황</h2><span class="hint">' + live.length + '개 실행</span></div>' +
     live.map((run) => {
       const stages = stagesOf(run, ctx).filter(({ view }) => SHOWN.has(view.pose));
-      const counted = run.nodes.filter((node) => node.status !== 'skipped');
+      const counted = (run.nodes ?? []).filter((node) => node.status !== 'skipped');
       const chips = stages.length ? stages.map(({ node, view }) => chip(run, node, view, ctx)).join('')
         : '<span class="hint">' + (run.started ? (run.status === 'paused' ? '새 배정 멈춤' : '배정 대기') : '시작 전') + '</span>';
       return '<article class="px-run-row" aria-labelledby="px-run-' + e(run.id) + '"><div class="px-run-head"><button type="button" class="px-run-title" id="px-run-' + e(run.id) + '" data-action="open-run" data-run="' + e(run.id) + '">' + e(goalTitle(run.goal)) + '</button>' +
@@ -66,7 +66,7 @@ export function runRows(runs, ctx) {
 const until = (view) => Number.isFinite(view.until) ? ' data-px-until="' + view.until + '"' : '';
 /** One live stage of a run row; the tick re-renders it alone when its time boundary passes. */
 export function chip(run, node, view, ctx) {
-  return '<button type="button" class="px-chip" data-tone="' + e(view.tone) + '" data-action="open-stage" data-run="' + e(run.id) + '" data-node="' + e(node.id) + '"' +
+  return '<button type="button" class="px-chip" id="' + e('chip-' + run.id + '-' + node.id) + '" data-tone="' + e(view.tone) + '" data-action="open-stage" data-run="' + e(run.id) + '" data-node="' + e(node.id) + '"' +
     ' data-px-piece="chip" data-px-run="' + e(run.id) + '"' + until(view) + ' aria-label="' + e(shortTitle(node) + ' · ' + view.label) + '">' +
     sprite(teamOf(node.id).id, view, { runId: run.id, nodeId: node.id, memory: ctx.memory, now: ctx.now }) + '<span>' + e(shortTitle(node) + ' · ' + view.label) + '</span></button>';
 }
@@ -107,8 +107,9 @@ export function teamCard(run, teamId, ctx) {
   const [{ node, view }] = own;
   const busy = own.filter((stage) => pickOrder(stage.view.pose) <= 2).length - (pickOrder(view.pose) <= 2 ? 1 : 0);
   const agent = view.phase === 'review' ? node.reviewer : node.agent;
-  return '<button type="button" class="px-team-card" data-tone="' + e(view.tone) + '" data-action="select-node" data-node="' + e(node.id) + '"' +
-    ' data-px-piece="team" data-px-team="' + e(teamId) + '" data-px-run="' + e(run.id) + '"' + until(view) + ' aria-label="' + e(team.name + ' · ' + shortTitle(node) + ' · ' + view.label) + '">' +
+  const more = busy > 0 ? ' · +' + busy + '개' : '';
+  return '<button type="button" class="px-team-card" id="' + e('team-' + run.id + '-' + teamId) + '" data-tone="' + e(view.tone) + '" data-action="select-node" data-node="' + e(node.id) + '"' +
+    ' data-px-piece="team" data-px-team="' + e(teamId) + '" data-px-run="' + e(run.id) + '"' + until(view) + ' aria-label="' + e(team.name + ' · ' + shortTitle(node) + (agent ? ' · ' + agent : '') + ' · ' + view.label + more) + '">' +
     sprite(team.id, view, { runId: run.id, nodeId: node.id, memory: ctx.memory, now: ctx.now }) + '<span class="px-team-text"><strong>' + e(team.name) + '</strong><small>' + e(shortTitle(node) + ' · ' + (agent ?? '')) + '</small></span>' +
-    '<span class="px-state">' + e(view.label) + (busy > 0 ? ' · +' + busy + '개' : '') + '</span></button>';
+    '<span class="px-state">' + e(view.label + more) + '</span></button>';
 }

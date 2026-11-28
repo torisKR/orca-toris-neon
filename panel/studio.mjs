@@ -273,7 +273,8 @@ function renderStudio() {
   html+=runPicker(item)+runBanner(live,px)+runActions(item)+workshop(live,px);
   if(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId) html+=attachCard(item,ctx);
   html+=inspector(item,selected,ctx);
-  html+='<details class="card px-fold" data-disclosure="setup:'+id+'"'+(item.started?'':' open')+'><summary>'+(FINISHED_RUN.has(item.status)?'실행 설정':'실행 전 점검 · 실행 설정')+'</summary>'+runSummaryCard(item,nodes)+modelPlan(item)+'</details>';
+  const alerts=item.runtimeMessage||item.storageWarning||item.stopFailures?.length||item.autonomy?.stopped; // never folded away
+  html+='<details class="card px-fold" data-disclosure="setup:'+id+'"'+(item.started&&!alerts?'':' open')+'><summary>'+(FINISHED_RUN.has(item.status)?'실행 설정':'실행 전 점검 · 실행 설정')+'</summary>'+runSummaryCard(item,nodes)+modelPlan(item)+'</details>';
   html+='<details class="card px-fold" data-disclosure="results:'+id+'"'+(item.status==='completed'?' open':'')+'><summary>결과 · 비용 · 작업 기록</summary>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError,tokens:tokensOf(item)})+(item.template==='diagnose'?candidateList(item):'');
   if(['completed','cancelled'].includes(item.status)) html+='<div class="actions">'+(item.stopFailures?.length?'':button('완료된 실행 보관','archive-run','data-run="'+id+'"','small'))+exportControls(item.id,ui.exportConfirm,goalTitle(item.goal))+'</div>';
   html+='<section class="section"><div class="section-heading"><h2>실행 기록</h2><span class="hint">'+(item.events?.length??0)+'개</span></div>'+renderEvents([...(item.events??[])].reverse(),'아직 실행 기록이 없습니다.','run:'+item.id)+'</section></details>';
@@ -499,15 +500,25 @@ function renderAgents() {
 function redrawPieces(elements) {
   const now=Date.now(),ctx=pixelCtx({now});
   for(const element of elements) {
-    const item=(ui.state?.runs??[]).find(r=>r.id===element.dataset.pxRun),kind=element.dataset.pxPiece;
-    if(!item||!element.isConnected)continue;
-    const stage=stagesOf(item,ctx).find(entry=>entry.node.id===element.dataset.node);
-    const html=kind==='banner'?runBanner(item,ctx):kind==='team'?teamCard(item,element.dataset.pxTeam,ctx)
-      :!stage?'':kind==='station'?station(item,stage.node,stage.view,ctx):kind==='chip'?chip(item,stage.node,stage.view,ctx):'';
-    if(!html)continue;
-    const focused=document.activeElement===element&&element.id;
-    element.outerHTML=html;
-    if(focused)app.querySelector('#'+CSS.escape(element.id))?.focus?.({preventScroll:true});
+    if(!element.isConnected)continue;
+    try {
+      const item=(ui.state?.runs??[]).find(r=>r.id===element.dataset.pxRun),kind=element.dataset.pxPiece;
+      const stage=item&&stagesOf(item,ctx).find(entry=>entry.node.id===element.dataset.node);
+      const html=!item?'':kind==='banner'?runBanner(item,ctx):kind==='team'?teamCard(item,element.dataset.pxTeam,ctx)
+        :!stage?'':kind==='station'?station(item,stage.node,stage.view,ctx):kind==='chip'?chip(item,stage.node,stage.view,ctx):'';
+      if(!html)throw new Error('no current state for '+(kind??'piece')+' '+(element.dataset.node??element.dataset.pxRun??''));
+      const focused=document.activeElement===element,id=element.id,before=element.getAttribute('aria-label');
+      element.outerHTML=html;
+      const next=id?app.querySelector('#'+CSS.escape(id)):null;
+      if(focused)next?.focus?.({preventScroll:true});
+      // A pose that changed with time (15 s start, 180 s quiet) is a real change: say it once.
+      const after=next?.getAttribute?.('aria-label');
+      if(after&&before&&after!==before){const announcer=document.querySelector('#announcer');if(announcer)announcer.textContent=after;}
+    } catch(error) { // never leave a stale pose: stop retrying this piece and redraw the whole view once
+      element.removeAttribute('data-px-until');
+      console.error('Toris Neon: 시간 경계 갱신 실패, 화면 전체를 다시 그립니다:',error);
+      scheduleRender();
+    }
   }
 }
 function assignmentChange(node,values) {
@@ -679,8 +690,9 @@ app.addEventListener('click',async event=>{
 });
 app.addEventListener('keydown',event=>{
   if(event.key!=='Escape')return;
-  const tipped=event.target.closest?.('.px-station');
-  if(tipped){tipped.classList.add('px-tip-off');tipped.addEventListener('blur',()=>tipped.classList.remove('px-tip-off'),{once:true});return;}
+  // A station's tooltip closes on Escape, whether it is shown by focus or by the pointer (WCAG 1.4.13).
+  const tipped=event.target.closest?.('.px-station')??app.querySelector('.px-station:hover');
+  if(tipped){tipped.classList.add('px-tip-off');for(const name of ['blur','mouseleave'])tipped.addEventListener(name,()=>tipped.classList.remove('px-tip-off'),{once:true});if(event.target.closest?.('.px-station'))return;}
   if(event.target.closest?.('#stage-inspector'))app.querySelector('#station-'+CSS.escape(ui.nodeId??''))?.focus?.();
 });
 app.addEventListener('submit',async event=>{

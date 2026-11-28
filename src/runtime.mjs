@@ -752,13 +752,16 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   };
   // Nothing was typed into a terminal whose agent never reported in, so closing it and
   // launching again cannot duplicate work.
-  const abandonUnready = async (runId, nonce, refused = null) => {
+  const abandonUnready = async (runId, nonce, refused = null, screened = false) => {
     if (disposed) return;
     const { run, job } = currentDeliveryJob(runId, nonce);
     if (!job || job.promptRecovery) return;
     if (job.readyAt && !refused) return deliverWhenReady(runId, nonce);
-    const blocker = refused ? null : await screenOf(job); // a start dialog holds the agent before it reports in: no blind relaunch
-    if (blocker) return blockOnScreen(getRun(runId), job, blocker);
+    if (!refused && !screened) { // a start dialog holds the agent before it reports in: no blind relaunch
+      const blocker = await screenOf(job), fresh = currentDeliveryJob(runId, nonce); // the run may have moved during the read
+      if (blocker && !disposed && fresh.job && !fresh.job.promptRecovery) return blockOnScreen(fresh.run, fresh.job, blocker);
+      return abandonUnready(runId, nonce, refused, true);
+    }
     let closed = false, closeError = '';
     try { closed = (await call('terminal.close', { terminalId: job.terminalId }))?.closed === true; }
     catch (error) { closeError = ' (' + safeError(error).message + ')'; }

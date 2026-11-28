@@ -89,7 +89,7 @@
 .px-run-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .px-run-title { padding: 0; min-height: 36px; background: none; border: 0; color: var(--px-text); font-size: 13px; font-weight: 700; }
 .px-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.px-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 4px 8px 4px 4px; border-color: var(--px-line);
+.px-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 4px 8px 4px 4px; border-color: var(--px-strong-line);
   color: var(--px-tone, var(--px-text)); font-size: 12px; font-weight: 700; }
 
 /* 에이전트 */
@@ -125,6 +125,11 @@
 .px-fold { margin: 8px 0; }
 .px-fold > summary { min-height: 36px; display: flex; align-items: center; cursor: pointer; font-weight: 600; }
 
+/* Forced colours drop shadows: selection and focus stay visible as outlines. */
+@media (forced-colors: active) {
+  .px-station[aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: -4px; }
+  .px-sprite, .px-mark { forced-color-adjust: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .px-station, .px-chip, .px-team-card, .px-attention-item { transition: none; }
 }
