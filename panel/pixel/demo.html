@@ -4,6 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Neon 작업실 · 스프라이트 시안</title>
 <link rel="stylesheet" href="sprites.css">
+<link rel="stylesheet" href="flow.css">
 <style>
   :root{color-scheme:dark;font:14px/1.55 system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;background:#10141f;color:#f1f4fa}
   body{max-width:1000px;margin:24px auto;padding:0 16px}
@@ -20,6 +21,14 @@
   ul:has(.px-sprite.px-2x){grid-template-columns:repeat(auto-fit,minmax(188px,1fr))}
   [data-still] .px-sprite{animation:none!important}
   .stamps li{min-height:24px}
+  .flow-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr))}
+  .flow-grid li{flex-direction:column;align-items:stretch;gap:4px;padding:10px 12px}
+  .flow-grid svg{display:block;width:100%;height:32px}
+  .flow-sample{position:relative;padding-inline:16px;background:#111927}
+  .flow-sample .px-flow-mark{position:absolute;right:4px;top:50%;translate:0 -50%}
+  .flow-source{position:absolute;left:7px;top:50%;translate:0 -50%;width:8px;height:8px;border:1px solid #677c9b}
+  .flow-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .flow-head small{color:var(--px-flow-ink)}
 </style>
 <main>
   <h1>Neon 작업실 · 스프라이트 시안</h1>
@@ -29,6 +38,10 @@
     <button type="button" id="still" aria-pressed="false">정지 프레임 보기</button>
     <button type="button" id="replay">시작·재시도 모션 다시 재생</button>
   </div>
+  <h2>공급선 시안</h2>
+  <p>작업·검토 두 줄만 계속 움직입니다. 인계는 버튼을 눌렀을 때 한 차례만 재생됩니다.</p>
+  <button type="button" id="pass">통과 → 인계 한 번 재생</button>
+  <ul id="flows" class="flow-grid" style="margin-top:8px"></ul>
   <h2>단계와 실행 상태</h2>
   <ul id="states"></ul>
   <h2>팀별 작업 도구</h2>
@@ -68,6 +81,38 @@
     ['approved_not_published','승인 · 게시 전'],['no_production','프로덕션 없음'],
     ['lookup_error','조회 오류'],['stale','재확인 필요'],['unknown','미확인']
   ];
+  const flows = [
+    ['live','작업 신호 확인','공급 중','arrow','work'],
+    ['live','검토 신호 확인','공급 중','arrow','review'],
+    ['handoff','방금 통과','인계','arrow'],
+    ['queue','슬롯 대기','대기','queue'],
+    ['queue','선행 단계 대기','대기','queue'],
+    ['stopped','시작 화면에서 멈춤','멈춤','stop'],
+    ['stopped','실패','멈춤','stop'],
+    ['stopped','최근 신호 없음','멈춤','quiet','', 'warn'],
+    ['complete','실행 완료','완료','complete'],
+    ['complete','이미 통과한 연결','완료','complete'],
+    ['idle','미배정 또는 시작 전','대기',''],
+    ['idle','범위에서 건너뜀','건너뜀',''],
+  ];
+  for (const [state, title, label, mark, phase = '', tone = ''] of flows) {
+    const row = document.createElement('li');
+    const data = ' data-flow="' + state + '" data-phase="' + phase + '" data-tone="' + tone + '"';
+    const line = '<path class="px-flow-pipe" d="M 0 16 H 240"/><path class="px-flow-track" d="M 0 16 H 240"/>';
+    row.innerHTML = '<div class="flow-head px-flow-swatch"' + data + '><strong>' + title + '</strong><small>' + label +
+      '</small></div><div class="flow-sample px-flow-swatch"' + data + ' aria-hidden="true"><span class="flow-source"></span>' +
+      '<svg viewBox="0 0 240 32" preserveAspectRatio="none"><g class="px-flow-line"' + data + '>' + line +
+      '<path class="px-flow-parcels" d="M 0 16 H 240"' + (state === 'handoff' ? ' pathLength="100"' : '') + '/></g></svg>' +
+      (mark ? '<span class="px-flow-mark' + (state === 'live' || state === 'handoff' ? ' px-flow-static' : '') +
+        '" data-mark="' + mark + '" data-size="2"></span>' : '') + '</div>';
+    document.getElementById('flows').append(row);
+  }
+  document.getElementById('pass').addEventListener('click', () => {
+    const line = document.querySelector('.px-flow-line[data-flow="handoff"]');
+    const next = line.cloneNode(true);
+    next.setAttribute('data-pulse', '');
+    line.replaceWith(next);
+  });
   function append(id, graphic, label, description = '') {
     const row = document.createElement('li');
     row.innerHTML = graphic + '<div><strong>' + label + '</strong>' +
@@ -86,6 +131,7 @@
   });
   document.getElementById('still').addEventListener('click', (event) => {
     const still = document.body.toggleAttribute('data-still');
+    document.body.toggleAttribute('data-px-flow-still', still);
     event.currentTarget.setAttribute('aria-pressed',String(still));
   });
   document.getElementById('replay').addEventListener('click', () => {

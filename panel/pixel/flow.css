@@ -1,0 +1,76 @@
+/* Pixel workshop rails. The edge's data-flow comes from the same summary view as its station. */
+.px-flow-line, .px-flow-swatch {
+  --px-flow-base: var(--px-strong-line, #677c9b);
+  --px-flow-ink: var(--px-neutral, #bac5d8);
+}
+:is(.px-flow-line, .px-flow-swatch)[data-flow="live"] { --px-flow-ink: var(--px-good, #7ce9c6); }
+:is(.px-flow-line, .px-flow-swatch)[data-flow="live"][data-phase="review"] { --px-flow-ink: var(--px-review, #d7c8ff); }
+:is(.px-flow-line, .px-flow-swatch)[data-flow="handoff"] { --px-flow-ink: var(--px-good, #7ce9c6); }
+:is(.px-flow-line, .px-flow-swatch)[data-flow="queue"] { --px-flow-ink: var(--px-warn, #ffce80); }
+:is(.px-flow-line, .px-flow-swatch)[data-flow="stopped"] { --px-flow-ink: var(--px-stop, #ff9ca5); }
+:is(.px-flow-line, .px-flow-swatch)[data-flow="stopped"][data-tone="warn"] { --px-flow-ink: var(--px-warn, #ffce80); }
+:is(.px-flow-line, .px-flow-swatch)[data-flow="complete"] { --px-flow-ink: var(--px-good, #7ce9c6); }
+
+.px-flow-line :is(.px-flow-pipe, .px-flow-track, .px-flow-parcels) {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+.px-flow-pipe { stroke: var(--px-flow-base); stroke-width: 6; }
+.px-flow-track { stroke: var(--px-well, #111927); stroke-width: 4; }
+[data-flow="idle"] .px-flow-pipe { stroke-dasharray: 3 4; }
+[data-flow="complete"] .px-flow-track { stroke: var(--px-flow-ink); stroke-width: 2; }
+.px-flow-parcels { stroke: var(--px-flow-ink); stroke-width: 6; stroke-linecap: butt; display: none; }
+
+[data-flow="live"] .px-flow-parcels {
+  display: initial;
+  stroke-dasharray: 6 34;
+  animation: px-flow-live 1200ms steps(10, end) infinite;
+}
+[data-flow="handoff"][data-pulse] .px-flow-parcels {
+  display: initial;
+  /* The handoff path uses pathLength="100". Dash offset starts at the source. */
+  vector-effect: none;
+  stroke-dasharray: 4 96;
+  opacity: 0;
+  animation: px-flow-handoff 720ms steps(18, end) var(--px-flow-delay, 0ms) 1;
+}
+@keyframes px-flow-live { to { stroke-dashoffset: -40; } }
+@keyframes px-flow-handoff {
+  0% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: -96; opacity: 1; }
+}
+
+/* 48 × 8 atlas of six 8px masks. The static glyph is separate from the path's animation. */
+.px-flow-mark {
+  --px-flow-frame: 0;
+  --px-flow-size: 8px;
+  display: inline-block;
+  flex: none;
+  width: var(--px-flow-size);
+  height: var(--px-flow-size);
+  background: var(--px-flow-ink, currentColor);
+  mask: url("flow-marks.png") calc(-1 * var(--px-flow-frame) * var(--px-flow-size)) 0 /
+    calc(6 * var(--px-flow-size)) var(--px-flow-size) no-repeat;
+  image-rendering: pixelated;
+}
+.px-flow-mark[data-size="2"] { --px-flow-size: 16px; }
+.px-flow-mark[data-mark="arrow"] { --px-flow-frame: 1; rotate: var(--px-flow-turn, 0deg); }
+.px-flow-mark[data-mark="queue"] { --px-flow-frame: 2; }
+.px-flow-mark[data-mark="stop"] { --px-flow-frame: 3; }
+.px-flow-mark[data-mark="complete"] { --px-flow-frame: 4; }
+.px-flow-mark[data-mark="quiet"] { --px-flow-frame: 5; }
+.px-flow-static { display: none; }
+
+[data-px-flow-still] .px-flow-parcels,
+[hidden] .px-flow-parcels { display: none; animation: none; }
+[data-px-flow-still] .px-flow-static { display: inline-block; }
+@media (prefers-reduced-motion: reduce) {
+  .px-flow-parcels { display: none !important; animation: none !important; }
+  .px-flow-static { display: inline-block; }
+}
+@media (forced-colors: active) {
+  .px-flow-line, .px-flow-swatch { --px-flow-base: CanvasText !important; --px-flow-ink: CanvasText !important; }
+  .px-flow-track { stroke: Canvas; }
+  [data-flow="complete"] .px-flow-track { stroke: CanvasText; }
+  .px-flow-mark { forced-color-adjust: none; }
+}

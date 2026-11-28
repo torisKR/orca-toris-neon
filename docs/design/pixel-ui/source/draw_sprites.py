@@ -102,6 +102,14 @@ STAMPS = {
     'app': ('.ooooooooo.','oGGHHHGGGGo','oGHgggHGGGo','oGHgcggHGGo','oGHgccgHGGo','oGHgcggHGGo','oGHgggHGGGo','oGGHHHGGGGo','.ooooooooo.'),
     'neon': ('oo.........oo','oGHHHHHHHHHGo','.HgggggggggH.','.HgccgggcgH.','.HgcwcggcgH.','.HgcgwcgcgH.','.HgcggwccgH.','.HgcgggccgH.','.HggggggggH.','oGHHHHHHHHGo.','oo.........oo'),
 }
+FLOW_MARKS = (
+    ('........','........','.######.','.##..##.','.##..##.','.######.','........','........'),
+    ('........','....#...','....##..','#######.','#######.','....##..','....#...','........'),
+    ('........','........','........','##.##.##','##.##.##','........','........','........'),
+    ('........','.######.','.##..##.','.##..##.','.##..##.','.######.','........','........'),
+    ('........','......#.','.....##.','....##..','##.##...','.###....','..#.....','........'),
+    ('........','........','........','.##..##.','.##..##.','........','........','........'),
+)
 
 def place(canvas, grid, x, y, palette):
     for dy, row in enumerate(grid):
@@ -192,6 +200,10 @@ def build():
     for i, grid in enumerate(STAMPS.values()):
         place(sheet, grid, 16 * i + (16 - max(map(len, grid))) // 2, (16 - len(grid)) // 2, palette)
     sheet.save(OUT / "marks.png", optimize=True)
+    flow = Image.new("RGBA", (8 * len(FLOW_MARKS), 8))
+    for i, grid in enumerate(FLOW_MARKS):
+        place(flow, grid, 8 * i, 0, {'#': (255, 255, 255, 255)})
+    flow.save(OUT / "flow-marks.png", optimize=True)
 
 
 if __name__ == "__main__":

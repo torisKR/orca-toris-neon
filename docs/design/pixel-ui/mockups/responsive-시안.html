@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="ko" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toris Neon · 반응형 시안</title>
+<link rel="stylesheet" href="../../../../panel/studio.css">
+<link rel="stylesheet" href="../../../../panel/pixel-layout.css">
+<link rel="stylesheet" href="../../../../panel/pixel/sprites.css">
+<link rel="stylesheet" href="../../../../panel/pixel/flow.css">
+<style>
+  :root { color-scheme: dark; --frame-margin: clamp(16px, 2.4cqi, 32px); }
+  #app { container: neon-panel / inline-size; }
+  .shell { max-width: 1456px; }
+  .topbar, .nav, main { padding-inline: var(--frame-margin); }
+  .topbar { padding-block: 11px; }
+  .brand-meta { margin-top: 2px; }
+  .nav { position: static; gap: 5px; padding-block: 7px; }
+  .nav a { color: var(--muted); padding: 7px 13px; font-size: 12px; border-radius: 6px; }
+  .nav a[aria-current] { background: #29223e; color: #e1d4ff; font-weight: 650; }
+  main { padding-block: 18px 22px; }
+  h1 { font-size: 25px; }
+  h2 { font-size: 16px; }
+  p { max-inline-size: 72ic; }
+  .titlebar, .rail, .run-toolbar, .section-head, .stage-top, .stage-item, .store-tools {
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+  }
+  .titlebar { margin-bottom: 13px; }
+  .titlebar .hint { margin: 2px 0 0; font-size: 12px; }
+  .mock-tag { border: 1px solid var(--line); padding: 3px 8px; color: var(--muted); font-size: 11px; }
+  .title-actions { display:flex; align-items:center; gap:9px; }
+  .rail { background: var(--px-bg); border:1px solid var(--px-line); padding:7px 10px; min-height:46px; }
+  .rail label { color:var(--px-muted); font-size:11px; white-space:nowrap; }
+  .rail select { width: min(43cqi, 310px); padding:5px 8px; min-height:30px; }
+  .rail-title { display:flex; align-items:center; gap:8px; min-width:0; }
+  .rail-count { color:var(--px-muted); font-size:11px; white-space:nowrap; }
+  .px-banner { margin:8px 0; padding:5px 12px; background:#302129; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .px-banner .px-sprite { flex:none; }
+  .px-banner-title { font-size:14px; }
+  .px-banner .px-banner-meta { border:none; margin:0; padding:0; white-space:nowrap; }
+  .run-toolbar { margin:8px 0 13px; }
+  .run-toolbar .actions { margin:0; }
+  .run-toolbar p { color:var(--muted); font-size:11px; }
+  .auto-grid, .today-grid, .agents-grid { display:grid; gap:16px; align-items:start; }
+  .auto-grid > *, .today-grid > *, .agents-grid > * { min-width:0; margin:0; }
+  @container neon-panel (width >= 900px) {
+    .auto-grid { grid-template-columns:minmax(0,1fr) minmax(280px,30%); }
+    .inspector { position:sticky; top:12px; }
+    .today-grid { grid-template-columns:minmax(260px,32%) minmax(0,1fr); }
+    .agents-grid { grid-template-columns:minmax(0,1fr) minmax(235px,26%); }
+  }
+  .workshop { background:var(--px-panel); border:1px solid var(--px-strong-line); padding:11px; box-shadow:0 2px var(--px-shadow); }
+  .section-head { margin-bottom:9px; }
+  .section-head h2 { margin:0; }
+  .section-head small,.meta { color:var(--px-muted); font-size:11px; }
+  .graph { position:relative; display:block; min-width:0; height:326px; isolation:isolate; font-size:12px; background:var(--px-well) radial-gradient(#34425b 1px, transparent 1px) 0 0 / 12px 12px; border:1px solid var(--px-line); }
+  .graph svg { position:absolute; inset:0; width:100%; height:100%; z-index:-1; overflow:visible; }
+  .graph .px-flow-mark { position:absolute; left:var(--port-x); top:var(--port-y); translate:-50% -50%; pointer-events:none; }
+  .node-card { position:absolute; left:var(--x); top:var(--y); translate:-50% 0; width:28%; height:65px; display:flex; align-items:center; gap:6px; min-width:0; padding:6px 7px; text-align:left; background:var(--px-panel); border:1px solid var(--px-strong-line); box-shadow:0 2px var(--px-shadow); }
+  .node-card:is([data-state="live"],[data-state="review"],[data-state="stopped"]) { border-color:var(--px-tone); }
+  .node-card[data-state="live"] { background:var(--px-work-bg); }
+  .node-card[data-state="review"] { background:#26243b; }
+  .node-card[data-state="stopped"] { background:var(--px-stop-bg); }
+  .node-card[aria-pressed="true"] { outline:1px solid var(--px-stop); outline-offset:2px; }
+  .node-text { min-width:0; word-break:keep-all; }
+  .node-text small { display:block; font-size:10px; color:var(--px-muted); }
+  .node-text b { display:block; font-size:13px; line-height:1.35; }
+  .node-text .px-state { font-size:11px; white-space:normal; margin-top:1px; }
+  .flow-help { display:flex; align-items:center; justify-content:space-between; gap:5px 14px; flex-wrap:wrap; margin-top:8px; }
+  .legend { display:flex; align-items:center; gap:5px 13px; flex-wrap:wrap; font-size:11px; color:var(--px-muted); }
+  .legend > span { display:flex; align-items:center; gap:4px; }
+  .legend button { font-size:11px; }
+  .lower { margin-top:11px; }
+  .lower details, .release { padding:7px 9px; border:1px solid var(--px-line); background:var(--px-bg); margin-top:7px; }
+  .release { padding:4px 8px; }
+  .inspector { padding:13px; border:1px solid var(--px-strong-line); background:var(--px-bg); }
+  .inspector h2 { margin:0; font-size:17px; }
+  .stage-top { align-items:start; }
+  .stage-top .hint { margin:0; }
+  .stage-meta { padding:10px 0; margin:8px 0 0; border-block:1px solid var(--px-line); font-size:12px; }
+  .stage-meta div { display:flex; justify-content:space-between; gap:8px; align-items:baseline; margin-bottom:5px; }
+  .stage-meta div:last-child { margin-bottom:0; }
+  .stage-meta dt { color:var(--px-muted); }
+  .stage-meta dd { margin:0; text-align:right; }
+  .stage-alert { padding:8px 9px; margin-top:10px; border-left:3px solid var(--px-stop); background:var(--px-stop-bg); font-size:12px; }
+  .stage-alert strong { color:var(--px-stop); }
+  .stage-alert p { font-size:12px; color:var(--px-text); margin-top:4px; }
+  .stage-item { font-size:12px; }
+  .stage-item .button { color:var(--fg); }
+  .workspace { margin:14px 0; }
+  .workspace ul { list-style:none; display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr)); gap:8px; padding:0; margin:0; }
+  .workspace li { display:flex; align-items:center; gap:7px; min-height:49px; padding:5px 8px; background:var(--px-panel); border:1px solid var(--px-line); }
+  .workspace li .grow { color:var(--px-text); }
+  .workspace li .px-state { margin-left:auto; }
+  .workspace li small { display:block; font-size:10px; color:var(--px-muted); }
+  .attention-list { display:grid; gap:7px; list-style:none; margin:0; padding:0; }
+  .attention-list button { min-width:0; }
+  .px-attention-text strong { display:block; }
+  .mini-path { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:4px 0 3px; }
+  .mini-node { display:inline-flex; align-items:center; gap:3px; min-height:29px; padding:2px 5px; text-align:left; font-size:11px; background:var(--px-well); border:1px solid var(--px-line); color:var(--px-text); }
+  .mini-node[data-tone="stop"] { border-color:var(--px-stop); }
+  .mini-node[data-tone="good"] { color:var(--px-good); }
+  .mini-node[data-tone="review"] { color:var(--px-review); }
+  .mini-branch { display:flex; align-items:stretch; gap:3px; padding:2px 4px; border-inline:2px solid var(--px-strong-line); }
+  .mini-release { display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+  .history { margin-top:14px; }
+  .history .card { padding:11px; }
+  .history .note-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .agents-grid .px-desks { margin:0; }
+  .agents-grid .px-desk-grid { grid-template-columns:1fr; }
+  .agents-grid .px-team-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .agents-grid .px-team-card { display:grid; grid-template-columns:32px minmax(0,1fr); gap:2px 6px; padding:7px; }
+  .agents-grid .px-state { grid-column:2; text-align:left; }
+  @container neon-panel (width >= 900px) {
+    .agents-grid .px-team-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  }
+  @container neon-panel (width >= 1160px) {
+    .agents-grid .px-team-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  }
+  .store-tools { padding:8px 10px; background:var(--px-panel); border:1px solid var(--px-line); margin-bottom:12px; }
+  .store-tools .meta { margin-left:auto; }
+  .filters { display:grid; gap:10px; grid-template-columns:minmax(0,1fr) minmax(140px,26%); margin:10px 0; align-items:end; }
+  .store-list { --columns:minmax(115px,1.1fr) minmax(150px,1.5fr) minmax(145px,1fr) minmax(80px,.65fr) minmax(105px,.75fr); list-style:none; margin:0; padding:0; }
+  .store-head, .store-row { display:grid; grid-template-columns:var(--columns); gap:10px; align-items:center; padding:7px 10px; }
+  .store-head { font-size:11px; color:var(--px-muted); background:var(--px-raised); border:1px solid var(--px-line); }
+  .store-list > li { border-inline:1px solid var(--px-line); border-bottom:1px solid var(--px-line); }
+  .store-list details { background:var(--px-panel); }
+  .store-row { color:var(--px-text); min-height:44px; margin:0!important; cursor:pointer; }
+  .store-row > span { min-width:0; overflow-wrap:anywhere; }
+  .store-row > span:first-child { display:flex; align-items:center; gap:5px; }
+  .store-row .last { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+  .store-row .last::after { content:"›"; color:var(--px-muted); font-size:17px; }
+  details[open] .store-row .last::after { rotate:90deg; }
+  .track-detail { padding:10px 12px; background:var(--px-well); border-top:1px solid var(--px-line); }
+  .track-detail ul { list-style:none; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:8px 0; padding:0; }
+  .track-detail li { padding:7px; border:1px solid var(--px-line); }
+  .track-detail li small { display:block; color:var(--px-muted); margin-top:4px; }
+  @container neon-panel (width < 900px) {
+    .store-head { display:none; }
+    .store-row { grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; }
+  }
+  .footer { padding-top:18px; }
+</style>
+</head>
+<body>
+<div id="app">
+<div class="shell">
+  <header class="topbar"><div class="brand-mark" aria-hidden="true">N</div><div class="grow"><div class="brand-name">TORIS NEON</div><div class="brand-meta">APP STUDIO · FOR ORCA</div></div><span class="status-label"><i class="dot"></i>3개 실행</span></header>
+  <nav class="nav" aria-label="주요 메뉴"></nav>
+  <main id="view"></main>
+</div>
+</div>
+<script>
+  const sprite = (team, pose) => '<span class="px-sprite" data-team="' + team + '" data-pose="' + pose + '" aria-hidden="true"></span>';
+  const mark = (name, big = false) => '<span class="px-mark' + (big ? ' px-2x' : '') + '" data-mark="' + name + '" aria-hidden="true"></span>';
+  const flowMark = (name, extra = '') => '<span class="px-flow-mark" data-mark="' + name + '" ' + extra + ' aria-hidden="true"></span>';
+  const btn = (label, style = '') => '<button class="button ' + style + '" type="button">' + label + '</button>';
+  const rail = () => `<div class="rail"><div class="rail-title"><label for="run">실행 선택</label><select id="run" class="field"><option>별가람 일지 · 새 앱</option><option>구름 스텝 · 운동 기록</option><option>고요 서재 · 읽기 개선</option></select></div><span class="rail-count">최근 실행 3개</span></div>`;
+  const stageData = [
+    ['plan','기획팀','시장·앱 조사','통과','passed','good',18,13],
+    ['plan','기획팀','제품 기획','통과','passed','good',50,13],
+    ['arch','설계팀','구조 설계','작업 중','work','good',18,126,'live'],
+    ['design','디자인팀','화면 설계','검토 중','review','review',50,126,'review'],
+    ['design','디자인팀','알림 설계','멈춤 · 시작 화면','blocked','stop',82,126,'stopped'],
+    ['build','구현팀','앱 구현','선행 대기','dependency','neutral',50,238],
+    ['qa','검증팀','테스트·수정','선행 대기','dependency','neutral',82,238],
+  ];
+  const node = ([team, room, title, label, pose, tone, x, y, mode = '']) => {
+    const flow = {work:'공급 중',review:'공급 중',blocked:'멈춤',dependency:'대기',passed:'완료'}[pose];
+    const accessibleState = label.includes(flow) ? label : flow + ' · ' + label;
+    return `<button type="button" class="node-card" data-tone="${tone}" data-state="${mode}" style="--x:${x}%;--y:${y}px" aria-pressed="${mode === 'stopped'}" aria-label="${title} · ${accessibleState}">${sprite(team,pose)}<span class="node-text"><small>${room}</small><b>${title}</b><span class="px-state">${label}</span></span></button>`;
+  };
+  const edge = (state, path, phase = '') =>
+    `<g class="px-flow-line" data-flow="${state}" data-phase="${phase}"><path class="px-flow-pipe" d="${path}"/><path class="px-flow-track" d="${path}"/><path class="px-flow-parcels" d="${path}"/></g>`;
+  const port = (state, glyph, x, y, extra = '') =>
+    `<span class="px-flow-swatch" data-flow="${state}">${flowMark(glyph,`style="--port-x:${x}%;--port-y:${y}px;${extra}" data-size="2"`)}</span>`;
+  const sectionHead = (label, meta = '') => '<div class="section-head"><h2>' + label + '</h2><small>' + meta + '</small></div>';
+  const workspace = () => `<section class="workspace">${sectionHead('현재 작업 공간 · Orca','2개 세션')}<ul>
+    <li>${sprite('arch','work')}<div class="grow"><b>로컬 테스트 · 미리보기</b><small>Codex · 직접 실행</small></div><span class="px-state" data-tone="good">작업 중</span>${btn('열기','small')}</li>
+    <li>${sprite('qa','review')}<div class="grow"><b>초안 검토 · 미리보기</b><small>Claude · Neon 배정</small></div><span class="px-state" data-tone="review">검토 중</span>${btn('열기','small')}</li>
+  </ul></section>`;
+  const titlebar = (title, action = '', hint = '') => `<div class="titlebar"><div><h1>${title}</h1>${hint ? '<p class="hint">' + hint + '</p>' : ''}</div><div class="title-actions"><span class="mock-tag">시안</span>${action}</div></div>`;
+  function auto() {
+    return titlebar('Auto App',btn('+ 새 흐름','small')) + rail() + `
+      <section class="px-banner" data-tone="stop">
+        <div class="px-banner-main">${sprite('design','blocked')}<div><h2 class="px-banner-title">알림 설계 · 시작 화면에서 멈춤</h2><p class="px-banner-detail">내 조치 1개 · 작업·검토 2개 계속</p></div></div>
+        <p class="px-banner-meta">경과 1분 18초 · 마지막 기록 12초 전</p>
+      </section>
+      <div class="run-toolbar"><p>별가람 일지 작업 공간</p><div class="actions">${btn('새 배정 멈춤')}${btn('상태 동기화')}${btn('작업 공간 열기')}${btn('실행 취소','danger')}</div></div>
+      <div class="auto-grid">
+        <section class="workshop">
+          ${sectionHead('제작 작업실','2 / 11단계 통과')}
+          <div class="graph">
+            <svg viewBox="0 0 1000 326" preserveAspectRatio="none" aria-hidden="true">
+              ${edge('complete','M320 46 H360')}
+              ${edge('live','M432 78 V102 H180 V126','work')}
+              ${edge('live','M500 78 V126','review')}
+              ${edge('stopped','M568 78 V102 H820 V126')}
+              ${edge('queue','M180 191 V216 H450 V238')}
+              ${edge('queue','M500 191 V238')}
+              ${edge('queue','M820 191 V216 H550 V238')}
+              ${edge('queue','M640 271 H680')}
+            </svg>
+            ${stageData.map(node).join('')}
+            <span class="px-flow-swatch px-flow-static" data-flow="live">${flowMark('arrow','style="--port-x:18%;--port-y:115px;--px-flow-turn:90deg" data-size="2"')}</span>
+            <span class="px-flow-swatch px-flow-static" data-flow="live" data-phase="review">${flowMark('arrow','style="--port-x:50%;--port-y:115px;--px-flow-turn:90deg" data-size="2"')}</span>
+            ${port('stopped','stop',82,114)}
+            ${port('queue','queue',45,229)}
+            ${port('queue','queue',50,229)}
+            ${port('queue','queue',55,229)}
+            ${port('queue','queue',66,271)}
+          </div>
+          <div class="flow-help"><div class="legend" aria-label="공급선 상태">
+            <span class="px-flow-swatch" data-flow="live">${flowMark('parcel','data-size="2"')} 공급 중</span>
+            <span class="px-flow-swatch" data-flow="queue">${flowMark('queue','data-size="2"')} 대기</span>
+            <span class="px-flow-swatch" data-flow="stopped">${flowMark('stop','data-size="2"')} 멈춤</span>
+            <span class="px-flow-swatch" data-flow="complete">${flowMark('complete','data-size="2"')} 완료</span>
+          </div><button class="button small" type="button" id="motion" aria-pressed="false">공급 모션 끄기</button></div>
+          <details class="release"><summary>출시 준비 · 남은 4단계</summary><p>정책 점검 → 스토어 자료 → 내부 테스트 → 출시 검토</p></details>
+        </section>
+        <aside class="inspector" aria-label="선택한 단계 상세">
+          <div class="stage-top"><div><p class="hint">선택한 단계 · 디자인팀</p><h2>알림 설계</h2></div>${sprite('design','blocked')}</div>
+          <div class="stage-alert"><strong>멈춤 · 시작 화면</strong><p>Claude의 Code Mode 안내에서 멈췄습니다. 터미널에서 안내를 확인한 뒤 재개하세요.</p></div>
+          <dl class="stage-meta"><div><dt>담당</dt><dd>Claude · 작업</dd></div><div><dt>경과</dt><dd>1분 18초</dd></div><div><dt>준비 실패</dt><dd>0 / 3</dd></div><div><dt>선행 단계</dt><dd>제품 기획 · 통과</dd></div></dl>
+          <div class="actions">${btn('터미널 열기','primary')}${btn('상태 확인 후 재개')}</div>
+          <details class="lower"><summary>배정 정보와 검증 근거</summary><p>이 단계에서 제출한 보고서가 없습니다.</p></details>
+        </aside>
+      </div>
+      ${workspace()}
+      <section class="lower"><details><summary>실행 전 점검 · 실행 설정</summary></details><details><summary>결과 · 비용 · 작업 기록</summary></details></section>`;
+  }
+  const attention = (title, text, action, pose, tone, team) => `<li><button type="button" class="px-attention-item" data-tone="${tone}">${sprite(team,pose)}<span class="px-attention-text"><strong>${title}</strong><span class="px-state">${text}</span><small>${action}</small></span><span class="px-chevron" aria-hidden="true">›</span></button></li>`;
+  const mini = (title, state, type, tone = '') => `<button class="mini-node px-flow-swatch" type="button" data-flow="${type}" data-tone="${tone}" aria-label="${title} · ${state}" title="${title} · ${state}">${flowMark({live:'arrow',queue:'queue',stopped:'stop',complete:'complete'}[type])}${title}</button>`;
+  const arrow = '<span aria-hidden="true" class="meta">→</span>';
+  const path = (parts) => parts.join(arrow);
+  const run = (title, count, route, release = '') => `<article class="px-run-row"><div class="px-run-head"><button class="px-run-title">${title}</button><span class="px-count">${count} 통과</span></div><div class="mini-path">${route}${release ? '<span class="mini-release" role="group" aria-label="테스트 다음의 출시 준비">' + arrow + release + '</span>' : ''}</div></article>`;
+  function today() {
+    const branch = `<span class="mini-branch">${mini('구조 설계','공급 중','live','good')}${mini('화면 설계','검토 · 공급 중','live','review')}${mini('알림 설계','멈춤 · 시작 화면','stopped','stop')}</span>`;
+    return titlebar('오늘 이어하기',btn('+ 새 앱','primary small'),'11월 28일 · 어제의 기록 8건') + `
+      <div class="today-grid">
+        <section><header>${sectionHead('내가 봐야 할 것','조치 2건 · 지켜보는 중 1건')}</header><ul class="attention-list">
+          ${attention('별가람 일지','알림 설계 · 멈춤','Code Mode 안내 확인','blocked','stop','design')}
+          ${attention('구름 스텝','출시 검토 · 승인 대기','제출 전 검토 요청','approval','warn','ship')}
+          ${attention('고요 서재','앱 구현 · 4분째 조용함','마지막 기록 이후 새 상태 없음','quiet','watch','build')}
+        </ul></section>
+        <section>${sectionHead('실행 현황','3개 실행')}
+          ${run('별가람 일지 · 새 앱','2 / 11',path([mini('조사','통과','complete'),mini('기획','통과','complete'),branch,mini('구현','대기','queue'),mini('테스트','대기','queue')]),path([mini('정책','대기','queue'),mini('자료','대기','queue'),mini('내부','대기','queue'),mini('출시','대기','queue')]))}
+          ${run('구름 스텝 · 운동 기록','3 / 4',path([mini('기획','통과','complete'),mini('구현','통과','complete'),mini('테스트','통과','complete'),mini('출시 검토','멈춤 · 승인 대기','stopped','stop')]))}
+          ${run('고요 서재 · 읽기 개선','2 / 4',path([mini('진단','통과','complete'),mini('개선 기획','통과','complete'),mini('앱 구현','멈춤 · 조용함','stopped','stop'),mini('테스트','대기','queue')]))}
+        </section>
+      </div>
+      ${workspace()}
+      <section class="history">${sectionHead('이어서 할 일','최근 인계 메모')}<div class="note-grid"><div class="card"><strong>별가람 일지</strong><p class="hint">알림 시간 기본값을 확인합니다.</p></div><div class="card"><strong>고요 서재</strong><p class="hint">긴 목록에서 스크롤 위치를 확인합니다.</p></div></div></section>`;
+  }
+  function agents() {
+    const teams = [
+      ['plan','passed','기획팀','제품 기획','통과','good'],
+      ['arch','work','설계팀','구조 설계','작업 중','good'],
+      ['design','blocked','디자인팀','알림 설계','멈춤 · 시작 화면','stop'],
+      ['build','dependency','구현팀','앱 구현','선행 대기','neutral'],
+      ['money','idle','수익화팀','배정된 단계 없음','미배정','neutral'],
+      ['qa','dependency','검증팀','테스트·수정','선행 대기','neutral'],
+      ['ship','dependency','출시팀','출시 검토','선행 대기','neutral'],
+    ];
+    const desks = (title, num, icons) => `<div class="px-desk"><span class="px-desk-label">${title}</span><strong class="px-desk-count">${num}</strong><div class="px-desk-row">${icons.map(name => mark(name,true)).join('')}</div></div>`;
+    return titlebar('에이전트') + workspace() + rail() + `
+      <div class="agents-grid" style="margin-top:14px">
+        <section class="px-team-room">${sectionHead('팀 작업실','7개 팀 · 별가람 일지')}<ul class="px-team-grid">
+          ${teams.map(([team,pose,name,stage,label,tone]) => `<li><button type="button" class="px-team-card" data-tone="${tone}">${sprite(team,pose)}<span class="px-team-text"><strong>${name}</strong><small>${stage}</small></span><span class="px-state">${label}</span></button></li>`).join('')}
+        </ul></section>
+        <section class="px-desks"><h2>Neon 작업 자리</h2><div class="px-desk-grid">${desks('전체 작업','3 / 4',['desk-busy','desk-busy','desk-busy','desk'])}${desks('빌드·테스트','0 / 1',['desk'])}</div>
+          <p class="hint">준비 중인 자리도 점유로 집계합니다. Orca에서 직접 실행한 세션은 이 한도에 포함되지 않습니다.</p>
+        </section>
+      </div>
+      <section class="lower"><details><summary>운영 현황 · 슬롯과 터미널</summary></details><details><summary>팀별 작업자와 검토자</summary></details><details><summary>전체 배정 · 11개 단계</summary></details></section>`;
+  }
+  function play() {
+    const apps = [
+      ['구름 스텝','com.example.cloudstep','rejected','거부됨','stop',3,'11.28. 10:45'],
+      ['별가람 일지','com.example.starjournal','in_review','심사 중','warn',3,'11.28. 10:45',true],
+      ['고요 서재','com.example.quietlibrary','published','게시됨','good',2,'11.28. 10:42'],
+      ['한입 기록','com.example.bitememo','draft','초안','neutral',2,'11.28. 10:41'],
+      ['작은 씨앗','com.example.smallseed','no_production','프로덕션 없음','neutral',1,'11.28. 10:39'],
+    ];
+    return titlebar('Play Store',btn('+ 계정 연결','small')) + `<div class="store-tools">${btn('샘플 개발자 계정','small')}<details><summary>계정 관리</summary></details><span class="meta">마지막 계정 점검 · 11.28. 10:45</span>${btn('지금 점검','primary small')}</div>
+      <section>${sectionHead('앱 목록','전체 5개')}
+      <div class="filters"><div><label for="search" class="label">앱 검색</label><input type="search" class="field" placeholder="앱 이름 또는 패키지명" id="search"></div><div><label for="status" class="label">상태 필터</label><select id="status" class="field"><option>모든 상태</option></select></div></div>
+      <div class="store-head" style="--columns:minmax(115px,1.1fr) minmax(150px,1.5fr) minmax(145px,1fr) minmax(80px,.65fr) minmax(105px,.75fr)"><span>앱 이름</span><span>패키지</span><span>프로덕션</span><span>트랙</span><span>마지막 확인</span></div>
+      <ul class="store-list" aria-label="Play Store 앱">
+        ${apps.map(([name,pkg,state,label,tone,tracks,checked,open]) => `<li><details ${open ? 'open' : ''}><summary class="store-row"><span>${mark('app',true)}<strong>${name}</strong></span><span class="mono">${pkg}</span><span><span class="px-stamp" data-tone="${tone}" data-status="${state}">${mark(state)}${label}</span></span><span class="meta">${tracks}개 트랙</span><span class="last meta">${checked}</span></summary>
+          ${open ? `<div class="track-detail"><strong>트랙별 릴리스</strong><ul><li><b>프로덕션</b><small>v42 · 심사 중</small></li><li><b>비공개 테스트</b><small>v41 · 게시됨</small></li><li><b>내부 테스트</b><small>v43 · 게시됨</small></li></ul><div class="stage-item"><span class="meta">연결된 프로젝트 · 별가람 일지</span>${btn('스토어 페이지 ↗','small')}</div></div>` : ''}
+        </details></li>`).join('')}
+      </ul></section>`;
+  }
+  const sections = { today:['오늘 이어하기',today], auto:['Auto App',auto], play:['Play Store',play], agents:['에이전트',agents] };
+  const tab = new URLSearchParams(location.search).get('tab') ?? 'auto';
+  const current = Object.hasOwn(sections,tab) ? tab : 'auto';
+  document.querySelector('nav').innerHTML = Object.entries(sections).map(([id,[label]]) => `<a href="?tab=${id}" ${id === current ? 'aria-current="page"' : ''}>${label}</a>`).join('');
+  document.querySelector('#view').innerHTML = sections[current][1]() + '<footer class="footer"><span>Toris Neon · 반응형 시안</span><span>합성 데이터 · Asia/Seoul</span></footer>';
+  document.querySelector('#motion')?.addEventListener('click',event => {
+    const still = document.body.toggleAttribute('data-px-flow-still');
+    event.currentTarget.setAttribute('aria-pressed', String(still));
+  });
+</script>
+</body>
+</html>

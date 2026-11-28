@@ -441,7 +441,7 @@ const bridge=`(()=>{
 })();`;
 
 // panel/pixel: an allowlist of the shipped atlas files, never an arbitrary path.
-const PIXEL_ASSETS=new Set(['/pixel/sprites.css','/pixel/demo.html','/pixel/marks.png',...['plan','arch','design','build','money','qa','ship','other'].map(team=>'/pixel/crew-'+team+'.png')]);
+const PIXEL_ASSETS=new Set(['/pixel/sprites.css','/pixel/demo.html','/pixel/marks.png','/pixel/flow.css','/pixel/flow-marks.png',...['plan','arch','design','build','money','qa','ship','other'].map(team=>'/pixel/crew-'+team+'.png')]);
 function servePreview() {
   const root=fileURLToPath(new URL('../',import.meta.url)),model=createPreviewModel({ liveAt: Date.now() });
   const server=http.createServer(async(req,res)=>{
