@@ -4,6 +4,8 @@
  * conditions, measurements, the release link), and the passed work reports that must carry them.
  * Pure: a run in, text or a normalized field out. Refusals are report-form errors the agent fixes.
  */
+import { REPORT_LIMITS, CONDITION_KEYS } from './reportlimits.mjs';
+
 const fail = (message) => { throw Object.assign(new Error(message), { code: 'invalid_report' }); };
 const text = (value, label, max) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) fail(label + ' 값이 필요합니다(최대 ' + max + '자).');
@@ -34,11 +36,10 @@ export async function projectPlatform(root, io) {
 export const WEB_NOTE = '웹 프로젝트입니다: APK/AAB, versionCode, 서명, Play에 관한 지시는 해당하지 않습니다. 프로젝트의 웹 빌드·테스트 명령으로 검증하세요.';
 export const WEB_RELEASE_DONE = '웹 프로젝트이므로 Play 정책·스토어·제출 단계 없이, 마지막 검증 이후 바뀐 부분을 다시 검증하는 것까지가 이 실행의 범위입니다. 배포는 프로젝트의 배포 절차로 사람이 진행합니다.';
 
-/** Screenshot conditions: what must be the same before and after for a fair comparison. */
-export const CONDITION_KEYS = Object.freeze(['device', 'size', 'language', 'data']);
+export { CONDITION_KEYS }; // screenshot conditions: what must be the same before and after for a fair comparison
 function conditionsOf(value, label) {
   if (!object(value)) fail(label + '은(는) {"device", "size", "language", "data"} 객체여야 합니다.');
-  return Object.fromEntries(CONDITION_KEYS.map((key) => [key, text(value[key], label + '.' + key, 160)]));
+  return Object.fromEntries(CONDITION_KEYS.map((key) => [key, text(value[key], label + '.' + key, REPORT_LIMITS.condition)]));
 }
 function comparisonOf(value) {
   if (!object(value) || (value.before === undefined && value.after === undefined)) fail('comparison은 {"before": 촬영 조건} 또는 {"after": 촬영 조건}을 담은 객체여야 합니다.');
@@ -46,8 +47,8 @@ function comparisonOf(value) {
     ...(value.after === undefined ? {} : { after: conditionsOf(value.after, 'comparison.after') }) };
 }
 
-const MAX_SAMPLES = 200;
-const MAX_METRICS = 8;
+const MAX_SAMPLES = REPORT_LIMITS.samples;
+const MAX_METRICS = REPORT_LIMITS.metrics;
 function metricOf(item, samples) {
   if (!object(item)) fail('measurement.metrics의 항목은 객체여야 합니다.');
   const name = text(item.name, '지표 name', 80);
@@ -64,7 +65,7 @@ function measurementOf(value) {
   if (!Array.isArray(value.metrics) || !value.metrics.length || value.metrics.length > MAX_METRICS) fail('measurement.metrics는 1~' + MAX_METRICS + '개의 지표 배열이어야 합니다.');
   const metrics = value.metrics.map((item) => metricOf(item, samples));
   if (new Set(metrics.map((item) => item.name)).size !== metrics.length) fail('measurement.metrics의 지표 이름이 중복됩니다.');
-  return { scenario: text(value.scenario, 'measurement.scenario', 600), environment: text(value.environment, 'measurement.environment', 600), samples, metrics };
+  return { scenario: text(value.scenario, 'measurement.scenario', REPORT_LIMITS.measurementText), environment: text(value.environment, 'measurement.environment', REPORT_LIMITS.measurementText), samples, metrics };
 }
 
 const COMMIT = /^[0-9a-f]{7,40}$/i;

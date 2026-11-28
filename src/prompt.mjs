@@ -6,6 +6,7 @@ import { budgetInstruction, reviewInstruction, followUpsInstruction } from './pr
 import { IMPROVE_BRIEFS, improvementContext, billingSkillInstruction } from './improve.mjs';
 import { kindInstruction } from './kinds.mjs';
 import { reuseInstruction } from './reuse.mjs';
+import { reportLimitsText } from './reportlimits.mjs';
 
 /** The assignment typed into a stage's agent: goal, scope, upstream results, report contract. */
 export const STAGE_BRIEFS = {
@@ -82,6 +83,7 @@ export function buildNodePrompt(run, node, job) {
     JSON.stringify(candidateReceipt(job), null, 2),
     'passed에는 비어 있지 않은 summary, 실제 evidence, 최소 한 개의 artifact가 필요합니다. 명령 실패를 숨기지 마세요. 실패했다가 고쳐서 다시 실행한 명령은 {"kind": "command", "command": "...", "exitCode": 8, "role": "history"}처럼 기록으로 남기고, 결과를 뒷받침하는 명령은 exitCode 0이어야 합니다(필요하면 "role": "check"). 0이 아닌 종료 코드가 기대 결과인 확인(다름을 보이는 diff의 1, 파일이 없음을 보이는 ls의 2)은 {"kind": "command", "command": "diff a b", "exitCode": 1, "expectedExitCode": 1, "role": "check"}처럼 expectedExitCode를 적으세요.',
     RESULT_CONTRACT,
+    reportLimitsText(), // the same limits the validator enforces (src/reportlimits.mjs)
     review ? FAILURE_CONTRACT : '',
     review ? 'sourceFingerprint는 위 값을 그대로 포함하세요. 검토 중 소스가 달라지면 blocked로 보고하세요.' : '',
     'JSON 보고서는 다른 임시 파일에 먼저 쓴 후 위 경로로 원자적으로 교체하세요. 보고서를 저장한 뒤 작업을 종료하세요.',

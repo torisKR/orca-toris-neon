@@ -7,6 +7,8 @@ import { kindFieldsOf, requireKindProof } from './kinds.mjs';
 import { candidatesOf, requireCandidates } from './candidates.mjs';
 import { followUpFieldsOf, failOnDefects, requireBrokenCriterion } from './followups.mjs';
 import { parallelFieldsOf, requireParallel } from './fanout.mjs';
+import { REPORT_LIMITS as LIMITS, overCap } from './reportlimits.mjs';
+import { evidenceItem, classifyFailedCommands } from './evidence.mjs';
 export const RUN_VERSION = 1;
 export const DEFAULT_TIME_ZONE = 'Asia/Seoul';
 export const DEFAULT_GRAPH = [
@@ -121,7 +123,7 @@ function instant(now) {
 
 function requiredText(value, label, max = 4000) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) {
-    fail('invalid_input', label + ' 값을 확인하세요.');
+    fail('invalid_input', label + ' 값을 확인하세요 (최대 ' + max + '자).');
   }
   return value.trim();
 }
@@ -386,53 +388,33 @@ export function recordLaunch(run, nodeId, { nonce, terminalId, workspaceId, sess
   return settle(next);
 }
 
-const COMMAND_ROLES = new Set(['check', 'history']);
-/**
- * A failed command never supports a pass. A command succeeds when it exits with its expected code:
- * 0, or `expectedExitCode` when a non-zero exit is the point (diff showing a difference, a listing
- * proving a file is absent). A failure may stay as history (an earlier try that was redone):
- * explicitly with role 'history', or without a role when another command in the report succeeded.
- * A failed 'check', or a pass whose only commands failed, is refused, naming the entry so the
- * agent can correct its report. Marks lenient history entries on the fresh normalized entries.
- */
-const commandSucceeded = (item) => item.exitCode === (item.expectedExitCode ?? 0);
-function classifyFailedCommands(evidence) {
-  const succeeded = evidence.some(item => item.kind === 'command' && commandSucceeded(item));
-  evidence.forEach((item, index) => {
-    if (item.kind !== 'command' || commandSucceeded(item) || item.role === 'history') return;
-    if (item.role === 'check' || !succeeded) {
-      fail('contradictory_evidence', '실패한 명령을 통과 근거로 사용할 수 없습니다: evidence[' + index + '] (' + item.command.slice(0, 120) + ')의 exitCode가 ' +
-        item.exitCode + '입니다. 이 종료 코드가 기대한 결과라면 "expectedExitCode": ' + item.exitCode + '를 적고, 실패 후 다시 실행한 기록이면 "role": "history"로 적으세요.');
-    }
-    item.role = 'history';
-  });
-}
-const exitCodeOf = (value) => typeof value === 'string' && /^-?\d{1,5}$/.test(value.trim()) ? Number(value) : value;
 // Play product ids: lowercase letters, digits, '_' and '.', starting with a letter or digit.
 const PRODUCT_ID = /^[a-z0-9][a-z0-9._]{0,138}$/;
 const reportText = (value, label, max) => { try { return requiredText(value, label, max); } catch (error) { return fail('invalid_report', error.message); } };
-const ARTIFACT_LABELS = new Set(['mockup', 'screenshot']);
 /** Non-pass classes: repair the code, run or add the missing check only, or hold for an external condition. */
 export const FAILURE_CLASSES = Object.freeze(['code', 'check', 'external']);
 const textList = (value, label, max, count) => {
-  if (!Array.isArray(value) || value.length > count) fail('invalid_report', label + '은(는) 최대 ' + count + '개의 문자열 배열이어야 합니다.');
+  if (!Array.isArray(value)) fail('invalid_report', label + '은(는) 최대 ' + count + '개의 문자열 배열이어야 합니다.');
+  if (value.length > count) fail('invalid_report', overCap(label, value.length, count));
   return value.map(item => reportText(item, label, max));
 };
 /** Result fields the person judges: what changed, criteria met, before/after, not verified, failure class. */
 function resultFieldsOf(report) {
   const out = {};
-  if (report.changes !== undefined) out.changes = textList(report.changes, '바뀐 것', 600, 20);
-  if (report.notVerified !== undefined) out.notVerified = textList(report.notVerified, '검증하지 못한 것', 600, 20);
+  if (report.changes !== undefined) out.changes = textList(report.changes, '바뀐 것(changes)', LIMITS.listText, LIMITS.changes);
+  if (report.notVerified !== undefined) out.notVerified = textList(report.notVerified, '검증하지 못한 것(notVerified)', LIMITS.listText, LIMITS.notVerified);
   if (report.criteria !== undefined) {
-    if (!Array.isArray(report.criteria) || report.criteria.length > 20) fail('invalid_report', 'criteria는 최대 20개 배열이어야 합니다.');
+    if (!Array.isArray(report.criteria)) fail('invalid_report', 'criteria는 최대 ' + LIMITS.criteria + '개 배열이어야 합니다.');
+    if (report.criteria.length > LIMITS.criteria) fail('invalid_report', overCap('criteria', report.criteria.length, LIMITS.criteria));
     out.criteria = report.criteria.map(item => {
       if (!item || typeof item.met !== 'boolean') fail('invalid_report', '기준마다 met(true/false)이 필요합니다.');
-      return { criterion: reportText(item.criterion, '기준', 300), met: item.met, ...(item.evidence ? { evidence: reportText(item.evidence, '기준 근거', 600) } : {}) };
+      return { criterion: reportText(item.criterion, '기준', LIMITS.criterion), met: item.met, ...(item.evidence ? { evidence: reportText(item.evidence, '기준 근거', LIMITS.criterionEvidence) } : {}) };
     });
   }
   if (report.beforeAfter !== undefined) {
-    if (!Array.isArray(report.beforeAfter) || report.beforeAfter.length > 12) fail('invalid_report', 'beforeAfter는 최대 12개 배열이어야 합니다.');
-    out.beforeAfter = report.beforeAfter.map(item => ({ label: reportText(item?.label, '비교 항목', 120), before: reportText(item?.before, '변경 전', 300), after: reportText(item?.after, '변경 후', 300) }));
+    if (!Array.isArray(report.beforeAfter)) fail('invalid_report', 'beforeAfter는 최대 ' + LIMITS.beforeAfter + '개 배열이어야 합니다.');
+    if (report.beforeAfter.length > LIMITS.beforeAfter) fail('invalid_report', overCap('beforeAfter', report.beforeAfter.length, LIMITS.beforeAfter));
+    out.beforeAfter = report.beforeAfter.map(item => ({ label: reportText(item?.label, '비교 항목', LIMITS.beforeAfterLabel), before: reportText(item?.before, '변경 전', LIMITS.beforeAfterValue), after: reportText(item?.after, '변경 후', LIMITS.beforeAfterValue) }));
   }
   if (report.failureClass !== undefined) {
     if (!FAILURE_CLASSES.includes(report.failureClass)) fail('invalid_report', 'failureClass는 code, check, external 중 하나여야 합니다.');
@@ -442,7 +424,7 @@ function resultFieldsOf(report) {
 }
 /** What the app is (identity stage): flat facts, strings, booleans or short string lists. */
 function identityOf(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 24) fail('invalid_report', 'identity는 최대 24개 항목의 객체여야 합니다.');
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > LIMITS.identity) fail('invalid_report', 'identity는 최대 ' + LIMITS.identity + '개 항목의 객체여야 합니다.');
   return Object.fromEntries(Object.entries(value).map(([key, item]) => {
     if (typeof item === 'boolean' || item === null) return [key, item];
     if (Array.isArray(item)) return [key, item.slice(0, 20).map(entry => reportText(entry, 'identity.' + key, 300))];
@@ -450,7 +432,7 @@ function identityOf(value) {
   }));
 }
 function productsOf(report) {
-  if (!Array.isArray(report.products) || report.products.length > 20) fail('invalid_report', 'products는 최대 20개의 상품 배열이어야 합니다.');
+  if (!Array.isArray(report.products) || report.products.length > LIMITS.products) fail('invalid_report', 'products는 최대 ' + LIMITS.products + '개의 상품 배열이어야 합니다.');
   const products = report.products.map(item => {
     if (!item || typeof item !== 'object') fail('invalid_report', '상품은 객체여야 합니다.');
     const productId = reportText(item.productId, '상품 ID', 139);
@@ -463,55 +445,59 @@ function productsOf(report) {
   return products;
 }
 
+// Refusals the report's author can fix: collected across sections so one fix request names them all.
+const FORM_CODES = new Set(['invalid_report', 'invalid_evidence', 'invalid_input', 'missing_evidence', 'contradictory_evidence']);
 function normalizeReport(run, nodeId, report) {
   if (!report || typeof report !== 'object' || report.runId !== run.id || report.nodeId !== nodeId) {
     fail('invalid_report', '작업 결과의 실행 ID 또는 단계 ID가 다릅니다.');
   }
-  requiredText(report.nonce, '결과 nonce', 160);
-  if (!PHASES.has(report.phase) || !OUTCOMES.has(report.outcome)) fail('invalid_report', '결과 단계 또는 판정을 확인하세요.');
-  const summary = requiredText(report.summary, '결과 요약', 16000);
-  if (!Array.isArray(report.evidence) || report.evidence.length > 30) fail('invalid_report', '결과 근거는 최대 30개 배열이어야 합니다.');
-  const evidence = report.evidence.map(item => {
-    if (!item || typeof item !== 'object') fail('invalid_evidence', '결과 근거 형식이 잘못되었습니다.');
-    if (item.kind === 'command') {
-      const command = requiredText(item.command, '실행한 명령', 4000);
-      // Agents write exit codes as numbers or numeric strings; compare them as numbers.
-      const exitCode = exitCodeOf(item.exitCode);
-      if (!Number.isInteger(exitCode)) fail('invalid_evidence', '명령 종료 코드가 필요합니다.');
-      const expected = exitCodeOf(item.expectedExitCode);
-      if (expected !== undefined && !Number.isInteger(expected)) fail('invalid_evidence', 'expectedExitCode는 정수여야 합니다.');
-      if (item.role !== undefined && !COMMAND_ROLES.has(item.role)) fail('invalid_evidence', '명령 role은 check 또는 history여야 합니다.');
-      return { ...copy(item), kind: 'command', command, exitCode, ...(expected === undefined ? {} : { expectedExitCode: expected }) };
-    }
-    if (item.kind === 'artifact') {
-      if (item.label !== undefined && !ARTIFACT_LABELS.has(item.label)) fail('invalid_report', '이미지 label은 mockup(시안) 또는 screenshot(실제 화면)이어야 합니다.');
-      return { ...copy(item), kind: 'artifact', path: requiredText(item.path, '산출물 경로', 4000) };
-    }
-    if (item.kind === 'note') {
-      // Agents sometimes write the note under `note`; keep it as the canonical `text`.
-      const { note, ...rest } = copy(item);
-      return { ...rest, kind: 'note', text: requiredText(item.text ?? note, '확인 근거', 12000) };
-    }
-    fail('invalid_evidence', 'command, artifact, note 근거만 지원합니다.');
-  });
-  if (report.outcome === 'passed' && evidence.length === 0) fail('missing_evidence', '근거 없이 작업이나 검토를 통과시킬 수 없습니다.');
-  if (report.outcome === 'passed') classifyFailedCommands(evidence);
-  const clean = failOnDefects({
+  const problems = [];
+  const part = (check, fallback) => {
+    try { return check(); } catch (error) { if (!FORM_CODES.has(error.code)) throw error; problems.push(error); return fallback; }
+  };
+  part(() => requiredText(report.nonce, '결과 nonce', LIMITS.nonce));
+  part(() => { if (!PHASES.has(report.phase) || !OUTCOMES.has(report.outcome)) fail('invalid_report', '결과 단계 또는 판정을 확인하세요.'); });
+  const summary = part(() => requiredText(report.summary, '결과 요약', LIMITS.summary), '');
+  let evidence = [];
+  if (!Array.isArray(report.evidence)) part(() => fail('invalid_report', '결과 근거(evidence)는 최대 ' + LIMITS.evidence + '개 배열이어야 합니다.'));
+  else {
+    if (report.evidence.length > LIMITS.evidence) part(() => fail('invalid_report', overCap('결과 근거(evidence)', report.evidence.length, LIMITS.evidence, { evidence: true })));
+    evidence = report.evidence.map((item, index) => part(() => evidenceItem(item, index), null)).filter(Boolean);
+    if (report.outcome === 'passed' && report.evidence.length === 0) part(() => fail('missing_evidence', '근거 없이 작업이나 검토를 통과시킬 수 없습니다.'));
+    if (report.outcome === 'passed' && evidence.length === report.evidence.length) part(() => classifyFailedCommands(evidence));
+  }
+  const section = (present, build) => present ? part(build, {}) : {};
+  const kinds = part(() => kindFieldsOf(report), null);
+  const clean = part(() => failOnDefects({
     ...copy(report), runId: run.id, nodeId, nonce: report.nonce,
     phase: report.phase, outcome: report.outcome, summary, evidence,
-    ...(report.next ? { next: requiredText(report.next, '다음 행동', 4000) } : {}),
-    ...followUpFieldsOf(report), ...parallelFieldsOf(report), // classified follow-ups, the build's module split
-    ...(report.products === undefined ? {} : { products: productsOf(report) }),
-    ...(report.identity === undefined ? {} : { identity: identityOf(report.identity) }),
-    ...resultFieldsOf(report),
+    ...section(report.next, () => ({ next: requiredText(report.next, '다음 행동', LIMITS.next) })),
+    ...part(() => followUpFieldsOf(report), {}), ...part(() => parallelFieldsOf(report), {}), // classified follow-ups, the build's module split
+    ...section(report.products !== undefined, () => ({ products: productsOf(report) })),
+    ...section(report.identity !== undefined, () => ({ identity: identityOf(report.identity) })),
+    ...part(() => resultFieldsOf(report), {}),
     // Only a passed report's candidates can be started; a failed or blocked one's are dropped, not refused.
-    ...(report.candidates === undefined ? {} : { candidates: report.outcome === 'passed' ? candidatesOf(report.candidates, Object.keys(IMPROVE_KINDS)) : undefined }), ...kindFieldsOf(report),
-  }); // a criterion-breaking follow-up fails the review now
-  requireBrokenCriterion(nodeId, clean); // a failed test names the criterion it breaks
-  requireParallel(run, nodeId, clean); // a Claude build that could fan out states its split (src/fanout.mjs)
-  requireKindProof(run, nodeId, clean); // design, performance and release proof (src/kinds.mjs)
-  requireCandidates(run, nodeId, clean); // a passed diagnosis carries 3-5 startable candidates (src/candidates.mjs)
+    ...section(report.candidates !== undefined, () => ({ candidates: report.outcome === 'passed' ? candidatesOf(report.candidates, Object.keys(IMPROVE_KINDS)) : undefined })),
+    ...(kinds ?? {}),
+  }), null); // a criterion-breaking follow-up fails the review now
+  if (clean && kinds) { // what the stage must prove, once its fields have a valid shape
+    part(() => requireBrokenCriterion(nodeId, clean)); // a failed test names the criterion it breaks
+    part(() => requireParallel(run, nodeId, clean)); // a Claude build that could fan out states its split (src/fanout.mjs)
+    part(() => requireKindProof(run, nodeId, clean)); // design, performance and release proof (src/kinds.mjs)
+    part(() => requireCandidates(run, nodeId, clean)); // a passed diagnosis carries 3-5 startable candidates (src/candidates.mjs)
+  }
+  if (problems.length === 1) throw problems[0];
+  if (problems.length) {
+    throw Object.assign(new Error('보고서에서 고칠 곳 ' + problems.length + '개: ' + problems.map((error, index) => (index + 1) + ') ' + error.message).join(' ')),
+      { code: problems[0].code, problems: problems.map((error) => error.message) });
+  }
   return clean;
+}
+
+/** Every form problem of a report, for one fix request ([] when the report is accepted as written). */
+export function reportProblems(run, nodeId, report) {
+  try { normalizeReport(run, nodeId, report); return []; }
+  catch (error) { return FORM_CODES.has(error.code) ? error.problems ?? [error.message] : []; }
 }
 
 function repairAfterFailure(run, node, report, at) {

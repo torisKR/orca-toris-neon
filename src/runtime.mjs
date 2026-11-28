@@ -38,7 +38,8 @@ import { createRequestLedger } from './requests.mjs';
 import { parentEvidenceOf, recheckParentEvidence } from './reuse.mjs';
 import { digestFile, gitRepositoryState, preflightMessage, sourceFingerprint } from './repository.mjs';
 import { recordReleaseBinary, recheckBeforeSubmission, readReleaseFile } from './releaselink.mjs';
-import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, isReportFormError, formError, reportFixPrompt } from './reportfix.mjs';
+import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, REPORT_FIX_REASON_CHARS, isReportFormError, formError, reportFixPrompt } from './reportfix.mjs';
+import { checkReceiptForm } from './reportcheck.mjs';
 
 export { buildNodePrompt, gitRepositoryState, sourceFingerprint };
 
@@ -356,7 +357,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     let at = null;
     try { at = await receiptWrittenAt(job.receiptPath); } catch { at = null; }
     job.reportRejectedAt = Number.isFinite(at) ? at : now();
-    job.reportFix = { reason: String(reason).slice(0, 900), at: nowIso(now), ...(commit ? { commit: true } : {}) };
+    job.reportFix = { reason: String(reason).slice(0, REPORT_FIX_REASON_CHARS), at: nowIso(now), ...(commit ? { commit: true } : {}) };
     const node = findNode(run, job.nodeId);
     node.runtimeMessage = '보고서 형식이 받아들여지지 않았습니다: ' + reason + ' 작업은 그대로 두고 같은 에이전트에게 보고서만 고치도록 요청합니다 (' + (count + 1) + '/' + MAX_REPORT_FIXES + ').';
     appendEvent(run, node.title + ': ' + node.runtimeMessage, now, { nodeId: node.id, nonce: job.nonce });
@@ -372,26 +373,13 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     try {
       try { report = await readReceipt(job.receiptPath, job.receiptDirectory); }
       catch (error) { throw error.code === 'ENOENT' ? Object.assign(error, { missingReceipt: true }) : error; }
-      for (const field of ['runId', 'nodeId', 'nonce', 'phase', 'attempt']) {
-        if (report?.[field] !== job[field]) throw formError('완료 보고서의 ' + field + ' 식별자가 현재 배정과 다릅니다 (보고서: ' + JSON.stringify(report?.[field] ?? null) + ', 배정: ' + JSON.stringify(job[field]) + ').');
-      }
-      if (FAILED_AGENT_OUTCOMES.has(outcome) && report.outcome === 'passed' && !(await writtenByLaterTurn(job))) {
+      if (FAILED_AGENT_OUTCOMES.has(outcome) && report?.outcome === 'passed' && !(await writtenByLaterTurn(job))) {
         throw runtimeError('invalid_params', '에이전트 종료 상태와 성공 보고서가 일치하지 않습니다.');
       }
-      if (!Array.isArray(report.evidence) || report.evidence.length > 64) {
-        throw formError('검증 evidence는 최대 64개 배열이어야 합니다.');
-      }
-      const artifacts = [];
-      for (const evidence of report.evidence) {
-        if (evidence.kind !== 'artifact') continue;
-        try { artifacts.push(await artifactDetails(evidence, job)); }
-        catch (error) { throw formError('artifact ' + String(evidence.path) + ': ' + (error.code === 'ENOENT' ? '파일이 없습니다.' : safeError(error).message)); }
-      }
-      let index = 0; // each artifact item keeps the hash taken here (src/artifacts.mjs shows a changed file as 변경됨)
-      report = { ...report, evidence: report.evidence.map((item) => item.kind === 'artifact' ? { ...item, sha256: artifacts[index++].sha256 } : item) };
-      if (report.outcome === 'passed' && artifacts.length === 0) {
-        throw formError('성공 보고서에는 실제 검증 artifact가 한 개 이상 필요합니다.');
-      }
+      // Every form problem at once; artifact items keep the hash taken here (src/reportcheck.mjs, src/artifacts.mjs).
+      const checked = await checkReceiptForm({ run, job, report, artifactDetails, describe: (error) => safeError(error).message });
+      report = checked.report;
+      const { artifacts } = checked;
       if (job.phase === 'review' && report.outcome === 'passed') {
         if (!job.sourceFingerprint || report.sourceFingerprint !== job.sourceFingerprint) {
           throw runtimeError('conflict', '검토 보고서가 배정된 소스 버전과 다릅니다.');

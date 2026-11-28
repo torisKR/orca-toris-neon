@@ -196,6 +196,8 @@ function harness(options = {}) {
 }
 const launchCalls = (h) => h.calls.filter((call) => call.name === 'agent.launch');
 const sendCalls = (h) => h.calls.filter((call) => call.name === 'terminal.sendText');
+// The assignment a typed prompt carries: inline, or the brief.md it points to when over Orca's 4096 characters.
+const assignmentText = (h, call) => h.briefs.get(call.input.text.match(/작업 지시 파일: (\S+)/)?.[1]) ?? call.input.text;
 
 test('a prompt over Orca\'s 4096-character limit is written to brief.md and the launch points to it', async () => {
   const h = harness();
@@ -230,7 +232,7 @@ test('work receipt launches an independent review; verified review completes the
   assert.equal(h.currentJob().phase, 'review');
   assert.equal(launchCalls(h).length, 2);
   assert.equal(launchCalls(h)[1].input.prompt, undefined);
-  assert.match(sendCalls(h)[1].input.text, /독립 검토자/);
+  assert.match(assignmentText(h, sendCalls(h)[1]), /독립 검토자/);
   h.report(); await h.done();
   assert.equal(h.getRun().status, 'completed');
   assert.equal(h.getRun().nodes[0].status, 'passed');
@@ -1978,7 +1980,7 @@ test('an internal gate is approved for preparation on the evidence of passed rev
   assert.match(gate.approval.note, /자율 진행/);
   assert.equal(gate.approval.submission, undefined);
   assert.equal(h.currentJob().nodeId, 'internal');
-  assert.match(sendCalls(h).at(-1).input.text, /실제 앱 스토어 제출\/배포는 하지 마세요/);
+  assert.match(assignmentText(h, sendCalls(h).at(-1)), /실제 앱 스토어 제출\/배포는 하지 마세요/);
 });
 
 test('a clean turn that ends without a report is told to decide for itself, twice at most, then the stage is retried', async () => {
@@ -2190,6 +2192,43 @@ test('a report refused for its form goes back to the same agent to fix; the stag
   await turn(h, 'done', NOW + 6, 'success');
   assert.equal(h.getRun().jobs[0].state, 'complete');
   assert.equal(launchCalls(h).length, 2, 'the review starts after the corrected report');
+});
+
+test('a report breaking three rules gets one fix request that names all three', async () => {
+  // Arrange: the work is done; the report has too much evidence, too many changes and a comparison without data.
+  const h = harness();
+  await auto(h); await h.start();
+  await turn(h, 'working', NOW + 1);
+  const job = h.currentJob();
+  h.report(job, {
+    evidence: Array.from({ length: 64 }, () => ({ kind: 'artifact', path: job.receiptDirectory + '/verification.md' })),
+    changes: Array.from({ length: 25 }, (_, n) => '변경 ' + n),
+    comparison: { before: { device: 'Pixel 7', size: '1080x2400', language: 'ko' } },
+  });
+  // Act
+  await h.done(job);
+  // Assert
+  const fixes = fixRequests(h);
+  assert.equal(fixes.length, 1);
+  assert.match(fixes[0].input.text, /3개/);
+  assert.match(fixes[0].input.text, /최대 30개[\s\S]*지금 64개/);
+  assert.match(fixes[0].input.text, /최대 20개[\s\S]*지금 25개/);
+  assert.match(fixes[0].input.text, /comparison\.before\.data/);
+  assert.doesNotMatch(fixes[0].input.text, /최대 64개/, 'one evidence cap, the one the brief states');
+});
+
+test('the receipt checks and the field rules are reported together: a missing artifact file and 65 evidence items in one request', async () => {
+  const h = harness({ listResultFiles: async () => ['brief.md', 'result.json'] });
+  await auto(h); await h.start();
+  await turn(h, 'working', NOW + 1);
+  const job = h.currentJob();
+  h.report(job, { evidence: [{ kind: 'artifact', path: '/elsewhere/missing.png' },
+    ...Array.from({ length: 64 }, () => ({ kind: 'artifact', path: job.receiptDirectory + '/verification.md' }))] });
+  await h.done(job);
+  const [fix, ...more] = fixRequests(h);
+  assert.equal(more.length, 0);
+  assert.match(fix.input.text, /\/elsewhere\/missing\.png/);
+  assert.match(fix.input.text, /최대 30개[\s\S]*지금 65개/);
 });
 
 test('report fixes are bounded; after two the stage falls back to the usual block and retry', async () => {

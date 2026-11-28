@@ -6,7 +6,8 @@
  * criterion it breaks. Work reports may still list plain follow-up text.
  */
 export const FOLLOW_UP_CLASSES = Object.freeze(['defect', 'later']);
-const MAX_FOLLOW_UPS = 12;
+import { REPORT_LIMITS, overCap } from './reportlimits.mjs';
+const MAX_FOLLOW_UPS = REPORT_LIMITS.followUps;
 const fail = (message) => { throw Object.assign(new Error(message), { code: 'invalid_report' }); };
 const text = (value, label, max) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) fail(label + ' 값이 필요합니다 (최대 ' + max + '자).');
@@ -16,7 +17,7 @@ const CLASSIFY = '검토 보고서의 followUps는 항목마다 {"text": "…", 
 
 function classified(item) {
   if (!item || typeof item !== 'object' || !FOLLOW_UP_CLASSES.includes(item.class)) fail(CLASSIFY);
-  const entry = { text: text(item.text, '후속 과제', 1000), class: item.class };
+  const entry = { text: text(item.text, '후속 과제', REPORT_LIMITS.followUpText), class: item.class };
   if (item.class === 'defect') entry.criterion = text(item.criterion, 'defect 후속 과제가 깨는 완료 조건(criterion)', 300);
   return entry;
 }
@@ -24,10 +25,11 @@ function classified(item) {
 /** { followUps?: string[] (later), followUpDefects?: [{ text, criterion }] } from a report. */
 export function followUpFieldsOf(report) {
   if (report.followUps === undefined) return { followUpDefects: undefined }; // never an agent-written value
-  if (!Array.isArray(report.followUps) || report.followUps.length > MAX_FOLLOW_UPS) fail('followUps는 최대 ' + MAX_FOLLOW_UPS + '개 배열이어야 합니다.');
+  if (!Array.isArray(report.followUps)) fail('followUps는 최대 ' + MAX_FOLLOW_UPS + '개 배열이어야 합니다.');
+  if (report.followUps.length > MAX_FOLLOW_UPS) fail(overCap('followUps', report.followUps.length, MAX_FOLLOW_UPS));
   // Only a passing review must classify: a failed or blocked verdict is recorded whatever its follow-ups look like.
   const plain = report.phase !== 'review' || (report.outcome !== 'passed' && report.followUps.every((item) => typeof item === 'string'));
-  if (plain) return { followUps: report.followUps.map((item) => text(item, '후속 과제', 1000)), followUpDefects: undefined };
+  if (plain) return { followUps: report.followUps.map((item) => text(item, '후속 과제', REPORT_LIMITS.followUpText)), followUpDefects: undefined };
   const items = report.followUps.map(classified);
   const defects = items.filter((item) => item.class === 'defect').map(({ text: what, criterion }) => ({ text: what, criterion }));
   return { followUps: items.filter((item) => item.class === 'later').map((item) => item.text), followUpDefects: defects.length ? defects : undefined };

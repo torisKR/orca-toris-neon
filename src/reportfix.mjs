@@ -5,6 +5,8 @@
  */
 export const MAX_REPORT_FIXES = 2;
 export const REPORT_FIX_DELAY_MS = 3000;
+// Room for every problem of a report in one request, under Orca's 4096-character typed prompt.
+export const REPORT_FIX_REASON_CHARS = 2800;
 const FORM_CODES = new Set(['invalid_report', 'invalid_evidence', 'invalid_input', 'missing_evidence', 'contradictory_evidence']);
 
 /** A refusal raised by the receipt checks that only the report's author can correct. */
@@ -15,7 +17,7 @@ export const isReportFormError = (error) => Boolean(error) && !error.missingRece
 
 /** One line: a newline typed into an agent terminal would submit the request early. */
 export function reportFixPrompt(reason, receiptPath, count, { commit = false } = {}) {
-  const why = String(reason).replace(/\s+/g, ' ').trim().slice(0, 900);
+  const why = String(reason).replace(/\s+/g, ' ').trim().slice(0, REPORT_FIX_REASON_CHARS);
   if (commit) {
     return '작업 결과가 이 실행 브랜치에 커밋되지 않았습니다 (' + count + '/' + MAX_REPORT_FIXES + '): ' + why +
       ' — 작업은 다시 하지 마세요. 이 단계에서 바꾼 파일을 이 실행 브랜치에 커밋한 뒤(무시 대상 파일 제외) ' + receiptPath + '의 보고서를 다시 저장하고 턴을 마치세요.';
