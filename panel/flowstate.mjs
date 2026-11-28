@@ -12,12 +12,12 @@ const LIVE = new Set(['work', 'review']);
 const RESTING = new Set(['idle', 'start']);
 const WAITING = new Set(['queue', 'dependency']);
 
-/** Every rail of a run: one per dep that names a stage of this run, plus a start port for a stage without deps. */
+/** Every rail of a run: one per dep that names a stage of this run, plus a start port for a stage without such deps. */
 export function flowEdges(run) {
   const ids = new Set((run.nodes ?? []).map((node) => node.id));
   return (run.nodes ?? []).flatMap((target) => {
-    const deps = (target.deps ?? []).filter((id) => ids.has(id));
-    if (!(target.deps ?? []).length) return [{ id: run.id + ':start:' + target.id, sourceId: null, targetId: target.id }];
+    const deps = [...new Set((target.deps ?? []).filter((id) => ids.has(id)))]; // as workshopLayout: unknown ids are not deps
+    if (!deps.length) return [{ id: run.id + ':start:' + target.id, sourceId: null, targetId: target.id }];
     return deps.map((sourceId) => ({ id: run.id + ':' + sourceId + ':' + target.id, sourceId, targetId: target.id }));
   });
 }
@@ -91,7 +91,7 @@ export function createHandoffMemory() {
           played.add(key + ':' + at);
           if (!open || ['completed', 'cancelled'].includes(run.status)) continue;
           const target = run.nodes.find((item) => (item.deps ?? []).includes(node.id) && ready(run, item, poseOf));
-          if (target) windows.set(key, { targetId: target.id, at: now });
+          if (target) windows.set(key, { runId: run.id, targetId: target.id, at: now });
         }
       }
     },
@@ -102,7 +102,7 @@ export function createHandoffMemory() {
       return Math.max(0, now - entry.at);
     },
     until(runId, targetId) {
-      const ends = [...windows].filter(([key, entry]) => key.startsWith(runId + ':') && entry.targetId === targetId).map(([, entry]) => entry.at + HANDOFF_MS);
+      const ends = [...windows.values()].filter((entry) => entry.runId === runId && entry.targetId === targetId).map((entry) => entry.at + HANDOFF_MS);
       return ends.length ? Math.min(...ends) : null;
     },
   };

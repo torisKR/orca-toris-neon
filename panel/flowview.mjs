@@ -18,8 +18,9 @@ export function flowStill() {
     const saved = globalThis.localStorage?.getItem(STILL_KEY);
     if (saved === '1' || saved === '0') return (still = saved === '1');
   } catch (error) { console.warn('Toris Neon: 공급 모션 설정을 읽지 못해 시스템 설정을 따릅니다.', error); }
-  return (still = Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches));
+  return (still = reducedBySystem());
 }
+const reducedBySystem = () => Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
 
 function setFlowStill(next) {
   still = next;
@@ -53,7 +54,11 @@ export const railsLayer = (flows) => '<svg class="px-flow-svg" aria-hidden="true
 const swatch = (state, mark, label) => '<li class="px-flow-swatch" data-flow="' + state + '"><span class="px-flow-mark" data-mark="' + mark + '" data-size="2" aria-hidden="true"></span>' + label + '</li>';
 /** The legend and the per-viewer motion switch under the floor. */
 export const flowLegend = () => '<div class="px-flow-help"><ul class="px-flow-legend" aria-label="공급선 상태">' + swatch('live', 'parcel', '공급 중') + swatch('queue', 'queue', '대기') +
-  swatch('stopped', 'stop', '멈춤') + swatch('complete', 'complete', '완료') + '</ul><button type="button" class="button small" data-action="flow-motion" aria-pressed="' + flowStill() + '">공급 모션 끄기</button></div>';
+  swatch('stopped', 'stop', '멈춤') + swatch('complete', 'complete', '완료') + '</ul>' + motionSwitch() + '</div>';
+// The system's reduced-motion setting always stills the parcels (pixel/flow.css), so the switch then says so and stays pressed.
+const motionSwitch = () => reducedBySystem()
+  ? '<button type="button" class="button small" data-action="flow-motion" aria-pressed="true" aria-disabled="true" title="시스템의 동작 줄이기 설정을 따릅니다">공급 모션 끄기</button>'
+  : '<button type="button" class="button small" data-action="flow-motion" aria-pressed="' + flowStill() + '">공급 모션 끄기</button>';
 
 /** Reads the cards' boxes in floor pixels and writes every rail's path and port position. */
 export function layoutRails(floor) {
@@ -98,7 +103,7 @@ export function syncRails(floor, flows) {
     line.outerHTML = railHtml(flow);
     port.outerHTML = portHtml(flow);
   }
-  layoutRails(floor);
+  layoutSafely(floor);
 }
 
 let observer = null;
@@ -106,6 +111,7 @@ const layoutSafely = (floor) => {
   try { layoutRails(floor); }
   catch (error) { // the rails stay hidden; every station still says its rails' state in words
     for (const line of floor.querySelectorAll('.px-flow-line')) line.style.display = 'none';
+    for (const port of floor.querySelectorAll('.px-flow-port')) port.hidden = true;
     console.error('Toris Neon: 공급선 배치를 계산하지 못했습니다:', error);
   }
 };
@@ -115,11 +121,12 @@ export function mountRails(root) {
   const floors = [...root.querySelectorAll('.px-floor')];
   if (typeof ResizeObserver !== 'function') { floors.forEach(layoutSafely); return; }
   observer ??= new ResizeObserver((entries) => { for (const entry of entries) layoutSafely(entry.target); });
-  for (const floor of floors) observer.observe(floor);
+  for (const floor of floors) { layoutSafely(floor); observer.observe(floor); } // no frame with unplaced rails
 }
 
 /** The 공급 모션 끄기 switch (data-action="flow-motion"): the display only, for this viewer, without a render. */
 export function toggleFlowMotion(root, button) {
+  if (button.getAttribute('aria-disabled') === 'true') return;
   const next = setFlowStill(button.getAttribute('aria-pressed') !== 'true');
   for (const workshop of root.querySelectorAll('.px-workshop')) workshop.toggleAttribute('data-px-flow-still', next);
   button.setAttribute('aria-pressed', String(next));

@@ -60,7 +60,8 @@ function acceptState(state) {
   if(typeof state?.revision==='number'&&state.revision<revision())return false;
   ui.state={...(ui.state??{}),...state};
   observeRuns(motion,ui.state.runs,Date.now()); // one-shot poses follow pushes, never renders (panel/pixelstate.mjs)
-  handoffs.observe(ui.state.runs,{now:Date.now(),poseOf:(r,n)=>stagePixelOf(r,n,{now:Date.now(),limits:ui.state.limits}).pose,open:ui.tab==='studio'&&document.visibilityState!=='hidden'}); // panel/flowstate.mjs
+  try{handoffs.observe(ui.state.runs,{now:Date.now(),poseOf:(r,n)=>stagePixelOf(r,n,{now:Date.now(),limits:ui.state.limits}).pose,open:ui.tab==='studio'&&document.visibilityState!=='hidden'});} // panel/flowstate.mjs
+  catch(error){console.error('Toris Neon: 인계 기억을 갱신하지 못했습니다. 이번 통과의 인계 모션만 생략합니다:',error);}
   if(!ui.state.runs?.some(r=>r.id===ui.runId))ui.runId=orderedRuns()[0]?.id??null;
   return true;
 }
@@ -218,7 +219,7 @@ function restoreDisclosures(root) {
 }
 function render({background=false}={}) {
   if(background&&dirtyForms.size) {
-    ui.pendingUpdate=true;redrawPieces([...app.querySelectorAll('[data-px-piece]')]); // poses and rails stay current while a form is open
+    ui.pendingUpdate=true;redrawPieces([...app.querySelectorAll('[data-px-piece]')],{deferred:true}); // poses and rails stay current while a form is open
     app.setAttribute('aria-busy',String(ui.busy));
     const notice=app.querySelector('[data-update-notice]');
     if(notice)notice.hidden=false;
@@ -479,10 +480,10 @@ function accountForm() {
 function renderAgents() {
   const item=run();
   const limits=ui.state?.limits;
-  let html='<section class="hero flow-tab"><h1>에이전트</h1></section>'+currentWorkspaceRoom(true)+(item?'<div class="px-agents-grid">':'')+desks(limits);
+  let html='<section class="hero flow-tab"><h1>에이전트</h1></section>'+currentWorkspaceRoom(true)+(item?'<div class="px-agents-grid">'+desks(limits,'narrow'):desks(limits));
   if(item) {
     selectedNode(item);const ctx=flowContext(item),id=e(item.id);
-    html+='<div class="agent-overview">'+runPicker(item)+'</div>'+teamRoom(summaryOf(item),pixelCtx())+'</div>';
+    html+='<div class="agent-overview">'+runPicker(item)+'</div>'+teamRoom(summaryOf(item),pixelCtx())+desks(limits,'wide')+'</div>'; // reading order = visual order at every width
     html+='<details class="card px-fold" data-disclosure="operations"><summary>운영 현황 · 슬롯과 터미널</summary>'+operationsOverview({runs:ui.state?.runs??[],limits,resources:ui.state?.resources,now:Date.now()})+'</details>';
     html+='<details class="card px-fold" data-disclosure="people:'+id+'"'+(ui.peopleOpen===item.id?' open':'')+'><summary>팀별 작업자와 검토자</summary>'+collabStrip(item,ctx)+teamNavigator(item,ctx)+'<div class="people">'+people(item,ctx)+'</div></details>';
     html+='<section class="section"><details class="card" data-disclosure="assignments"><summary>전체 배정 · '+(item.nodes?.length??0)+'개 단계</summary><p class="hint">모델과 추론 강도는 실행의 속도·비용 프로필을 따르고, 여기서 단계별로 고르면 그 선택이 우선합니다. 검토자는 매번 별도 세션으로 시작합니다.</p>'+assignmentForm(item,item.nodes??[],ctx)+'</details></section>';
@@ -491,7 +492,7 @@ function renderAgents() {
   return html;
 }
 // One panel timer (panel/pixeltick.mjs): time text in place, and only pieces whose time boundary passed are redrawn.
-function redrawPieces(elements) {
+function redrawPieces(elements,{deferred=false}={}) { // deferred: a form is open, so a failure waits for the next full render
   const now=Date.now(),ctx=pixelCtx({now}),railRuns=new Set();
   for(const element of elements) {
     if(!element.isConnected)continue;
@@ -501,20 +502,20 @@ function redrawPieces(elements) {
       const html=!item?'':kind==='banner'?runBanner(item,ctx):kind==='team'?teamCard(item,element.dataset.pxTeam,ctx):kind==='path'?miniPath(item,ctx)
         :!stage?'':kind==='station'?station(item,stage.node,stage.view,ctx):kind==='chip'?chip(item,stage.node,stage.view,ctx):'';
       if(!html)throw new Error('no current state for '+(kind??'piece')+' '+(element.dataset.node??element.dataset.pxRun??''));
-      const focused=document.activeElement===element,inside=!focused&&element.contains?.(document.activeElement)?document.activeElement.dataset?.node:null,id=element.id,before=element.getAttribute('aria-label');
+      const focused=document.activeElement===element,inside=!focused&&element.contains?.(document.activeElement)?document.activeElement.dataset?.node:null,id=element.id,said=el=>el?.dataset?.pxSay??el?.getAttribute?.('aria-label'),before=said(element);
       element.outerHTML=html;if(kind==='station')railRuns.add(item);
       const next=id?app.querySelector('#'+CSS.escape(id)):null;
       if(focused)next?.focus?.({preventScroll:true});else if(inside)next?.querySelector?.('[data-node="'+CSS.escape(inside)+'"]')?.focus?.({preventScroll:true});
       // A pose that changed with time (15 s start, 180 s quiet) is a real change: say it once.
-      const after=next?.getAttribute?.('aria-label');
-      if(after&&before&&after!==before){const announcer=document.querySelector('#announcer');if(announcer)announcer.textContent=after;}
+      const after=said(next); // the pose words only, and only for a piece the person can see
+      if(after&&before&&after!==before&&next.getClientRects?.().length){const announcer=document.querySelector('#announcer');if(announcer)announcer.textContent=after;}
     } catch(error) { // never leave a stale pose: stop retrying this piece and redraw the whole view once
       element.removeAttribute('data-px-until');
       console.error('Toris Neon: 시간 경계 갱신 실패, 화면 전체를 다시 그립니다:',error);
-      scheduleRender();
+      if(!deferred)scheduleRender();
     }
   }
-  for(const item of railRuns){try{refreshRails(app,item,ctx);}catch(error){console.error('Toris Neon: 공급선 갱신 실패, 화면 전체를 다시 그립니다:',error);scheduleRender();}}
+  for(const item of railRuns){try{refreshRails(app,item,ctx);}catch(error){console.error('Toris Neon: 공급선 갱신 실패, 화면 전체를 다시 그립니다:',error);if(!deferred)scheduleRender();}}
 }
 function assignmentChange(node,values) {
   const change={};

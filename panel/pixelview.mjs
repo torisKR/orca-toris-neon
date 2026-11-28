@@ -85,7 +85,7 @@ export function station(run, node, view, ctx, flows = workshopFlows(run, ctx)) {
   const into = incomingText(flows, node.id, run.nodes);
   const settles = Math.min(view.until ?? Infinity, ...flows.filter((flow) => flow.targetId === node.id && flow.until).map((flow) => flow.until));
   return '<button type="button" class="px-station" id="' + e(key) + '" data-action="select-node" data-node="' + e(node.id) + '" data-tone="' + e(view.tone) + '"' +
-    ' data-px-piece="station" data-px-run="' + e(run.id) + '"' + until(settles) + ' aria-pressed="' + selected + '" aria-controls="stage-inspector"' +
+    ' data-px-piece="station" data-px-run="' + e(run.id) + '" data-px-say="' + e(shortTitle(node) + ' · ' + view.label) + '"' + until(settles) + ' aria-pressed="' + selected + '" aria-controls="stage-inspector"' +
     ' aria-label="' + e(shortTitle(node) + ' · ' + view.label + (into ? ' · ' + into : '')) + '" aria-describedby="' + e(key) + '-tip">' +
     sprite(team.id, view, { runId: run.id, nodeId: node.id, memory: ctx.memory, now: ctx.now }) +
     '<span class="px-station-text"><small class="px-team">' + e(team.name) + '</small><strong class="px-name">' + e(shortTitle(node)) + '</strong>' +

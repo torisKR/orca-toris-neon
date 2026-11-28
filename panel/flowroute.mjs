@@ -66,7 +66,7 @@ export function routeRails(boxes, edges, { width, aliases = new Map() } = {}) {
     let d = 'M ' + sx + ' ' + from;
     if (item.detour) {
       const side = sx < width / 2 ? 'left' : 'right', step = gutters[side]++ * GUTTER_STEP;
-      const gx = side === 'left' ? GUTTER + step : width - GUTTER - step;
+      const gx = Math.min(Math.max(side === 'left' ? GUTTER + step : width - GUTTER - step, 2), width - 2); // many detours share the edge
       d += ' V ' + round(Math.min(from + PORT_GAP / 3, (from + gapBelow(s)) / 2)) + ' H ' + round(gx) + ' V ' + item.y + ' H ' + tx;
     } else if (sx !== tx) d += ' V ' + item.y + ' H ' + tx;
     return { id: item.edge.id, d: d + ' V ' + to, end: { x: tx, y: to, dir: 'down' } };

@@ -106,8 +106,9 @@ function deskLine(label, used, limit, mark) {
 }
 
 /** "Neon 작업 자리": occupied against the limits; heavy desks are part of all desks, never added to them. */
-export function desks(limits) {
-  return '<section class="px-desks" aria-labelledby="px-desks-title"><h2 id="px-desks-title">Neon 작업 자리</h2><div class="px-desk-grid">' +
+export function desks(limits, at = '') {
+  const titleId = 'px-desks-title' + (at === 'wide' ? '-wide' : '');
+  return '<section class="px-desks"' + (at ? ' data-at="' + e(at) + '"' : '') + ' aria-labelledby="' + titleId + '"><h2 id="' + titleId + '">Neon 작업 자리</h2><div class="px-desk-grid">' +
     deskLine('전체 작업', limits?.active, limits?.activeJobs, 'desk-busy') + deskLine('빌드·테스트', limits?.heavy, limits?.heavyJobs, 'desk-heavy') + '</div>' +
     '<p class="hint">준비 중이거나 종료가 확인되지 않은 자리도 점유로 집계합니다. Neon이 배정하는 작업에만 적용됩니다. 직접 실행한 다른 에이전트는 세지 않습니다. 한도는 플러그인 설정에서 바꿀 수 있습니다.</p></section>';
 }

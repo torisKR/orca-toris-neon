@@ -87,3 +87,12 @@ test('Play rows carry the wide columns: track count and the newest valid observa
   assert.match(html, /<span class="play-app-tracks-count">2개 트랙<\/span>/);
   assert.match(html, /<span class="play-app-checked"><span class="sr-only">마지막 확인 <\/span>/);
 });
+
+test('with the system reduced-motion setting the switch stays pressed and says why', async () => {
+  const saved = globalThis.matchMedia;
+  globalThis.matchMedia = () => ({ matches: true });
+  try {
+    const { flowLegend: legend } = await import('../panel/flowview.mjs?reduced');
+    assert.match(legend(), /aria-pressed="true" aria-disabled="true" title="시스템의 동작 줄이기 설정을 따릅니다"/);
+  } finally { globalThis.matchMedia = saved; }
+});

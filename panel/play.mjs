@@ -78,7 +78,7 @@ export function playAppList(matches, account, ctx) {
 
 /** The newest valid observedAt of the app's tracks; the account's checkedAt stays in the account bar. */
 export function lastObserved(item) {
-  const times = (item.tracks ?? []).map((track) => Date.parse(track.observedAt ?? '')).filter(Number.isFinite);
+  const times = (item.tracks ?? []).map((track) => typeof track.observedAt === 'string' ? Date.parse(track.observedAt) : NaN).filter(Number.isFinite);
   return times.length ? localDate(Math.max(...times)) : '미확인';
 }
 

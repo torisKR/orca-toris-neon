@@ -208,3 +208,8 @@ test('handoff memory: no window while hidden or for a waiting arrival; a reset t
   reset.observe([again], { now: NOW + 2000, poseOf });
   assert.equal(reset.delay('r1', 'brief', 'architecture', NOW + 2100), 100);
 });
+
+test('duplicate dep ids make one rail, and a stage whose deps are all unknown gets a start port like a root', () => {
+  const run = { id: 'r2', nodes: [{ id: 'a', deps: [] }, { id: 'b', deps: ['a', 'a'] }, { id: 'c', deps: ['gone'] }] };
+  assert.deepEqual(flowEdges(run).map((edge) => edge.id), ['r2:start:a', 'r2:a:b', 'r2:start:c']);
+});
