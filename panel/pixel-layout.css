@@ -106,6 +106,11 @@
 .px-team-card .px-state { text-align: right; }
 @media (min-width: 480px) { .px-team-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
+.px-workspace-room { margin-bottom: 12px; }
+.px-workspace-card { justify-content: space-between; min-width: 0; }
+.px-workspace-card .px-state { flex: 0 1 auto; }
+.px-workspace-card .button { min-width: 42px; }
+
 /* Play Store stamps: a printed mark and words, no motion. */
 .px-stamp { display: inline-flex; align-items: center; gap: 4px; padding: 1px 5px; border: 1px solid var(--px-tone, var(--px-neutral));
   background: var(--px-bg); color: var(--px-tone, var(--px-neutral)); font-size: 10px; line-height: 16px; font-weight: 700; white-space: nowrap; }

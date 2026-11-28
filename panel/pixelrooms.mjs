@@ -3,10 +3,10 @@
  * 에이전트 (Neon's desks against its limits, and the team room). Same states as the workshop
  * (panel/pixelstate.mjs); the person's actions come first and automatic recovery is only observed.
  */
-import { e, goalTitle } from './kit.mjs';
+import { button, e, goalTitle } from './kit.mjs';
 import { TEAMS, teamOf } from './teams.mjs';
-import { shortTitle } from './pixelstate.mjs';
-import { stagesOf, sprite } from './pixelview.mjs';
+import { msOf, shortTitle } from './pixelstate.mjs';
+import { sinceText, stagesOf, sprite } from './pixelview.mjs';
 
 const FINISHED = new Set(['completed', 'cancelled']);
 // Seen, not for the person: Neon is retrying or the agent is quiet; the reason is shown, no action asked.
@@ -112,4 +112,31 @@ export function teamCard(run, teamId, ctx) {
     ' data-px-piece="team" data-px-team="' + e(teamId) + '" data-px-run="' + e(run.id) + '"' + until(view) + ' aria-label="' + e(team.name + ' · ' + shortTitle(node) + (agent ? ' · ' + agent : '') + ' · ' + view.label + more) + '">' +
     sprite(team.id, view, { runId: run.id, nodeId: node.id, memory: ctx.memory, now: ctx.now }) + '<span class="px-team-text"><strong>' + e(team.name) + '</strong><small>' + e(shortTitle(node) + ' · ' + (agent ?? '')) + '</small></span>' +
     '<span class="px-state">' + e(view.label + more) + '</span></button>';
+}
+
+
+// Orca's current-workspace roster includes chat agents, which can report working without a terminal ID.
+const ORCA_POSES = {
+  working: { pose: 'work', motion: 'loop', label: '작업 중', tone: 'good' },
+  blocked: { pose: 'blocked', label: '확인 필요', tone: 'stop' },
+  waiting: { pose: 'approval', label: '응답 대기', tone: 'warn' },
+  done: { pose: 'idle', label: '턴 종료', tone: 'neutral' },
+};
+
+export function workspaceRoom(agents, { now, ownedTerminal, showIdle = false }) {
+  const activeCount = agents.filter((agent) => agent.state === 'working').length;
+  const visible = showIdle ? agents : agents.filter((agent) => ['working', 'blocked', 'waiting'].includes(agent.state));
+  if (!visible.length && !showIdle) return '';
+  const rows = visible.map((agent) => {
+    const view = Object.hasOwn(ORCA_POSES, agent.state) ? ORCA_POSES[agent.state] : { pose: 'unknown', label: '상태 미확인', tone: 'neutral' };
+    const started = msOf(agent.stateStartedAt);
+    const elapsed = started === null ? '' : ' · <time data-px-since="' + started + '" datetime="' + new Date(started).toISOString() + '">' + sinceText(started, now) + '</time>';
+    const open = agent.terminalId && ownedTerminal(agent.terminalId) ? button('열기', 'focus-terminal', 'data-terminal="' + e(agent.terminalId) + '"', 'small') : '';
+    return '<li class="px-team-card px-workspace-card" data-tone="' + view.tone + '">' + sprite('other', view, { size: 64 }) +
+      '<span class="px-team-text"><strong>' + e(agent.title ?? agent.agent ?? 'Orca 에이전트') + '</strong><small>' +
+      e(agent.agent ?? 'Orca') + elapsed + '</small></span><span class="px-state">' + view.label + '</span>' + open + '</li>';
+  }).join('');
+  return '<section class="px-workspace-room" aria-labelledby="px-workspace-title"><div class="px-section-head"><h2 id="px-workspace-title">현재 작업 공간 · Orca</h2>' +
+    '<span class="px-count">' + activeCount + '개 작업 중</span></div>' +
+    (rows ? '<ul class="px-team-grid">' + rows + '</ul>' : '<p class="hint">Orca가 보고한 에이전트가 없습니다.</p>') + '</section>';
 }

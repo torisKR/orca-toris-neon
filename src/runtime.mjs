@@ -266,13 +266,34 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   const closeCancel = (run) => closeCancelled(run, { save: async () => { await persist(); return !persistence.failure(); },
     mark: (runId) => cancelMarks.write(runId, nowIso(now)), close: (terminalId) => call('terminal.close', { terminalId }),
     appendEvent: (target, text) => appendEvent(target, text, now), activeJobs, describeError: safeError });
+  // Runtime observations for the panel. They age out and are never written into the run ledger.
+  const workingChecks = new Map();
+  const stateView = (view) => {
+    const projected = projectState(state, view, limits);
+    if (view !== 'summary') return projected;
+    const active = new Set(projected.runs.flatMap((run) => run.nodes.flatMap((node) => node.active?.nonce ? [node.active.nonce] : [])));
+    for (const nonce of workingChecks.keys()) if (!active.has(nonce)) workingChecks.delete(nonce);
+    for (const run of projected.runs) run.jobs = run.jobs.map((job) => {
+      const check = workingChecks.get(job.nonce);
+      return check && check.sessionId === job.sessionId ? { ...job, workingCheckedAt: check.at } : job;
+    });
+    return projected;
+  };
+  const postState = () => {
+    try { orca.panels?.post('state.changed', jsonValue(stateView('summary'))); } catch {}
+  };
+  const publishObservation = () => { state.revision += 1; postState(); };
+  const invalidateWorkspaceAgents = () => {
+    invalidateCatalog('agents.list');
+    try { orca.panels?.post('workspace.agents.changed', {}); } catch {}
+  };
   const persist = async ({ durable = false } = {}) => {
     state.revision += 1;
     jsonValue(state); // a value JSON cannot hold is a bug; refuse it as before
     const saved = await persistence.save(state);
     if (saved.ok) await cancelMarks.clear(state);
     else if (durable) throw Object.assign(runtimeError('action_failed', '실행 상태를 저장하지 못해 진행하지 않았습니다: ' + saved.error), { unsaved: true });
-    try { orca.panels?.post('state.changed', jsonValue(projectState(state, 'summary', limits))); } catch {}
+    postState();
     try {
       const working = state.runs.reduce((sum, run) => sum + activeJobs(run).filter((job) => job.state === 'running').length, 0);
       const blocked = state.runs.filter((run) => run.status === 'blocked').length;
@@ -978,6 +999,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   };
 
   const handlers = {
+    'workspace.agents': async () => (await catalogRead('agents.list'))?.agents ?? [],
     'state.get': async (input = {}) => {
       // Read-only views must remain responsive while a serialized host launch is
       // pending. Every visible launch intent has already been reserved in state.
@@ -985,7 +1007,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       const results = await Promise.allSettled(names.map((name) => catalogRead(name, input.forceHost === true)));
       const value = (index, key, fallback) => results[index].status === 'fulfilled' ? (key ? results[index].value?.[key] ?? fallback : results[index].value) : fallback;
       return {
-        ...projectState(state, input.view, limits), projects: value(0, 'projects', []), workspaces: value(1, 'workspaces', []),
+        ...stateView(input.view), projects: value(0, 'projects', []), workspaces: value(1, 'workspaces', []),
         context: value(2, null, null), agents: value(3, 'agents', []), providers: PROVIDERS, eccAgents: await eccChoices(),
         autonomyLimits: AUTONOMY_LIMITS,
         launchOptions: { efforts: EFFORTS, visualStages: VISUAL_STAGES, visualDefault: VISUAL_DEFAULT },
@@ -1216,7 +1238,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   async function onAgentStatus(event) {
     invalidateCatalog('agents.list', 'workspace.list', 'workspace.readContext');
     if (!event || typeof event.terminalId !== 'string' || !['working', 'blocked', 'waiting', 'done'].includes(event.state)) return;
-    let changed = false;
+    let changed = false, observed = false;
     for (const original of [...state.runs]) {
       let run = getRun(original.id);
       if (['cancelled', 'completed'].includes(run.status)) continue;
@@ -1233,8 +1255,12 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       const newTurn = event.state === 'working';
       const outcome = newTurn ? undefined : incomingOutcome ?? job.agentOutcome;
       const semanticChange = job.agentState !== event.state || job.sessionId !== sessionId || job.agentOutcome !== outcome;
-      if (receivedAt !== null) job.lastAgentEventAt = receivedAt;
+      if (receivedAt !== null && receivedAt > (job.lastAgentEventAt ?? -Infinity)) {
+        job.lastAgentEventAt = receivedAt;
+        observed ||= newTurn && job.promptSeen === true;
+      }
       if (!semanticChange) continue;
+      workingChecks.delete(job.nonce);
       if (sessionId !== undefined) job.sessionId = sessionId;
       job.agentState = event.state;
       // Any report from the terminal's agent means it is up and can be typed into.
@@ -1281,15 +1307,24 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       await acceptReceipt(run, job, job.agentOutcome);
     }
     if (changed) { await persist(); schedulePump(); }
+    else if (observed) publishObservation();
   }
   // A missed 'done' event must not strand a run: every couple of minutes, jobs that were typed and
   // are still current are compared with agents.list and their receipt (src/watch.mjs).
   const applyWatch = async (runId, actions) => {
+    let observed = false;
     for (const action of actions) {
       const run = state.runs.find((item) => item.id === runId);
       const job = run && activeJobs(run).find((entry) => entry.nonce === action.nonce);
       if (!job || !matchingNodeJob(run, job)) continue;
       if (action.kind === 'status') { await onAgentStatus(action.event); continue; }
+      if (action.kind === 'confirmed-working') {
+        if (job.agentState === 'working' && job.sessionId === action.sessionId && action.at > (workingChecks.get(job.nonce)?.at ?? 0)) {
+          workingChecks.set(job.nonce, { sessionId: action.sessionId, at: action.at });
+          observed = true;
+        }
+        continue;
+      }
       const node = findNode(run, job.nodeId);
       if (action.kind === 'report') {
         orca.log?.('Toris Neon watch: ' + node.title + ' 보고서를 상태 이벤트 없이 찾아 반영합니다.');
@@ -1306,6 +1341,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
       await persist();
       schedulePump();
     }
+    if (observed) publishObservation();
   };
   // Token usage rides the same timer: one agent.listSessions per active workspace (src/usage.mjs).
   const watch = createJobWatch({ afterPass: runtimeUsageSync({ host: orca.host, runs: () => [...state.runs, ...state.archivedRuns], queue, persist, at: () => nowIso(now), log: (line) => orca.log?.(line) }),
@@ -1357,10 +1393,13 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     });
     if (state.runs.some((run) => run.autonomous)) schedulePump();
     if (orca.events?.on) {
-      subscriptions.push(orca.events.on('agent.status.changed', (event) => queue(() => onAgentStatus(event))
-        .catch((error) => orca.log?.('Toris Neon event: ' + safeError(error).message))));
+      subscriptions.push(orca.events.on('agent.status.changed', (event) => {
+        invalidateWorkspaceAgents();
+        return queue(() => onAgentStatus(event)).catch((error) => orca.log?.('Toris Neon event: ' + safeError(error).message));
+      }));
       subscriptions.push(orca.events.on('workspace.changed', () => {
-        invalidateCatalog('project.list', 'workspace.list', 'workspace.readContext', 'agents.list');
+        invalidateCatalog('project.list', 'workspace.list', 'workspace.readContext');
+        invalidateWorkspaceAgents();
       }));
     }
     watch.start(watchIntervalMs);
@@ -1373,7 +1412,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   const api = {
     initialize, receiptRoot, prunedRequests: () => requests.list(),
     handlers: Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, async (input) => jsonValue(await handler(input))])),
-    getState: (input = {}) => jsonValue(projectState(state, input.view, limits)),
+    getState: (input = {}) => jsonValue(stateView(input.view)),
     drain: async () => {
       let pending;
       do { pending = chain; await pending; await Promise.all([...background]); } while (pending !== chain || background.size);
