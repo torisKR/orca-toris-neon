@@ -59,5 +59,9 @@ export function pixelSamples(now) {
   const approval = base('preview-ripple', '물결 메모 · 출시 준비', 'preview-project-3', { now, passed: ['research', 'brief', 'architecture', 'design', 'assets', 'build', 'test', 'policy', 'listing', 'internal'], updatedAt: now - 4000 });
   approval.status = 'blocked';
   approval.nodes.find((node) => node.id === 'release').status = 'awaiting-approval';
-  return [stuck, parallel, quiet, dialog, approval];
+  // A goal written as one long sentence (150 characters): titles clamp, the pass count stays on one line.
+  const longGoal = '하루 일정과 습관을 한 화면에서 기록하고 주간 통계를 보여 주며 알림 시간과 위젯을 사용자가 직접 고를 수 있는 생산성 앱의 첫 버전을 만들고 안드로이드 실기기에서 저장과 복원까지 확인해 주세요 그리고 다크 모드와 큰 글씨 설정, 접근성 대비도 함께 꼭 지원해야 합니다';
+  let long = base('preview-longgoal', longGoal, 'preview-project-4', { now, template: 'improve', kind: 'bugfix', updatedAt: now - 500, passed: ['identity', 'reproduce', 'build', 'test'].slice(0, 3) });
+  long = working(long, 'test', { now, startedAgo: 60_000, lastAgo: 5000 });
+  return [stuck, parallel, quiet, dialog, approval, long];
 }

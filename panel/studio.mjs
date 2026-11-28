@@ -307,7 +307,8 @@ function announce(item,changes) {
   }).join('. ');
 }
 function runPicker(item) {
-  return '<select class="field run-select" aria-label="앱 제작 흐름 선택" id="run-select">'+options(orderedRuns().map(r=>({value:r.id,label:'['+(statusNames[r.status]??r.status)+'] '+goalTitle(r.goal).slice(0,80)})),item.id)+'</select>';
+  const short=text=>text.length>60?text.slice(0,59)+'…':text; // one line in the select; the whole title in its title attribute
+  return '<select class="field run-select" aria-label="앱 제작 흐름 선택" id="run-select" title="'+e(goalTitle(item.goal))+'">'+options(orderedRuns().map(r=>({value:r.id,label:'['+(statusNames[r.status]??r.status)+'] '+short(goalTitle(r.goal))})),item.id)+'</select>';
 }
 // Cancel states as confirmed: requested, done (Orca confirmed every owned terminal closed), or needs checking.
 function stopBadge(item) {
@@ -328,7 +329,7 @@ function runSummaryCard(item,nodes) {
   const done=nodes.filter(n=>n.status==='passed').length,skipped=nodes.filter(n=>n.status==='skipped').length,counted=nodes.length-skipped;
   // A short title; the full goal (often thousands of characters) only on demand, here only.
   const short=goalTitle(item.goal);
-  const goal='<div class="card-title goal-title">'+e(short)+'</div>'+(item.goal.trim()!==short?'<details class="goal-detail" data-disclosure="goal:'+e(item.id)+'"><summary>전체 목표 보기 · '+item.goal.length.toLocaleString('ko-KR')+'자</summary><p class="note-line goal-full">'+e(item.goal)+'</p></details>':'');
+  const goal='<div class="card-title goal-title px-clamp-2" title="'+e(short)+'">'+e(short)+'</div>'+(item.goal.trim()!==short?'<details class="goal-detail" data-disclosure="goal:'+e(item.id)+'"><summary>전체 목표 보기 · '+item.goal.length.toLocaleString('ko-KR')+'자</summary><p class="note-line goal-full">'+e(item.goal)+'</p></details>':'');
   return '<div class="card run-summary"><div class="card-head"><div class="grow">'+goal+'<div class="card-subtitle">'+e(item.workspacePath??'시작하면 별도 작업 브랜치를 준비합니다.')+'</div></div>'+stopBadge(item)+'</div><div class="progress"><span style="width:'+(done/Math.max(counted,1)*100)+'%"></span></div><div class="progress-label"><span>'+done+' / '+counted+' 단계 통과'+(skipped?' · 건너뜀 '+skipped:'')+'</span><span>수정 루프 '+(item.repairLoops??0)+' / '+item.maxRepairLoops+' · 동시 '+item.maxConcurrency+'</span></div>'+(item.started?runTokens(tokensOf(item),{id:item.id,live:!FINISHED_RUN.has(item.status)}):'')+preflightSection(item)+
     autonomyLine(item)+fallbackLine(item)+scopeLine(item)+cleanupLine(item)+cleanupResult(summaryOf(item))+runOperationsLine(summaryOf(item))+storageLine(item)+diskBlock(disks.get(item.id),{runId:item.id})+
     (item.status==='paused'?'<p class="hint spacer">새 단계 배정만 멈췄습니다. 이미 작업 중인 에이전트는 계속 작업하고 완료 보고서를 남길 수 있습니다. 모두 멈추려면 실행 취소를 누르세요.</p>':'')+(item.runtimeMessage?'<div class="callout error" role="status">'+e(item.runtimeMessage)+'</div>':'')+

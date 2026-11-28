@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRun, templateGraph } from '../src/engine.mjs';
 import { workshopRows, workshop, station, sprite, runBanner, observeRuns } from '../panel/pixelview.mjs';
-import { attention, desks, teamRoom } from '../panel/pixelrooms.mjs';
+import { attention, desks, teamRoom, runRows } from '../panel/pixelrooms.mjs';
 import { createMotionMemory } from '../panel/pixelstate.mjs';
 import { tickPixels, startTicker, TICK_MS } from '../panel/pixeltick.mjs';
 
@@ -135,4 +135,18 @@ test('the ticker runs every 5 s only while the panel is visible', () => {
   assert.deepEqual(intervals, [TICK_MS, 'cleared']);
   document.visibilityState = 'visible'; listeners.visibilitychange();
   assert.equal(ticks, 2, 'ticks at once when shown again');
+});
+
+test('a long run goal is a clamped title with the full text in its title attribute, and the pass count is kept apart', () => {
+  // Arrange: a goal written as one long sentence.
+  const goal = '하루 일정과 습관을 한 화면에서 기록하고 주간 통계를 보여 주며 알림 시간과 위젯을 사용자가 직접 고를 수 있는 생산성 앱의 첫 버전을 만들고 안드로이드 실기기에서 저장과 복원까지 확인해 주세요 그리고 다크 모드도 지원해야 합니다';
+  const run = { ...stuckRun(), goal };
+  // Act
+  const rows = runRows([run], ctx());
+  const needs = attention([run], ctx());
+  // Assert
+  assert.match(rows, /<button[^>]*class="px-run-title"[^>]*title="하루 일정과[^"]*다크 모드도 지원해야 합니다"[^>]*><span class="px-clamp-2">/);
+  assert.match(rows, /<span class="px-count">2 \/ 11 통과<\/span>/);
+  assert.match(needs, /<strong class="px-clamp-2" title="하루 일정과[^"]*">/);
+  assert.match(needs, /<small class="px-clamp-3">/);
 });

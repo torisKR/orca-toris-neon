@@ -43,8 +43,8 @@ function attentionItem(item, ctx) {
   const what = item.node ? shortTitle(item.node) + ' · ' : '';
   return '<li><button type="button" class="px-attention-item" data-tone="' + e(item.person ? (item.pose === 'approval' ? 'warn' : 'stop') : 'watch') + '" ' + action + '>' +
     sprite(team, item.view ?? { pose: item.pose, motion: 'still' }) +
-    '<span class="px-attention-text"><strong>' + e(goalTitle(item.run.goal)) + '</strong><span class="px-state">' + e(what + item.label) + '</span>' +
-    (item.detail ? '<small>' + e(item.detail) + '</small>' : '') + '<small class="px-kind">' + (item.person ? '내 조치 필요' : '자동 진행 중 · 지켜보기') + '</small></span>' +
+    '<span class="px-attention-text"><strong class="px-clamp-2" title="' + e(goalTitle(item.run.goal)) + '">' + e(goalTitle(item.run.goal)) + '</strong><span class="px-state">' + e(what + item.label) + '</span>' +
+    (item.detail ? '<small class="px-clamp-3">' + e(item.detail) + '</small>' : '') + '<small class="px-kind">' + (item.person ? '내 조치 필요' : '자동 진행 중 · 지켜보기') + '</small></span>' +
     '<span class="px-chevron" aria-hidden="true">›</span></button></li>';
 }
 
@@ -58,7 +58,7 @@ export function runRows(runs, ctx) {
       const counted = (run.nodes ?? []).filter((node) => node.status !== 'skipped');
       const chips = stages.length ? stages.map(({ node, view }) => chip(run, node, view, ctx)).join('')
         : '<span class="hint">' + (run.started ? (run.status === 'paused' ? '새 배정 멈춤' : '배정 대기') : '시작 전') + '</span>';
-      return '<article class="px-run-row" aria-labelledby="px-run-' + e(run.id) + '"><div class="px-run-head"><button type="button" class="px-run-title" id="px-run-' + e(run.id) + '" data-action="open-run" data-run="' + e(run.id) + '">' + e(goalTitle(run.goal)) + '</button>' +
+      return '<article class="px-run-row" aria-labelledby="px-run-' + e(run.id) + '"><div class="px-run-head"><button type="button" class="px-run-title" id="px-run-' + e(run.id) + '" data-action="open-run" data-run="' + e(run.id) + '" title="' + e(goalTitle(run.goal)) + '"><span class="px-clamp-2">' + e(goalTitle(run.goal)) + '</span></button>' +
         '<span class="px-count">' + counted.filter((node) => node.status === 'passed').length + ' / ' + counted.length + ' 통과</span></div><div class="px-chips">' + chips + '</div></article>';
     }).join('') + '</section>';
 }

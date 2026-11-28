@@ -1,0 +1,13 @@
+/* Readability fixes for the pixel pieces. Long run titles and reasons stay readable in a narrow sidebar: titles clamp to two lines (the full
+   title is in the title attribute), a stage's reason to three, and a pass count never wraps. */
+.px-clamp-2, .px-clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; word-break: keep-all; }
+.px-clamp-2 { -webkit-line-clamp: 2; line-clamp: 2; }
+.px-clamp-3 { -webkit-line-clamp: 3; line-clamp: 3; }
+.px-count { flex: 0 0 auto; min-width: 7.5ch; white-space: nowrap; text-align: right; }
+.px-run-head { align-items: flex-start; }
+.px-run-title { flex: 1 1 auto; min-width: 0; text-align: left; }
+.run-select { text-overflow: ellipsis; }
+
+/* The pixel cards stay dark in Orca's light theme; page-styled hints inside them take the card's muted
+   colour (#aab8cf on #181f2e, 8.2:1) instead of the light page's grey (2.8:1). */
+:is(.px-desks, .px-run-row, .px-workshop, .px-banner, .px-attention-item, .px-team-card) .hint { color: var(--px-muted); }
