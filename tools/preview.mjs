@@ -82,7 +82,10 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
   const state={version:1,revision:1,build:{label:'v0.2.0 · preview · 개발 폴더'},runs:[...pixelSamples(liveAt),sample,speedSample(stamp),improved,diagnosed,unstructured,...kindSamples(stamp),unsavedCancelSample(stamp)],archivedRuns,projects,workspaces,
     context:{workspaceId:'preview-workspace',displayName:'달빛 습관',branch:'neon/preview-1',terminals:[]},
     providers:['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro'],
-    agents:[{terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000}],warnings:[]};
+    agents:[
+      {terminalId:'preview-terminal',agent:'codex',title:'앱 구현 · 데모',state:'working',stateStartedAt:liveAt-74000},
+      {sessionId:'preview-chat',agent:'claude',title:'디자인 검토 · 미리보기',state:'working',stateStartedAt:liveAt-320000},
+    ],warnings:[]};
   const notes=workspaces.map((workspace,index)=>({
     id:'preview-note-'+(index+1),workspaceId:workspace.id,projectName:workspace.project,
     state:workspace.name+'의 '+['화면 구조와 입력 상태를 정리했습니다.','테스트 범위와 다음 수정 항목을 정리했습니다.','MVP 범위와 보류할 기능을 정했습니다.'][index%3],
@@ -199,6 +202,7 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
       return scenario(input.scenario);
     }
     if(name==='state.get')return snapshot(input);
+    if(name==='workspace.agents')return state.agents;
     if(name==='runs.get')return lookup(input.runId,true);
     if(name==='today.snapshot')return todaySnapshot(input);
     if(name==='play.list')return {version:1,protection:{status:'os-keyring'},accounts,links};

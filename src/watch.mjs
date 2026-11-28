@@ -15,7 +15,8 @@ const STATES = new Set(['working', 'blocked', 'waiting', 'done']);
 /**
  * What to do for a run's watched jobs, given agents.list rows and `receipts` (nonce → write time in
  * ms, or null when present with an unknown time; absent when there is no report):
- * 'status' replays a state the plugin missed; 'report' takes in a report nobody took in (at once
+ * 'status' replays a missed state; 'confirmed-working' checks the same live session without claiming progress.
+ * 'report' takes in a report nobody took in (at once
  * for an idle agent, after RECEIPT_SETTLE_MS for one Orca still calls working); 'idle' nudges an
  * ended turn without a report; 'attention' flags an agent stuck on a prompt or permission.
  * A report refused for its form (job.reportRejectedAt) counts only once rewritten.
@@ -38,7 +39,11 @@ export function planJobWatch({ jobs, agents, receipts, now }) {
     const idleMs = Number.isFinite(agent.stateStartedAt) ? now - agent.stateStartedAt : 0;
     const idleMinutes = Math.floor(idleMs / 60_000);
     if (agent.state === 'working') {
-      if (fresh && at !== null && now - at >= RECEIPT_SETTLE_MS) actions.push({ kind: 'report', nonce: job.nonce });
+      if (fresh && at !== null && now - at >= RECEIPT_SETTLE_MS) {
+        actions.push({ kind: 'report', nonce: job.nonce });
+      } else if (job.promptSeen && job.sessionId && agent.sessionId === job.sessionId) {
+        actions.push({ kind: 'confirmed-working', nonce: job.nonce, sessionId: agent.sessionId, at: now });
+      }
     } else if (fresh && agent.state !== 'blocked') {
       actions.push({ kind: 'report', nonce: job.nonce });
     } else if (agent.state === 'done') {

@@ -60,6 +60,15 @@ test('working agents, unknown states and missing terminals are left to the exist
   assert.deepEqual(plan([job()], [], new Map([['n1', NOW - 3_600_000]])), []);
 });
 
+test('the watch confirms only the same working session after the prompt arrived', () => {
+  const started = job({ sessionId: 's1', promptSeen: true });
+  const busy = agent({ state: 'working' });
+  assert.deepEqual(plan([started], [busy]), [{ kind: 'confirmed-working', nonce: 'n1', sessionId: 's1', at: NOW }]);
+  assert.deepEqual(plan([started], [{ ...busy, sessionId: 'other' }]), []);
+  assert.deepEqual(plan([{ ...started, promptSeen: false }], [busy]), []);
+  assert.deepEqual(plan([started], [busy], new Map([['n1', NOW - RECEIPT_SETTLE_MS]])), [{ kind: 'report', nonce: 'n1' }]);
+});
+
 test('one pass lists agents once per workspace, stats receipts, and never overlaps', async () => {
   const calls = { list: 0, receipt: 0, apply: [] };
   let release;

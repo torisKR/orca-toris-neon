@@ -4,7 +4,8 @@
  * drawn only where the state proves activity. Rows are checked top to bottom as the table orders them.
  */
 export const START_SLOW_MS = 15_000; // 시작 중 → 시작 신호 대기
-export const QUIET_MS = 180_000; // 작업 중 → x분째 조용함
+export const QUIET_MS = 180_000; // new agent event expected before calling a signal recent
+const WORKING_CHECK_TTL_MS = 150_000; // two 60-second watch passes plus scheduling margin
 export const DELIVERY_ATTEMPTS = 3; // src/runtime.mjs: the first start + MAX_PROMPT_DELIVERY_RETRIES (2)
 export const AUTONOMY_STAGE_RETRIES = 3; // src/autonomy.mjs AUTONOMY_LIMITS.retriesPerStage
 export const ONCE_WINDOW_MS = 1000; // the longest one-shot pose (retry, 960 ms) fits inside
@@ -121,7 +122,15 @@ function assignedView(view, { node, job, operation, phase, startMs, signal, now 
     const review = phase === 'review', quietFor = now - signal;
     if (quietFor >= QUIET_MS) {
       const minutes = Math.floor(quietFor / 60_000);
-      return view('quiet', (review ? '검토 · ' : '') + minutes + '분째 조용함', { activityAt: signal, until: signal + (minutes + 1) * 60_000, tooltip: QUIET_TOOLTIP,
+      const checkedAt = msOf(job.workingCheckedAt);
+      const checkUntil = checkedAt === null ? 0 : checkedAt + WORKING_CHECK_TTL_MS;
+      const nextMinute = signal + (minutes + 1) * 60_000;
+      if (checkedAt >= signal && now < checkUntil) {
+        return view(review ? 'review' : 'work', review ? '검토 중' : '작업 중', { activityAt: signal,
+          until: Math.min(nextMinute, checkUntil), tooltip: QUIET_TOOLTIP,
+          detail: 'Orca에서 작업 상태 확인 · 새 진행 신호 ' + minutes + '분 전' });
+      }
+      return view('quiet', (review ? '검토 · ' : '') + minutes + '분째 조용함', { activityAt: signal, until: nextMinute, tooltip: QUIET_TOOLTIP,
         detail: '마지막 작업 신호 뒤로 새 기록 없음 · 멈춤으로 단정하지 않음' });
     }
     return view(review ? 'review' : 'work', review ? '검토 중' : '작업 중', { activityAt: signal, until: signal + QUIET_MS, detail: '작업 신호 확인됨', tooltip: QUIET_TOOLTIP });
@@ -189,7 +198,7 @@ export function runPixel(run, stages, { cancelling = false } = {}) {
     const newest = Math.max(...live.map((stage) => stage.view.activityAt ?? 0));
     const headline = live.length > 1 ? joinTitles(live.map((stage) => stage.node)) + ' · ' + live.length + '개 작업 중' : shortTitle(live[0].node) + ' · ' + live[0].view.label;
     return result(live[0].view.pose, headline, { ...timing(oldest), activityAt: newest || null, until: Math.min(...live.map((stage) => stage.view.until ?? Infinity)),
-      detail: live.length === 2 ? '두 작업 신호 확인됨' : live.length > 2 ? live.length + '개 작업 신호 확인됨' : '작업 신호 확인됨', motion: 'loop' });
+      detail: live.length === 1 ? live[0].view.detail : 'Orca에서 ' + live.length + '개 작업 상태 확인', motion: 'loop' });
   }
   const starting = stages.find((stage) => stage.view.pose === 'start');
   if (starting) return result('start', shortTitle(starting.node) + ' · 시작 중', { ...timing(starting), detail: starting.view.detail });

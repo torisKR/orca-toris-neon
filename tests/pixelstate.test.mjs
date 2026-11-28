@@ -218,7 +218,7 @@ test('two confirmed agents in parallel are summarised, timed from the oldest ass
     node({ id: 'design', title: '화면 설계', status: 'running', active: active(NOW - 20_000, { nonce: 'b' }) })];
   const result = header(run({ nodes, jobs: [working(NOW - 8000, { nonce: 'a' }), working(NOW - 9000, { nonce: 'b' })] }));
   assert.equal(result.headline, '구조·화면 설계 · 2개 작업 중');
-  assert.equal(result.detail, '두 작업 신호 확인됨');
+  assert.equal(result.detail, 'Orca에서 2개 작업 상태 확인');
   assert.equal(result.startedAt, NOW - 24_000);
   assert.equal(result.motion, 'loop');
 });
@@ -262,4 +262,16 @@ test('an autonomy counter is raised only against a comparable earlier push and s
   assert.equal(memory.raised('a'), 3);
   memory.observe('a', 3, NOW + 60_000);
   assert.equal(memory.raised('a'), 3);
+});
+
+test('host verification sustains motion on a long turn without inventing new progress', () => {
+  const running = node({ status: 'running', active: active(NOW - 600_000) });
+  const lastAgentEventAt = NOW - 4 * 60_000;
+  const confirmed = working(lastAgentEventAt, { workingCheckedAt: NOW - 15_000 });
+  const live = view({ node: running, job: confirmed });
+  assert.deepEqual([live.pose, live.label, live.motion, live.activityAt], ['work', '작업 중', 'loop', lastAgentEventAt]);
+  assert.match(live.detail, /새 진행 신호 4분 전/);
+  assert.equal(view({ node: running, job: { ...confirmed, workingCheckedAt: NOW - 151_000 } }).pose, 'quiet');
+  assert.equal(view({ node: running, job: { ...confirmed, agentState: 'waiting' } }).pose, 'approval');
+  assert.notEqual(view({ node: running, job: { ...confirmed, sessionId: null } }).motion, 'loop');
 });

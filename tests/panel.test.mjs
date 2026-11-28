@@ -1340,3 +1340,19 @@ test('a stage blocked only by its report form offers 보고서만 다시 요청 
   assert.deepEqual(h.requests('nodes.requestReport').map(call=>call.input),[{runId:'run-1',nodeId:'build',expectedNonce:'job-1'}]);
   assert.equal(h.requests('nodes.retry').length,0);
 });
+
+test('workspace working agents animate without a Neon terminal and stop on a host status update', async () => {
+  const state=baseState();
+  state.agents=[{agent:'codex',title:'샘플 작업',sessionId:'chat-1',state:'working'}];
+  const h=await harness({state,responses:{'workspace.agents':()=>[{...state.agents[0],state:'waiting'}]}});
+  assert.match(h.app.innerHTML, /현재 작업 공간 · Orca/);
+  assert.match(h.app.innerHTML, /data-pose="work" data-motion="live"[^>]*><\/span><span class="px-team-text"><strong>샘플 작업/);
+  const fetches=h.requests('state.get').length;
+  await h.events.get('workspace.agents.changed')();
+  await h.flushFrames();
+  assert.equal(h.requests('state.get').length,fetches);
+  assert.match(h.app.innerHTML, /data-pose="approval"[^>]*><\/span><span class="px-team-text"><strong>샘플 작업/);
+  assert.doesNotMatch(h.app.innerHTML, /data-motion="live"/);
+  await h.click({action:'tab',tab:'agents'});
+  assert.match(h.app.innerHTML, /현재 작업 공간 · Orca[\s\S]*응답 대기/);
+});

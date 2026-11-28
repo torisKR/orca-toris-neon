@@ -954,6 +954,33 @@ test('audit: unrelated and duplicate agent events do not rewrite persisted runs'
   assert.equal(h.writeCount(), beforeDuplicate);
 });
 
+test('new agent records and matching live checks reach the panel without rewriting runs', async (t) => {
+  let clock = NOW;
+  const h = harness({ now: () => clock });
+  t.after(() => h.runtime.dispose());
+  await h.create();
+  await h.start();
+  const event = h.events.get('agent.status.changed');
+  await event({ sessionId: 'workspace-chat', state: 'working' });
+  assert.equal(h.posts.at(-1).name, 'workspace.agents.changed');
+
+  const terminalId = h.currentJob().terminalId;
+  await event({ terminalId, state: 'working', sessionId: 'work-session', receivedAt: ++clock });
+  const lastAgentEventAt = ++clock;
+  const writes = h.writeCount();
+  await event({ terminalId, state: 'working', sessionId: 'work-session', receivedAt: lastAgentEventAt });
+  const recent = h.posts.findLast((post) => post.name === 'state.changed').value.runs[0].jobs[0];
+  assert.equal(recent.lastAgentEventAt, lastAgentEventAt);
+  assert.equal(h.writeCount(), writes);
+  Object.assign(h.agents.find((agent) => agent.terminalId === terminalId), { sessionId: 'work-session' });
+  clock += 4 * 60_000;
+  await h.runtime.watchTick();
+  const observed = (await h.runtime.handlers['state.get']({ view: 'summary' })).runs[0].jobs[0];
+  assert.equal(observed.workingCheckedAt, clock);
+  assert.equal(observed.lastAgentEventAt, lastAgentEventAt);
+  assert.equal(h.getRun().jobs[0].workingCheckedAt, undefined, 'only published in summary');
+});
+
 test('audit: an older done event cannot interrupt a newer working state', async () => {
   const h = harness();
   await h.create(); await h.start();

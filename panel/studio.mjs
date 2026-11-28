@@ -12,7 +12,7 @@ import { operationsOverview, runOperationsLine, diskBlock, diskSummary } from '.
 import { exportControls, exportHistory } from './history.mjs';
 import { createMotionMemory } from './pixelstate.mjs';
 import { observeRuns, stagesOf, runBanner, workshop, station } from './pixelview.mjs';
-import { attention, runRows, desks, teamRoom, chip, teamCard } from './pixelrooms.mjs';
+import { attention, runRows, desks, teamRoom, chip, teamCard, workspaceRoom } from './pixelrooms.mjs';
 import { tickPixels, startTicker } from './pixeltick.mjs';
 import { scopeField, scopeLine, profileField, modelPlan, fallbackLine, redoVisualInput } from './runplan.mjs';
 const app = document.querySelector('#app');
@@ -32,10 +32,12 @@ const stageSnapshots = new Map(), stageMotions = new Map(), motion = createMotio
 // The pixel views read the summary run (waiting, operations, current jobs), never a loaded runs.get detail.
 const pixelCtx = (extra={}) => ({now:Date.now(),memory:motion,limits:ui.state?.limits,cancelling:ui.cancelling,fullTitle:title,selectedId:ui.nodeId,...extra});
 const MOTION_MS = 700;
+let workspaceAgentsPending = false, workspaceAgentsDirty = false;
 let navigation = 0, renderPending = false, detailPending = false, refreshPromise = null, refreshQueued = false, hostRefreshQueued = false;
 const revision = () => ui.state?.revision ?? 0;
 const assignmentMutable = node => !node.active && !['passed','awaiting-approval','skipped'].includes(node.status);
 const ownedTerminal = id => (ui.state?.runs??[]).some(r=>(r.jobs??[]).some(j=>j.terminalId===id));
+const currentWorkspaceRoom = (showIdle = false) => workspaceRoom(ui.state?.agents??[], {now:Date.now(), ownedTerminal, showIdle});
 const draft = (form,name,fallback='') => ui.drafts[form+'.'+name]??fallback;
 const providers = () => (ui.state?.providers??['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro']).map(p=>typeof p==='string'?p:p.id);
 const providerOptions = selected => options(providers(),selected);
@@ -171,6 +173,23 @@ async function refresh({quiet=false,forceHost=false}={}) {
   })();
   try {await refreshPromise;} finally {refreshPromise=null;}
 }
+// Refresh just the roster on Orca events, without refetching a run or reloading any tab data.
+async function refreshWorkspaceAgents() {
+  workspaceAgentsDirty=true;
+  if(workspaceAgentsPending)return;
+  workspaceAgentsPending=true;
+  try {
+    while(workspaceAgentsDirty) {
+      workspaceAgentsDirty=false;
+      try {
+        const agents=await request('workspace.agents');
+        if(!ui.state||!Array.isArray(agents)||JSON.stringify(ui.state.agents)===JSON.stringify(agents))continue;
+        ui.state={...ui.state,agents};
+        if(ui.tab!=='play')scheduleRender();
+      } catch(error) { console.warn('Toris Neon: 현재 작업 공간의 상태를 갱신하지 못했습니다.',error); }
+    }
+  } finally { workspaceAgentsPending=false; }
+}
 async function moreNotes() {
   if(ui.notesBusy||!ui.today?.notesPage?.hasMore)return;
   ui.notesBusy=true;
@@ -220,7 +239,7 @@ function render({background=false}={}) {
 function renderToday() {
   const data=ui.today,runs=ui.state?.runs??[];
   const yesterdayCount=(data?.yesterdayEvents?.length??0)+(data?.worklogs?.filter(w=>w.day===data.yesterdayDate).length??0);
-  let html='<section class="hero today-hero"><div class="hero-row"><h1>오늘 이어하기</h1>'+button('+ 새 앱','new-run','','small primary')+'</div><p class="hint">'+e(todayDate())+' · 어제의 기록 '+yesterdayCount+'건</p></section>'+attention(orderedRuns(),pixelCtx())+runRows(orderedRuns(),pixelCtx());
+  let html='<section class="hero today-hero"><div class="hero-row"><h1>오늘 이어하기</h1>'+button('+ 새 앱','new-run','','small primary')+'</div><p class="hint">'+e(todayDate())+' · 어제의 기록 '+yesterdayCount+'건</p></section>'+attention(orderedRuns(),pixelCtx())+currentWorkspaceRoom()+runRows(orderedRuns(),pixelCtx());
   if(!data)html+=empty(ui.busy?'기록을 읽고 있습니다':'기록을 연결해 주세요','Orca 작업 공간과 날짜별 인계 기록이 이곳에 표시됩니다.');
   else {
     const warnings=data.warnings??[];
@@ -267,10 +286,10 @@ function renderStudio() {
   let html='<section class="hero flow-tab"><div class="hero-row"><h1>Auto App</h1>'+button('+ 새 흐름','new-run','','small')+'</div></section>';
   if(ui.newRun) return html+newRunForm();
   const item=run();
-  if(!item) return html+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 조사부터 테스트까지(출시 준비를 고르면 출시까지)의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
+  if(!item) return html+currentWorkspaceRoom()+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 조사부터 테스트까지(출시 준비를 고르면 출시까지)의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
   const nodes=item.nodes??[],selected=selectedNode(item),ctx=flowContext(item),live=summaryOf(item),px=pixelCtx(),id=e(item.id);
   // What is happening first: the header, the run's actions, the workshop, then the selected stage's detail.
-  html+=runPicker(item)+runBanner(live,px)+runActions(item)+workshop(live,px);
+  html+=runPicker(item)+runBanner(live,px)+runActions(item)+currentWorkspaceRoom()+workshop(live,px);
   if(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId) html+=attachCard(item,ctx);
   html+=inspector(item,selected,ctx);
   const alerts=item.runtimeMessage||item.storageWarning||item.stopFailures?.length||item.autonomy?.stopped; // never folded away
@@ -482,9 +501,9 @@ function accountForm() {
   return '<section class="card"><div class="section-heading"><h2>'+(account?'계정 설정':'개발자 계정 연결')+'</h2>'+button('닫기','close-account','','small')+'</div><form id="account" '+(id?'data-account="'+e(id)+'"':'')+'><label class="label" for="account-name">계정 이름</label><input class="field" id="account-name" name="name" value="'+e(def('name',account?.name??''))+'" required placeholder="예: Toris"><label class="label" for="account-developer-id">Play 개발자 계정 ID</label><input class="field mono" id="account-developer-id" name="developerId" inputmode="numeric" pattern="[0-9]{19}" maxlength="19" value="'+e(def('developerId',account?.developerId??''))+'"><p class="hint">Auto App에서 제출 대상으로 사용하려면 Play Console에 표시된 19자리 ID와 패키지 목록을 입력하세요.</p><label class="label" for="credential-path">이 컴퓨터의 서비스 계정 JSON 경로</label><input class="field mono" id="credential-path" name="credentialPath" value="" autocomplete="off" placeholder="~/.config/google/play-service-account.json"><p class="hint">'+(account?'비워두면 현재 키를 유지합니다.':'Orca가 실행되는 컴퓨터의 절대 경로 또는 ~/ 경로를 입력하세요.')+' 가져온 원문은 화면에 다시 표시하지 않습니다.</p><details class="spacer"><summary>JSON 직접 붙여넣기</summary><textarea class="field mono" name="serviceAccountJson" aria-label="서비스 계정 JSON" autocomplete="off" spellcheck="false" placeholder="서비스 계정 JSON 원문 · 로컬 경로와 둘 중 하나만 입력"></textarea></details><label class="label" for="account-packages">계정의 패키지 목록 (비워두면 전체 자동 조회)</label><textarea class="field mono" id="account-packages" name="packages" placeholder="com.example.app&#10;com.example.other">'+e(def('packages',account?.packages?.join('\n')??''))+'</textarea><label class="label" for="account-tracks">조회할 트랙 · 줄바꿈 또는 쉼표로 구분</label><input class="field" id="account-tracks" name="tracks" value="'+e(def('tracks',account?.tracks?.join(', ')??'production, beta, alpha, internal'))+'" required><p class="hint">이름을 지정한 비공개 테스트나 기기별 트랙도 추가할 수 있습니다.</p><div class="callout">Google Play Console에서 해당 서비스 계정에 필요한 조회 권한을 부여해 주세요. 앱 자동 조회에는 Play Developer Reporting API를 사용합니다.</div><div class="actions"><button class="button primary" type="submit">'+(account?'설정 저장':'계정 연결')+'</button></div></form></section>';
 }
 function renderAgents() {
-  const agents=ui.state?.agents??[],item=run();
+  const item=run();
   const limits=ui.state?.limits;
-  let html='<section class="hero flow-tab"><h1>에이전트</h1></section>'+desks(limits);
+  let html='<section class="hero flow-tab"><h1>에이전트</h1></section>'+currentWorkspaceRoom(true)+desks(limits);
   if(item) {
     selectedNode(item);const ctx=flowContext(item),id=e(item.id);
     html+='<div class="agent-overview">'+runPicker(item)+'</div>'+teamRoom(summaryOf(item),pixelCtx());
@@ -492,9 +511,7 @@ function renderAgents() {
     html+='<details class="card px-fold" data-disclosure="people:'+id+'"'+(ui.peopleOpen===item.id?' open':'')+'><summary>팀별 작업자와 검토자</summary>'+collabStrip(item,ctx)+teamNavigator(item,ctx)+'<div class="people">'+people(item,ctx)+'</div></details>';
     html+='<section class="section"><details class="card" data-disclosure="assignments"><summary>전체 배정 · '+(item.nodes?.length??0)+'개 단계</summary><p class="hint">모델과 추론 강도는 실행의 속도·비용 프로필을 따르고, 여기서 단계별로 고르면 그 선택이 우선합니다. 검토자는 매번 별도 세션으로 시작합니다.</p>'+assignmentForm(item,item.nodes??[],ctx)+'</details></section>';
   } else html+=operationsOverview({runs:ui.state?.runs??[],limits,resources:ui.state?.resources,now:Date.now()})+empty('아직 흐름이 없습니다','Auto App에서 흐름을 만들면 팀별 담당자와 검토자가 여기에 나타납니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
-  html+='<section class="section"><details class="card" data-disclosure="workspace-agents"><summary>현재 작업 공간의 Orca 에이전트 · '+agents.length+'</summary>';
-  html+=agents.length?'<div class="agent-grid">'+agents.map(a=>'<div class="card agent-card"><div class="card-head"><h3>'+e(a.title??a.agent??'Agent')+'</h3>'+badge(a.state)+'</div><p>'+e(a.agent??'')+' · '+e(localDate(a.stateStartedAt))+'</p>'+(a.terminalId&&ownedTerminal(a.terminalId)?'<div class="actions">'+button('열기','focus-terminal','data-terminal="'+e(a.terminalId)+'"','small')+'</div>':'')+'</div>').join('')+'</div>':'<p class="hint">현재 공간에서 확인되는 에이전트가 없습니다.</p>';
-  html+='<p class="hint spacer">배정 가능한 종류 · '+providers().map(e).join(', ')+'. CLI 설치와 로그인은 Orca에서 먼저 완료해 주세요.</p></details></section>';
+  html+='<p class="hint spacer">배정 가능한 종류 · '+providers().map(e).join(', ')+'. CLI 설치와 로그인은 Orca에서 먼저 완료해 주세요.</p>';
   return html;
 }
 // One panel timer (panel/pixeltick.mjs): time text in place, and only pieces whose time boundary passed are redrawn.
@@ -753,6 +770,7 @@ if(bridge?.plugin) {
     scheduleRender();
     if(ui.tab==='studio'&&!ui.newRun)scheduleDetail();
   });
+  bridge.plugin.on('workspace.agents.changed',refreshWorkspaceAgents);
   refresh();
 } else {
   ui.error='Orca 연결이 없습니다. Orca에서 Toris Neon 패널을 열어 주세요.';
