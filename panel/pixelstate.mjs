@@ -121,7 +121,8 @@ function assignedView(view, { node, job, operation, phase, startMs, signal, now 
     const review = phase === 'review', quietFor = now - signal;
     if (quietFor >= QUIET_MS) {
       const minutes = Math.floor(quietFor / 60_000);
-      return view('quiet', (review ? '검토 · ' : '') + minutes + '분째 조용함', { activityAt: signal, until: signal + (minutes + 1) * 60_000, tooltip: QUIET_TOOLTIP });
+      return view('quiet', (review ? '검토 · ' : '') + minutes + '분째 조용함', { activityAt: signal, until: signal + (minutes + 1) * 60_000, tooltip: QUIET_TOOLTIP,
+        detail: '마지막 작업 신호 뒤로 새 기록 없음 · 멈춤으로 단정하지 않음' });
     }
     return view(review ? 'review' : 'work', review ? '검토 중' : '작업 중', { activityAt: signal, until: signal + QUIET_MS, detail: '작업 신호 확인됨', tooltip: QUIET_TOOLTIP });
   }
