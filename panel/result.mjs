@@ -9,6 +9,7 @@ import { runTokens } from './tokens.mjs';
 import { kindResult } from './kindresult.mjs';
 import { redoVisualButton } from './runplan.mjs';
 import { costBlock } from './costs.mjs';
+import { researchFindings } from './research.mjs';
 
 const ARTIFACT_LABELS = { screenshot: '실제 화면', mockup: '시안' };
 const MEDIA = /\.(png|jpe?g|webp|gif|mp4|webm)$/i;
@@ -80,9 +81,10 @@ function artifactView(runId, item, artifacts) {
 export function stageResult(run, node, { artifacts }) {
   const report = node.report;
   const shown = (report?.evidence ?? []).filter((item) => item.kind === 'artifact' && (MEDIA.test(item.path) || TEXT.test(item.path)));
-  if (!report || !(report.changes || report.criteria || report.beforeAfter || report.notVerified || report.parallel || shown.length)) return '';
+  if (!report || !(report.findings || report.changes || report.criteria || report.beforeAfter || report.notVerified || report.parallel || shown.length)) return '';
   const id = 'result-' + e(run.id + '-' + node.id);
   return '<section class="result-card" aria-labelledby="' + id + '"><h4 id="' + id + '">' + e(title(node)) + ' 결과</h4>' +
+    researchFindings(report) + // the research decision and its six answers (panel/research.mjs)
     section('바뀐 것', report.changes?.length ? list(report.changes) : '') +
     section('완료 기준', report.criteria?.length ? criteria(report.criteria) : '') +
     section('이전 → 이후', (report.beforeAfter?.length ? beforeAfter(report.beforeAfter) : '') + shown.map((item) => artifactView(run.id, item, artifacts)).join('')) +

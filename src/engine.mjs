@@ -5,6 +5,7 @@
  */
 import { kindFieldsOf, requireKindProof } from './kinds.mjs';
 import { candidatesOf, requireCandidates } from './candidates.mjs';
+import { findingsOf, requireFindings } from './research.mjs';
 import { followUpFieldsOf, failOnDefects, requireBrokenCriterion } from './followups.mjs';
 import { parallelFieldsOf, requireParallel } from './fanout.mjs';
 import { REPORT_LIMITS as LIMITS, overCap } from './reportlimits.mjs';
@@ -478,6 +479,8 @@ function normalizeReport(run, nodeId, report) {
     ...part(() => resultFieldsOf(report), {}),
     // Only a passed report's candidates can be started; a failed or blocked one's are dropped, not refused.
     ...section(report.candidates !== undefined, () => ({ candidates: report.outcome === 'passed' ? candidatesOf(report.candidates, Object.keys(IMPROVE_KINDS)) : undefined })),
+    // The research conclusion (src/research.mjs): only a passed research work report's is checked and kept.
+    ...section(report.findings !== undefined, () => ({ findings: nodeId === 'research' && report.phase === 'work' && report.outcome === 'passed' ? findingsOf(report.findings) : undefined })),
     ...(kinds ?? {}),
   }), null); // a criterion-breaking follow-up fails the review now
   if (clean && kinds) { // what the stage must prove, once its fields have a valid shape
@@ -485,6 +488,7 @@ function normalizeReport(run, nodeId, report) {
     part(() => requireParallel(run, nodeId, clean)); // a Claude build that could fan out states its split (src/fanout.mjs)
     part(() => requireKindProof(run, nodeId, clean)); // design, performance and release proof (src/kinds.mjs)
     part(() => requireCandidates(run, nodeId, clean)); // a passed diagnosis carries 3-5 startable candidates (src/candidates.mjs)
+    part(() => requireFindings(nodeId, clean)); // a passed research carries its v1 decision and six answers (src/research.mjs)
   }
   if (problems.length === 1) throw problems[0];
   if (problems.length) {

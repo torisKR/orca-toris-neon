@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createRun, claimNode, applyReport, retryNode, cancelRun, templateGraph } from '../src/engine.mjs';
 import { normalizeScope, scopedGraph, skippableStages, skipReleaseStages, RELEASE_STAGES } from '../src/scope.mjs';
 import { milestones, milestoneText } from '../src/milestones.mjs';
+import { sampleFindings } from './fixtures/research.mjs';
 
 const NOW = '2026-11-24T01:00:00.000Z';
 let count = 0;
@@ -12,6 +13,7 @@ const report = (run, id, outcome = 'passed') => {
   const active = run.nodes.find((node) => node.id === id).active;
   return { runId: run.id, nodeId: id, phase: active.phase, nonce: active.nonce, attempt: active.attempt, outcome, summary: id + ' ' + outcome,
     evidence: outcome === 'passed' ? [{ kind: 'artifact', path: 'a/' + id + '.md' }] : [],
+    ...(id === 'research' && active.phase === 'work' ? { findings: sampleFindings() } : {}),
     ...(id === 'test' && outcome === 'failed' ? { criteria: [{ criterion: '첫 판을 끝까지 할 수 있다', met: false }] } : {}) };
 };
 function pass(run, id) {

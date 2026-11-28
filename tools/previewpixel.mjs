@@ -8,13 +8,28 @@ import { createRun, claimNode, templateGraph } from '../src/engine.mjs';
 const iso = (ms) => new Date(ms).toISOString();
 const CODE_MODE_MESSAGE = 'claude가 시작 화면의 "Code Mode (experimental)" 안내에서 멈춰 작업 지시를 받지 않았습니다. Claude 설정(CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1)이 띄운 안내라 Neon 밖의 조건입니다. 해결: Claude 설정의 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE를 끄거나, Claude Code를 직접 열어 안내를 확인하세요. (미리보기 자료)';
 
+// Sample research findings (src/research.mjs contract): sample names and example.com addresses only.
+export const previewResearch=()=>({
+  findings:{decision:'하루 5분 루틴 하나만 기록하는 오프라인 습관 앱으로 v1을 만듭니다. 계정·친구·통계 화면은 v1에서 뺍니다.',
+    targetUser:'아침 루틴을 만들고 싶지만 앱 설정에서 지치는 직장인',problem:'기존 습관 앱은 첫 기록 전에 목표·알림·카테고리 설정이 길어 첫 주 안에 그만두게 됩니다.',
+    competitors:[{name:'샘플 루틴 앱 A',url:'https://example.com/routine-a',takeaway:'첫 화면에서 바로 오늘 기록을 남기게 한다',checked:true},
+      {name:'샘플 습관 앱 B',url:'https://example.com/habit-b',takeaway:'연속 기록 표시가 재방문 이유가 된다',checked:true},
+      {name:'샘플 타이머 앱 C',url:'https://example.com/timer-c',takeaway:'5분 타이머가 루틴 시작 장벽을 낮춘다',checked:false}],
+    differentiators:['설정 없이 첫 기록까지 10초','계정 없이 기기 안에만 저장','루틴 하나에 집중하는 한 화면'],
+    monetization:{hypothesis:'광고 없는 평생 이용권 일회성 결제(추정)',basis:'열어 본 비슷한 앱 2곳이 일회성 결제를 제공'},
+    openQuestions:['가격대는 내부 테스트 반응을 보고 정합니다','알림 기본 시간은 제품 기획에서 정합니다'],
+    sources:{opened:9,searchOnly:4}},
+  criteria:['목표 사용자','문제','경쟁 앱 3~5개','차별점','수익화','남은 질문'].map(criterion=>({criterion,met:true,evidence:'research.md · 미리보기 자료'})),
+});
+
 function base(id, goal, project, { now, template = 'new-app', kind, passed = [], updatedAt, nodes: graph }) {
   const nodes = graph ?? (template === 'new-app' ? undefined : templateGraph(template, { kind }));
   const run = createRun({ id, goal, projectId: project, now: now - 3_600_000, ...(nodes ? { nodes } : {}) });
   Object.assign(run, { started: true, status: 'running', workspaceId: 'preview-workspace-' + id, workspacePath: '/example/' + id, autonomous: true, jobs: [], updatedAt: iso(updatedAt) });
   if (template !== 'new-app') Object.assign(run, { template, improvement: { kind, options: {}, projectName: id, playLink: null } });
   for (const node of run.nodes) { node.agent = 'codex'; node.reviewer = 'claude'; }
-  for (const done of passed) Object.assign(run.nodes.find((node) => node.id === done), { status: 'passed', attempts: 1, reviewAttempts: 1, completedAt: iso(now - 1_800_000) });
+  for (const done of passed) Object.assign(run.nodes.find((node) => node.id === done), { status: 'passed', attempts: 1, reviewAttempts: 1, completedAt: iso(now - 1_800_000),
+    report: { outcome: 'passed', summary: '미리보기 자료 · 실제 작업 결과가 아닙니다.', evidence: [], ...(done === 'research' ? previewResearch() : {}) } });
   return run;
 }
 // A turn proven by the agent in its own session after the prompt was sent.

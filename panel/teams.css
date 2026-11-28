@@ -394,6 +394,22 @@
 .artifact-text { max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: 12px; background: var(--bg); padding: 6px; }
 .artifact-text:focus-visible, .result-card .button:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
 .completion-label { font-weight: 700; color: var(--neon); }
+/* Research result (panel/research.mjs): the decision reads first; the badge says in words whether a page was opened. */
+.research-findings { margin-top: 8px; word-break: keep-all; overflow-wrap: anywhere; }
+.research-decision { font-size: 15px; line-height: 1.55; font-weight: 600; padding: 8px 10px; border-left: 3px solid var(--neon); background: color-mix(in srgb, var(--neon) 7%, var(--card)); border-radius: 0 8px 8px 0; }
+.research-decision strong, .research-who strong { display: inline-block; margin-right: 6px; color: var(--neon); font-size: 12px; }
+.research-who { margin-top: 6px; font-size: 13px; }
+.research-who strong { color: var(--muted); }
+.research-competitors { width: 100%; border-collapse: collapse; font-size: 12px; }
+.research-competitors th, .research-competitors td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.research-competitors thead th { color: var(--muted); font-weight: 500; font-size: 11px; }
+.research-competitors tbody th { font-weight: 600; min-width: 5.5em; }
+.research-competitors .button { min-height: 0; padding: 0; border: 0; color: var(--neon); font-size: 12px; text-align: left; }
+.research-check { display: inline-block; white-space: nowrap; font-size: 11px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px; }
+.research-check.is-opened { color: var(--mint); border-color: color-mix(in srgb, var(--mint) 40%, var(--line)); }
+.research-check.is-search { color: var(--amber); border-style: dashed; }
+.research-findings .result-part p { margin: 0; font-size: 13px; }
+.research-sources { margin-top: 10px; }
 .result-chain p { margin: 4px 0; }
 .run-result .button:focus-visible, .artifact video:focus-visible, .artifact:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
 /* Token usage (panel/tokens.mjs): a compact figure that opens to the exact integer and its scope. */

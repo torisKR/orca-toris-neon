@@ -16,7 +16,7 @@ import { scopedGraph } from '../src/scope.mjs';
 import { profileAssignments } from '../src/profile.mjs';
 import { summarizeApp } from '../src/play.mjs';
 import { deflateSync, crc32 } from 'node:zlib';
-import { pixelSamples } from './previewpixel.mjs';
+import { pixelSamples, previewResearch } from './previewpixel.mjs';
 
 const PREVIEW_STAMP = Date.parse('2026-11-19T05:00:00.000Z');
 const clone = value => structuredClone(value);
@@ -41,6 +41,7 @@ function fillPassed(node, stamp, prefix) {
   node.receipt={path:prefix+'/'+node.id+'/result.json',at:iso(stamp),phase:'review',
     artifacts:[{path:prefix+'/'+node.id+'/review.md',size:128,sha256:'preview-only'}]};
   node.history=Array.from({length:3},(_,index)=>({at:iso(stamp-(3-index)*60000),type:'preview',summary:'샘플 단계 이력 '+(index+1)}));
+  if(node.id==='research')Object.assign(node.report,previewResearch());
 }
 
 export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
