@@ -260,8 +260,14 @@ function recovery(item, node) {
     html += '<div class="callout warning"><strong>터미널이 열렸지만 첫 지시가 전달되지 않았나요?</strong><br>이전 에이전트를 열어 작업을 시작하지 않은 빈 입력 화면인지 확인하세요. 확인한 경우 같은 터미널에 지시를 한 번 전달할 수 있습니다.</div><label class="checkbox"><input type="checkbox" id="delivery-ack">작업이 시작되지 않았고 입력이 비어 있음을 확인했습니다.</label><div class="actions">' +
       button('기존 터미널에 지시 전달', 'deliver-prompt', 'data-run="' + e(item.id) + '" data-node="' + e(node.id) + '" data-nonce="' + e(node.pendingReceipt?.nonce ?? node.active?.nonce ?? '') + '"', 'small') + '</div>';
   }
+  // Blocked only by the report's form after the automatic fix requests: the work stands, ask for the report (nodes.requestReport).
+  const reportOnly = node.status === 'blocked' && !node.active && open && job?.reportFix && job.state === 'awaiting-report' && job.promptRecovery?.state === 'sent';
+  if (reportOnly) {
+    html += '<div class="actions">' + button('보고서만 다시 요청', 'request-report', 'data-run="' + e(item.id) + '" data-node="' + e(node.id) + '" data-nonce="' + e(job.nonce) + '"', 'primary') + '</div>' +
+      '<p class="hint">작업은 다시 하지 않습니다. 같은 에이전트에게 지금 보고서의 문제를 한 번에 알려 고치게 하고, 같은 검증을 통과한 보고서만 받습니다. 누를 때마다 한 번 요청합니다.</p>';
+  }
   if (['failed', 'blocked'].includes(node.status) && !node.active && open) {
-    html += '<div class="actions">' + button('이 단계 다시 시도', 'retry-node', 'data-run="' + e(item.id) + '" data-node="' + e(node.id) + '" data-nonce="' + e(node.active?.nonce ?? node.pendingReceipt?.nonce ?? '') + '"', 'primary') + '</div><p class="hint">정해진 시도 횟수 안에서만 다시 실행합니다. 한도를 넘으면 새 흐름을 만들어 범위를 조정해 주세요.</p>';
+    html += '<div class="actions">' + button('이 단계 다시 시도', 'retry-node', 'data-run="' + e(item.id) + '" data-node="' + e(node.id) + '" data-nonce="' + e(node.active?.nonce ?? node.pendingReceipt?.nonce ?? '') + '"', reportOnly ? '' : 'primary') + '</div><p class="hint">정해진 시도 횟수 안에서만 다시 실행합니다. 한도를 넘으면 새 흐름을 만들어 범위를 조정해 주세요.</p>';
   }
   return html;
 }

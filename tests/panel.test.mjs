@@ -1319,3 +1319,24 @@ test('a loaded run detail (the raw run) still shows the summary\'s resolved mode
   assert.match(h.app.innerHTML,/단계별 모델 · 프로필 절약/);
   assert.match(h.app.innerHTML,/작업 <strong>49분<\/strong>/);
 });
+
+test('a stage blocked only by its report form offers 보고서만 다시 요청 first, which asks for the report and nothing else',async()=>{
+  // Arrange: the work is done; both automatic fix requests were used up.
+  const state=baseState();const run=liveRun();run.status='blocked';
+  run.nodes[1]={...run.nodes[1],status:'blocked',active:null,pendingReceipt:{phase:'work',nonce:'job-1',terminalId:'term-1',attempt:1},
+    runtimeMessage:'보고서 형식이 받아들여지지 않았습니다: 결과 근거(evidence)는 최대 30개입니다(지금 64개).'};
+  run.jobs=[{nonce:'job-1',nodeId:'build',terminalId:'term-1',state:'awaiting-report',promptSeen:true,promptRecovery:{state:'sent'},reportFixes:2,reportFix:{reason:'evidence'}}];
+  state.runs=[run];
+  const h=await harness({state});
+  // Act
+  await h.click({action:'open-run',run:'run-1'});await h.flushFrames();
+  const html=h.app.innerHTML;
+  // Assert
+  const action=renderedAction(html,'request-report');
+  assert.deepEqual([action.run,action.node,action.nonce],['run-1','build','job-1']);
+  assert.ok(html.indexOf('data-action="request-report"')<html.indexOf('data-action="retry-node"'),'the report request comes before a full retry');
+  assert.match(html,/<button[^>]*class="button primary"[^>]*data-action="request-report"[^>]*>보고서만 다시 요청/);
+  await h.click(action);
+  assert.deepEqual(h.requests('nodes.requestReport').map(call=>call.input),[{runId:'run-1',nodeId:'build',expectedNonce:'job-1'}]);
+  assert.equal(h.requests('nodes.retry').length,0);
+});

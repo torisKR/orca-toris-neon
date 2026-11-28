@@ -2244,6 +2244,79 @@ test('report fixes are bounded; after two the stage falls back to the usual bloc
   assert.match(h.getRun().nodes[0].runtimeMessage, /evidence\[0\]/);
 });
 
+// A done stage blocked only by its report's form after both fix requests: the person asks once more.
+async function blockedOnReportForm() {
+  const h = harness();
+  await h.create(); await h.start();
+  await turn(h, 'working', NOW + 1);
+  const job = h.currentJob();
+  h.report(job, badCheck(job));
+  await h.done(job);
+  for (const at of [NOW + 10, NOW + 20]) { await turn(h, 'working', at); await turn(h, 'done', at + 1, 'success'); }
+  assert.equal(h.getRun().nodes[0].status, 'blocked');
+  return { h, job, request: () => h.runtime.handlers['nodes.requestReport']({ runId: h.getRun().id, nodeId: 'build', expectedNonce: job.nonce }) };
+}
+
+test('a person can ask the same agent for the report only, once per click, without redoing the work', async () => {
+  // Arrange
+  const { h, job, request } = await blockedOnReportForm();
+  const before = fixRequests(h).length;
+  // Act
+  const result = await request();
+  await h.runtime.drain();
+  // Assert
+  assert.equal(result.requested, true);
+  assert.equal(launchCalls(h).length, 1, 'no new attempt');
+  const fixes = fixRequests(h).slice(before);
+  assert.equal(fixes.length, 1);
+  assert.equal(fixes[0].input.terminalId, job.terminalId);
+  assert.match(fixes[0].input.text, /사람 요청/);
+  assert.match(fixes[0].input.text, /evidence\[0\]/);
+  assert.equal(h.getRun().nodes[0].active.nonce, job.nonce, 'the stage is back with this agent');
+  await assert.rejects(request(), /보고서 형식 때문에 멈춘 단계/, 'a second click while the request is out does nothing');
+});
+
+test('after the person\'s request a corrected report is accepted, a still-wrong one is never accepted', async () => {
+  // Arrange
+  const { h, job, request } = await blockedOnReportForm();
+  await request(); await h.runtime.drain();
+  // Act: the agent saves the same wrong report again.
+  await turn(h, 'working', NOW + 30); await turn(h, 'done', NOW + 31, 'success');
+  // Assert
+  assert.equal(h.getRun().nodes[0].status, 'blocked');
+  assert.notEqual(h.getRun().jobs[0].state, 'complete');
+  // Act: asked again, it fixes the report.
+  await request(); await h.runtime.drain();
+  await turn(h, 'working', NOW + 40);
+  h.report(job, { evidence: [{ kind: 'command', command: 'diff 1-work/brief.md 3-work/brief.md', exitCode: 1, expectedExitCode: 1, role: 'check' }, { kind: 'artifact', path: job.receiptDirectory + '/verification.md' }] });
+  await turn(h, 'done', NOW + 41, 'success');
+  // Assert
+  assert.equal(h.getRun().jobs[0].state, 'complete');
+  assert.equal(launchCalls(h).length, 2, 'the review starts');
+});
+
+test('a report already corrected on disk is taken in at the click, with no fix request typed', async () => {
+  const { h, job, request } = await blockedOnReportForm();
+  const fixes = fixRequests(h).length;
+  h.report(job, { evidence: [{ kind: 'command', command: 'diff a b', exitCode: 1, expectedExitCode: 1, role: 'check' }, { kind: 'artifact', path: job.receiptDirectory + '/verification.md' }] });
+  const result = await request();
+  await h.runtime.drain();
+  assert.equal(result.accepted, true);
+  assert.equal(fixRequests(h).length, fixes, 'no fix request is typed');
+  assert.equal(h.getRun().jobs[0].state, 'complete');
+});
+
+test('the report request is refused where it could type into a busy terminal or redo nothing useful', async () => {
+  const { h, request } = await blockedOnReportForm();
+  h.agents[0].state = 'waiting';
+  const typed = sendCalls(h).length;
+  await assert.rejects(request(), /턴이 끝난/);
+  assert.equal(sendCalls(h).length, typed);
+  const plain = harness();
+  await plain.create(); await plain.start();
+  await assert.rejects(plain.runtime.handlers['nodes.requestReport']({ runId: plain.getRun().id, nodeId: 'build' }), /보고서 형식 때문에 멈춘 단계/);
+});
+
 test('a report written minutes ago is taken in although Orca still says the agent is working', async () => {
   let clock = NOW;
   const h = harness({ now: () => clock, receiptWrittenAt: async () => NOW + 60_000 });

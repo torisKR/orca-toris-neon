@@ -640,6 +640,7 @@ app.addEventListener('click',async event=>{
       await request('nodes.deliverPrompt',{runId:target.dataset.run,nodeId:target.dataset.node,acknowledgeUnsent:true,...(target.dataset.nonce?{expectedNonce:target.dataset.nonce}:{})});
       toast('기존 터미널에 지시를 전달했습니다. 일시정지 상태라면 재개를 눌러 주세요.');
     }
+    else if(action==='request-report'){const result=await request('nodes.requestReport',{runId:target.dataset.run,nodeId:target.dataset.node,expectedNonce:target.dataset.nonce});toast(result?.accepted?'고쳐진 보고서를 받아들였습니다.':'같은 에이전트에게 보고서만 고치도록 한 번 요청했습니다.');}
     else if(action==='toggle-terminal-cleanup'){const enabled=target.dataset.enabled==='true';await request('runs.setTerminalCleanup',{runId:target.dataset.run,enabled});toast(enabled?'끝난 에이전트 터미널을 자동으로 닫습니다.':'끝난 에이전트 터미널을 열어 둡니다.');}
     else if(action==='toggle-autonomy'){const enabled=target.dataset.enabled==='true';await request('runs.setAutonomous',{runId:target.dataset.run,enabled});toast(enabled?'자율 진행을 켰습니다. 외부 제출 전까지 사람 없이 진행합니다.':'자율 진행을 껐습니다.');}
     else if(action==='restore-agent'){await request('runs.restoreAgent',{runId:target.dataset.run,agent:target.dataset.agent});toast(target.dataset.agent+'를 다시 씁니다. 아직 시작하지 않은 단계를 원래 배정으로 되돌렸습니다.');}

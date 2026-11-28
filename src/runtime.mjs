@@ -38,7 +38,7 @@ import { createRequestLedger } from './requests.mjs';
 import { parentEvidenceOf, recheckParentEvidence } from './reuse.mjs';
 import { digestFile, gitRepositoryState, preflightMessage, sourceFingerprint } from './repository.mjs';
 import { recordReleaseBinary, recheckBeforeSubmission, readReleaseFile } from './releaselink.mjs';
-import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, REPORT_FIX_REASON_CHARS, isReportFormError, formError, reportFixPrompt } from './reportfix.mjs';
+import { MAX_REPORT_FIXES, REPORT_FIX_DELAY_MS, REPORT_FIX_REASON_CHARS, isReportFormError, formError, reportFixPrompt, reportRequestRefusal } from './reportfix.mjs';
 import { checkReceiptForm } from './reportcheck.mjs';
 
 export { buildNodePrompt, gitRepositoryState, sourceFingerprint };
@@ -315,6 +315,13 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   };
   // Attempts that never started work do not count (src/refund.mjs); each refund is a run event.
   const evidenceOf = async (job) => workEvidence({ job, files: await listResultFiles(job) });
+  // The stage is this job's again (a copy, stored by the caller): a manual delivery or a person's report request.
+  const reviveStage = (run, node, job, message) => {
+    job.state = 'running';
+    Object.assign(node, { active: { ...node.pendingReceipt, ...job }, status: job.phase === 'review' ? 'review' : 'running', failureReason: null, runtimeMessage: message });
+    delete node.pendingReceipt; delete node.launchUncertain;
+    if (run.status !== 'paused') run.status = 'running';
+  };
   const giveBack = (run, nodeId, nonces, reason, manual = false) => {
     const refund = refundAttempts(run, nodeId, nonces, { at: nowIso(now), reason, manual });
     refund.message = '시작 안 한 시도 ' + refund.count + '회를 되돌렸습니다 (' + nonces.map((nonce) => nonce.slice(0, 8)).join(', ') + '): ' + reason;
@@ -351,15 +358,15 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
   };
   // A report refused for its form: the same agent corrects only the report (src/reportfix.mjs).
   const readGit = async (dir) => { try { return gitState ? await gitState(dir) : null; } catch (error) { throw runtimeError('conflict', 'git 상태를 읽지 못해 커밋 여부를 확인할 수 없습니다: ' + safeError(error).message); } }; // never fails open
-  const requestReportFix = async (run, job, reason, { commit = false } = {}) => {
+  const requestReportFix = async (run, job, reason, { commit = false, manual = false } = {}) => {
     const count = job.reportFixes ?? 0;
-    if (count >= MAX_REPORT_FIXES || job.promptRecovery?.state !== 'sent' || run.status === 'paused' || !job.terminalId) return false;
+    if ((count >= MAX_REPORT_FIXES && !manual) || job.promptRecovery?.state !== 'sent' || run.status === 'paused' || !job.terminalId) return false;
     let at = null;
     try { at = await receiptWrittenAt(job.receiptPath); } catch { at = null; }
     job.reportRejectedAt = Number.isFinite(at) ? at : now();
-    job.reportFix = { reason: String(reason).slice(0, REPORT_FIX_REASON_CHARS), at: nowIso(now), ...(commit ? { commit: true } : {}) };
+    job.reportFix = { reason: String(reason).slice(0, REPORT_FIX_REASON_CHARS), at: nowIso(now), ...(commit ? { commit: true } : {}), ...(manual ? { manual: true } : {}) };
     const node = findNode(run, job.nodeId);
-    node.runtimeMessage = '보고서 형식이 받아들여지지 않았습니다: ' + reason + ' 작업은 그대로 두고 같은 에이전트에게 보고서만 고치도록 요청합니다 (' + (count + 1) + '/' + MAX_REPORT_FIXES + ').';
+    node.runtimeMessage = '보고서 형식이 받아들여지지 않았습니다: ' + reason + ' 작업은 그대로 두고 같은 에이전트에게 보고서만 고치도록 요청합니다 (' + (manual ? '사람 요청' : (count + 1) + '/' + MAX_REPORT_FIXES) + ').';
     appendEvent(run, node.title + ': ' + node.runtimeMessage, now, { nodeId: node.id, nonce: job.nonce });
     track('continue:' + job.nonce, job.nonce, async () => {
       await sleep(REPORT_FIX_DELAY_MS);
@@ -367,7 +374,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     });
     return true;
   };
-  const acceptReceipt = async (run, job, outcome) => {
+  const acceptReceipt = async (run, job, outcome, { manual = false } = {}) => {
     if (!matchingNodeJob(run, job)) return false;
     let report;
     try {
@@ -421,7 +428,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
         : FAILED_AGENT_OUTCOMES.has(job.agentOutcome) && job.promptSeen ? failedTurnMessage(job, '원인을 해결한 뒤 터미널에서 이어서 진행하고 상태 동기화하거나 이 단계를 재시도하세요.')
         : job.promptSeen ? '에이전트가 종료됐지만 검증 보고서가 없습니다. 보고서를 저장한 뒤 새로고침하거나 이 단계를 재시도하세요.'
           : '에이전트가 작업을 시작한 기록이 없습니다. 작업 지시가 전달되지 않았을 수 있으니 터미널을 확인한 뒤 이 단계를 재시도하세요.';
-      if (isReportFormError(error) && await requestReportFix(run, job, message, { commit: error.commitRequired })) return false;
+      if (isReportFormError(error) && await requestReportFix(run, job, message, { commit: error.commitRequired, manual })) return false;
       markBlocked(run, job, message);
       return false;
     }
@@ -612,7 +619,7 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     const decision = continuation === 'decision';
     const fix = continuation === 'report';
     if (!continuation && job.parentEvidence) job.parentEvidence = await recheckParentEvidence(job, () => fingerprint(run.workspacePath)); // reuse only what is still fresh now (src/reuse.mjs)
-    const text = decision ? DECIDE_PROMPT : fix ? reportFixPrompt(job.reportFix.reason, job.receiptPath, job.reportFixes, { commit: job.reportFix.commit }) : continuation ? CONTINUE_PROMPT : await nodePrompt(run, node, job);
+    const text = decision ? DECIDE_PROMPT : fix ? reportFixPrompt(job.reportFix.reason, job.receiptPath, job.reportFixes, { commit: job.reportFix.commit, manual: job.reportFix.manual }) : continuation ? CONTINUE_PROMPT : await nodePrompt(run, node, job);
     const record = { state: 'sending', at: nowIso(now), terminalId: job.terminalId,
       ...(manual ? { acknowledgedEmpty: true } : {}), ...(continuation ? { count: job.continuations } : {}) };
     if (continuation) job.continuation = record;
@@ -1142,17 +1149,24 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
         throw runtimeError('conflict', '같은 종류의 빈 에이전트가 대기/종료 상태인 경우만 복구할 수 있습니다. 진행 중인 작업에는 전송하지 않습니다.');
       }
       // Reserve the stage again in this copy; sendJobPrompt stores it with the one-shot intent.
-      job.state = 'running';
-      node.active = { ...node.pendingReceipt, ...job };
-      node.status = job.phase === 'review' ? 'review' : 'running';
-      node.failureReason = null;
-      node.runtimeMessage = '확인된 빈 터미널에 기존 배정 프롬프트를 한 번 전달합니다.';
-      delete node.pendingReceipt;
-      delete node.launchUncertain;
-      if (run.status !== 'paused') run.status = 'running';
+      reviveStage(run, node, job, '확인된 빈 터미널에 기존 배정 프롬프트를 한 번 전달합니다.');
       const record = await sendJobPrompt(run, node, job, { manual: true });
       if (record.state !== 'sent') throw runtimeError('action_failed', record.reason);
       return clone(getRun(run.id));
+    }),
+    // A person asks the same agent once more for the report only: its work stands, the receipt is checked
+    // first (a corrected one is taken in), and only the same validation can accept what comes back.
+    'nodes.requestReport': (input) => queue(async () => {
+      const run = clone(getRun(input.runId));
+      const node = findNode(run, input.nodeId);
+      checkExpectedNonce(node, input.expectedNonce);
+      const job = (run.jobs || []).find((entry) => entry.nonce === node.pendingReceipt?.nonce);
+      const refusal = reportRequestRefusal(run, node, job) ?? reportRequestRefusal(run, node, job, (await listAgents(run.workspaceId)).find((entry) => entry.terminalId === job.terminalId) ?? null);
+      if (refusal) throw runtimeError('conflict', refusal);
+      reviveStage(run, node, job, node.runtimeMessage); replaceRun(run);
+      const accepted = await acceptReceipt(run, job, job.agentOutcome, { manual: true });
+      await persist(); schedulePump();
+      return { accepted, requested: !accepted && Boolean(findNode(getRun(run.id), node.id).active), run: clone(getRun(run.id)) };
     }),
     'nodes.retry': (input) => queue(async () => {
       let original = clone(getRun(input.runId));
