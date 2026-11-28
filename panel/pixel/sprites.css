@@ -1,0 +1,88 @@
+/* Neon workshop atlas. --px-cell is always an integer multiple of its native size. */
+.px-sprite {
+  --px-cell: 32px;
+  --px-row: 16;
+  --px-sheet: url("crew-other.png");
+  --px-frame-1: calc(-1 * var(--px-cell));
+  --px-frame-2: calc(-2 * var(--px-cell));
+  --px-frame-3: calc(-3 * var(--px-cell));
+  display: inline-block;
+  flex: 0 0 auto;
+  width: var(--px-cell);
+  height: var(--px-cell);
+  background: var(--px-sheet) 0 calc(var(--px-row) * -1 * var(--px-cell)) /
+    calc(4 * var(--px-cell)) calc(19 * var(--px-cell)) no-repeat;
+  image-rendering: pixelated;
+}
+
+.px-sprite.px-2x { --px-cell: 64px; }
+.px-sprite[data-team="plan"] { --px-sheet: url("crew-plan.png"); }
+.px-sprite[data-team="arch"] { --px-sheet: url("crew-arch.png"); }
+.px-sprite[data-team="design"] { --px-sheet: url("crew-design.png"); }
+.px-sprite[data-team="build"] { --px-sheet: url("crew-build.png"); }
+.px-sprite[data-team="money"] { --px-sheet: url("crew-money.png"); }
+.px-sprite[data-team="qa"] { --px-sheet: url("crew-qa.png"); }
+.px-sprite[data-team="ship"] { --px-sheet: url("crew-ship.png"); }
+
+.px-sprite[data-pose="work"] { --px-row: 0; }
+.px-sprite[data-pose="start"] { --px-row: 1; }
+.px-sprite[data-pose="start-slow"] { --px-row: 2; }
+.px-sprite[data-pose="retry"] { --px-row: 3; }
+.px-sprite[data-pose="quiet"] { --px-row: 4; }
+.px-sprite[data-pose="queue"] { --px-row: 5; }
+.px-sprite[data-pose="dependency"] { --px-row: 6; }
+.px-sprite[data-pose="approval"] { --px-row: 7; }
+.px-sprite[data-pose="review"] { --px-row: 8; }
+.px-sprite[data-pose="passed"] { --px-row: 9; }
+.px-sprite[data-pose="failed"] { --px-row: 10; }
+.px-sprite[data-pose="blocked"] { --px-row: 11; }
+.px-sprite[data-pose="skipped"] { --px-row: 12; }
+.px-sprite[data-pose="cancelled"] { --px-row: 13; }
+.px-sprite[data-pose="completed"] { --px-row: 14; }
+.px-sprite[data-pose="report"] { --px-row: 15; }
+.px-sprite[data-pose="idle"] { --px-row: 16; }
+.px-sprite[data-pose="paused"] { --px-row: 17; }
+.px-sprite[data-pose="unknown"] { --px-row: 18; }
+
+@keyframes px-crew-cycle {
+  0% { background-position-x: 0; }
+  25% { background-position-x: var(--px-frame-1); }
+  50% { background-position-x: var(--px-frame-2); }
+  75%, 100% { background-position-x: var(--px-frame-3); }
+}
+
+.px-sprite[data-pose="work"][data-motion="live"] { animation: px-crew-cycle 800ms steps(1, end) infinite; }
+.px-sprite[data-pose="review"][data-motion="live"] { animation: px-crew-cycle 1200ms steps(1, end) infinite; }
+.px-sprite[data-pose="start"][data-motion="once"] { animation: px-crew-cycle 800ms steps(1, end) 1 forwards; }
+.px-sprite[data-pose="retry"][data-motion="once"] { animation: px-crew-cycle 960ms steps(1, end) 1 forwards; }
+
+.px-mark {
+  --px-mark-cell: 16px;
+  --px-mark-col: 0;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: var(--px-mark-cell);
+  height: var(--px-mark-cell);
+  background: url("marks.png") calc(-1 * var(--px-mark-col) * var(--px-mark-cell)) 0 /
+    calc(14 * var(--px-mark-cell)) var(--px-mark-cell) no-repeat;
+  image-rendering: pixelated;
+}
+.px-mark.px-2x { --px-mark-cell: 32px; }
+.px-mark[data-mark="draft"] { --px-mark-col: 0; }
+.px-mark[data-mark="in_review"] { --px-mark-col: 1; }
+.px-mark[data-mark="published"] { --px-mark-col: 2; }
+.px-mark[data-mark="rejected"] { --px-mark-col: 3; }
+.px-mark[data-mark="approved_not_published"] { --px-mark-col: 4; }
+.px-mark[data-mark="no_production"] { --px-mark-col: 5; }
+.px-mark[data-mark="lookup_error"] { --px-mark-col: 6; }
+.px-mark[data-mark="stale"] { --px-mark-col: 7; }
+.px-mark[data-mark="unknown"] { --px-mark-col: 8; }
+.px-mark[data-mark="desk"] { --px-mark-col: 9; }
+.px-mark[data-mark="desk-busy"] { --px-mark-col: 10; }
+.px-mark[data-mark="desk-heavy"] { --px-mark-col: 11; }
+.px-mark[data-mark="app"] { --px-mark-col: 12; }
+.px-mark[data-mark="neon"] { --px-mark-col: 13; }
+
+@media (prefers-reduced-motion: reduce) {
+  .px-sprite[data-motion] { animation: none !important; }
+}

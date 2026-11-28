@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon 작업실 · 스프라이트 시안</title>
+<link rel="stylesheet" href="sprites.css">
+<style>
+  :root{color-scheme:dark;font:14px/1.55 system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;background:#10141f;color:#f1f4fa}
+  body{max-width:1000px;margin:24px auto;padding:0 16px}
+  h1{margin:0;font-size:24px}
+  h2{margin:24px 0 8px;font-size:16px}
+  p,small{color:#aab8cf}
+  button{background:#232e43;color:inherit;font:inherit;border:1px solid #60718d;padding:8px 12px;min-height:40px;cursor:pointer}
+  button:focus-visible{outline:2px solid #88ebfa;outline-offset:2px}
+  .switches{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(144px,1fr));gap:8px}
+  li{border:1px solid #34425b;box-shadow:0 2px #090d16;background:#181f2e;padding:8px;min-height:84px;display:flex;align-items:center;gap:8px}
+  li div{min-width:0;word-break:keep-all;overflow-wrap:anywhere}
+  li small{display:block;font-size:11px}
+  ul:has(.px-sprite.px-2x){grid-template-columns:repeat(auto-fit,minmax(188px,1fr))}
+  [data-still] .px-sprite{animation:none!important}
+  .stamps li{min-height:24px}
+</style>
+<main>
+  <h1>Neon 작업실 · 스프라이트 시안</h1>
+  <p>샘플 상태입니다. 1×는 요약 행, 2×는 작업실과 팀 카드를 확인하는 크기입니다.</p>
+  <div class="switches">
+    <button type="button" id="scale" aria-pressed="false">2× 확대</button>
+    <button type="button" id="still" aria-pressed="false">정지 프레임 보기</button>
+    <button type="button" id="replay">시작·재시도 모션 다시 재생</button>
+  </div>
+  <h2>단계와 실행 상태</h2>
+  <ul id="states"></ul>
+  <h2>팀별 작업 도구</h2>
+  <ul id="teams"></ul>
+  <h2>Play Store 프로덕션 상태</h2>
+  <ul id="stamps" class="stamps"></ul>
+</main>
+<script>
+  const states = [
+    ['work','build','작업 중','키 입력과 활동 표시','live'],
+    ['start','plan','시작 중','자리로 이동','once'],
+    ['start-slow','arch','시작 신호 대기','15초 경과 · 시계'],
+    ['retry','design','시작 지연 · 재시도 2/3','닫힌 문 · 한 번 노크','once'],
+    ['quiet','build','3분째 조용함','기록 신호 없음'],
+    ['queue','money','슬롯 대기','전체 작업 2/2'],
+    ['dependency','qa','선행 단계 대기','앱 구현 통과 후 배정'],
+    ['approval','ship','확인 필요 · 승인 대기','사람 승인'],
+    ['review','qa','검토 중','돋보기와 보고서','live'],
+    ['passed','plan','통과','검토 완료'],
+    ['failed','build','실패','실패 보고'],
+    ['blocked','design','멈춤 · 시작 화면','권한 확인 필요'],
+    ['skipped','money','건너뜀','범위에서 제외'],
+    ['cancelled','other','취소 완료','종료 확인됨'],
+    ['completed','ship','실행 완료','통과 결과 있음'],
+    ['report','qa','보고서 확인 대기','작업 신호 종료'],
+    ['idle','plan','미배정','활성 작업 없음'],
+    ['paused','arch','새 배정 멈춤','배정 일시 정지'],
+    ['unknown','other','작업 신호 미확인','추가 상태 기록 없음']
+  ];
+  const teams = [
+    ['plan','기획팀','기록지'],['arch','설계팀','설계 격자'],['design','디자인팀','팔레트'],
+    ['build','구현팀','터미널'],['money','수익화팀','코인'],['qa','검증팀','파형 모니터'],
+    ['ship','출시팀','상자'],['other','추가 단계','보조 터미널']
+  ];
+  const stamps = [
+    ['draft','초안'],['in_review','심사 중'],['published','게시됨'],['rejected','거부됨'],
+    ['approved_not_published','승인 · 게시 전'],['no_production','프로덕션 없음'],
+    ['lookup_error','조회 오류'],['stale','재확인 필요'],['unknown','미확인']
+  ];
+  function append(id, graphic, label, description = '') {
+    const row = document.createElement('li');
+    row.innerHTML = graphic + '<div><strong>' + label + '</strong>' +
+      (description ? '<small>' + description + '</small>' : '') + '</div>';
+    document.getElementById(id).append(row);
+  }
+  const sprite = (pose, team, motion = '') => '<span aria-hidden="true" class="px-sprite" data-pose="' +
+    pose + '" data-team="' + team + '"' + (motion ? ' data-motion="' + motion + '"' : '') + '></span>';
+  for (const [pose, team, label, description, motion] of states) append('states',sprite(pose,team,motion),label,description);
+  for (const [team, label, description] of teams) append('teams',sprite('work',team),label,description);
+  for (const [mark, label] of stamps) append('stamps','<span aria-hidden="true" class="px-mark" data-mark="' + mark + '"></span>',label);
+  document.getElementById('scale').addEventListener('click', (event) => {
+    const enlarged = event.currentTarget.getAttribute('aria-pressed') !== 'true';
+    event.currentTarget.setAttribute('aria-pressed',String(enlarged));
+    for (const el of document.querySelectorAll('.px-sprite')) el.classList.toggle('px-2x',enlarged);
+  });
+  document.getElementById('still').addEventListener('click', (event) => {
+    const still = document.body.toggleAttribute('data-still');
+    event.currentTarget.setAttribute('aria-pressed',String(still));
+  });
+  document.getElementById('replay').addEventListener('click', () => {
+    for (const el of document.querySelectorAll('[data-motion="once"]')) el.replaceWith(el.cloneNode());
+  });
+</script>
+</html>
