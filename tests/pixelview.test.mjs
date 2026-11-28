@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRun, templateGraph } from '../src/engine.mjs';
-import { workshopRows, workshop, station, sprite, runBanner, observeRuns } from '../panel/pixelview.mjs';
+import { workshopLayout, workshop, station, sprite, runBanner, observeRuns } from '../panel/pixelview.mjs';
 import { attention, desks, teamRoom, runRows } from '../panel/pixelrooms.mjs';
 import { createMotionMemory } from '../panel/pixelstate.mjs';
 import { tickPixels, startTicker, TICK_MS } from '../panel/pixeltick.mjs';
@@ -19,17 +19,21 @@ function stuckRun() {
   return run;
 }
 
-test('the new-app path lays out as the SPEC draws it: research → brief, architecture | design, assets under design, build and test centred', () => {
-  const rows = workshopRows(templateGraph('new-app').filter((node) => !['policy', 'listing', 'internal', 'release'].includes(node.id)));
-  assert.deepEqual(rows.map((row) => row.map((cell) => cell.node.id + ':' + cell.col)), [
-    ['research:left', 'brief:right'], ['architecture:left', 'design:right'], ['assets:right'], ['build:center'], ['test:center']]);
-  assert.equal(rows[0].chain, true);
+const placed = (cells) => cells.map((cell) => cell.node.id + ':' + cell.row + '/' + cell.start);
+test('two lanes keep the SPEC path: research → brief in one row, architecture | design, assets under design, build and test centred', () => {
+  const nodes = templateGraph('new-app').filter((node) => !['policy', 'listing', 'internal', 'release'].includes(node.id));
+  // start is a half-lane track: 1 = left lane, 3 = right lane, 2 = between them.
+  assert.deepEqual(placed(workshopLayout(nodes, 2)), ['research:1/1', 'brief:1/3', 'architecture:2/1', 'design:2/3', 'assets:3/3', 'build:4/2', 'test:5/2']);
 });
 
-test('a diagnosis follows one path and wide ranks fold two to a row', () => {
-  assert.deepEqual(workshopRows(templateGraph('diagnose')).map((row) => row.map((cell) => cell.node.id)), [['identity', 'diagnose']]);
-  const wide = ['a', 'b', 'c'].map((id) => ({ id, deps: [] }));
-  assert.deepEqual(workshopRows(wide).map((row) => row.length), [2, 1]);
+test('three lanes: parallel stages from one source share a row; a join takes the middle lane', () => {
+  const fan = [{ id: 'brief', deps: [] }, { id: 'a', deps: ['brief'] }, { id: 'b', deps: ['brief'] }, { id: 'c', deps: ['brief'] }, { id: 'build', deps: ['a', 'b', 'c'] }, { id: 'test', deps: ['build'] }];
+  assert.deepEqual(placed(workshopLayout(fan, 3)), ['brief:1/3', 'a:2/1', 'b:2/3', 'c:2/5', 'build:3/3', 'test:4/3']);
+  assert.deepEqual(placed(workshopLayout(fan, 2)), ['brief:1/2', 'a:2/1', 'b:2/3', 'c:3/2', 'build:4/2', 'test:5/2'], 'a rank wider than the lanes goes on to the next row');
+});
+
+test('a diagnosis follows one path in one row', () => {
+  assert.deepEqual(placed(workshopLayout(templateGraph('diagnose'), 2)), ['identity:1/1', 'diagnose:1/3']);
 });
 
 test('a station is one button named "<단계> · <상태 문구>" with its state as text, a tooltip and the existing select action', () => {
@@ -37,7 +41,7 @@ test('a station is one button named "<단계> · <상태 문구>" with its state
   const html = workshop(run, ctx({ selectedId: 'design' }));
   const button = html.match(/<button[^>]*id="station-design"[^>]*>/)[0];
   assert.match(button, /data-action="select-node" data-node="design"/);
-  assert.match(button, /aria-label="화면 설계 · 시작 지연 · 재시도 2\/3"/);
+  assert.match(button, /aria-label="화면 설계 · 시작 지연 · 재시도 2\/3 · 제품 기획에서 멈춤 · 시작 지연 · 재시도 2\/3"/, 'the rail into it is named too');
   assert.match(button, /aria-pressed="true"/);
   assert.match(button, /aria-describedby="station-design-tip"/);
   assert.match(html, /<span class="px-state">시작 지연 · 재시도 2\/3<\/span>/);

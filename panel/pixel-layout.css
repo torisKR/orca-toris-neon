@@ -47,17 +47,7 @@
 /* Workshop */
 .px-workshop { container: px-workshop / inline-size; margin: 8px 0 12px; padding: 9px; }
 .px-workshop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.px-floor { padding: 8px; background-color: var(--px-well); background-image: radial-gradient(var(--px-line) 1px, transparent 1px); background-size: 12px 12px; }
-.px-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: stretch; }
-.px-row.is-chain { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; }
-.px-cell[data-col="left"] { grid-column: 1; }
-.px-cell[data-col="right"] { grid-column: 2; }
-.px-row.is-chain .px-cell[data-col="right"] { grid-column: 3; }
-.px-cell[data-col="center"] { grid-column: 1 / -1; justify-self: center; width: calc((100% - 8px) / 2); }
-.px-arrow { color: var(--px-strong-line); font-weight: 700; }
-.px-arrow[data-done="true"] { color: var(--px-good); }
-.px-rail { width: 2px; height: 12px; margin: 0 auto; background: repeating-linear-gradient(var(--px-strong-line) 0 3px, transparent 3px 6px); }
-.px-rail[data-done="true"] { background: var(--px-good); }
+.px-floor { background-color: var(--px-well); background-image: radial-gradient(var(--px-line) 1px, transparent 1px); background-size: 12px 12px; }
 .px-station { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 52px; padding: 6px 8px; }
 .px-station[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--px-text), 0 2px 0 var(--px-shadow); }
 .px-team { display: block; color: var(--px-muted); font-size: 10px; line-height: 14px; }
@@ -65,7 +55,6 @@
 .px-tip { position: absolute; left: 0; top: calc(100% + 4px); z-index: 20; display: none; width: max-content; max-width: min(280px, 90vw);
   padding: 6px 8px; background: var(--px-bg); color: var(--px-text); border: 1px solid var(--px-strong-line); box-shadow: 0 2px 0 var(--px-shadow);
   font-size: 11px; line-height: 16px; font-weight: 400; white-space: normal; }
-.px-cell[data-col="right"] .px-tip { left: auto; right: 0; }
 .px-station:is(:hover, :focus-visible) .px-tip { display: block; }
 .px-station.px-tip-off .px-tip { display: none; }
 .px-repair { margin: 8px 0 0; font-size: 12px; color: var(--px-warn); }
@@ -104,7 +93,7 @@
 .px-team-text { flex: 1; }
 .px-team-text small { display: block; color: var(--px-muted); font-size: 11px; line-height: 16px; }
 .px-team-card .px-state { text-align: right; }
-@media (min-width: 480px) { .px-team-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container neon-panel (width >= 480px) { .px-team-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .px-workspace-room { margin-bottom: 12px; }
 .px-workspace-card { justify-content: space-between; min-width: 0; }
@@ -118,13 +107,7 @@
 .px-stamp[data-status="approved_not_published"] { border-style: double; border-width: 3px; padding: 0 4px; }
 .px-stamp[data-status="no_production"] { border-style: dotted; }
 .play-app-icon { flex: 0 0 auto; }
-/* Narrow sidebar: the stamps move under the app name instead of squeezing the package name. */
-@media (max-width: 419px) {
-  .play-app-row { flex-wrap: wrap; }
-  .play-app-name { flex-basis: calc(100% - 72px); }
-  .play-app-status { order: 3; flex-basis: 100%; max-width: none; justify-content: flex-start; padding-left: 40px; }
-  .play-chevron { order: 2; }
-}
+/* Narrow sidebar: the stamps move under the app name (panel/responsive.css, below 420px of panel). */
 
 /* Folded sections below the scene keep the existing content as it was. */
 .px-fold { margin: 8px 0; }

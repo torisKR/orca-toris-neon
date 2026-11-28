@@ -1,6 +1,7 @@
 import { e, statusNames, badge, localDate, todayDate, title, button, options, goalTitle, empty } from './kit.mjs';
 import { playFiltersForSelect, filteredPlayApps, playResultCount, playAppList } from './play.mjs';
-import { flowTypeSwitch, improveFields, diagnoseFields, resumeList, candidateList, newRunPayload, catalogApprovalForm, catalogApprovalInput } from './newflow.mjs';
+import { flowTypeSwitch, improveFields, diagnoseFields, resumeList, candidateList, newRunPayload, catalogApprovalInput } from './newflow.mjs';
+import { stageApprovalForm } from './approval.mjs';
 import { transitions, snapshotStates, eccOverride, stageState, STATE_LABELS } from './teams.mjs';
 import { collabStrip, relay, inspector, attachCard, people, assignmentForm, teamNavigator } from './flow.mjs';
 import { runResult, artifactCacheKey, artifactId } from './result.mjs';
@@ -10,9 +11,11 @@ import { todayRunCard, noteAction } from './todayactions.mjs';
 import { linkKey } from './playlinks.mjs';
 import { operationsOverview, runOperationsLine, diskBlock, diskSummary } from './operations.mjs';
 import { exportControls, exportHistory } from './history.mjs';
-import { createMotionMemory } from './pixelstate.mjs';
-import { observeRuns, stagesOf, runBanner, workshop, station } from './pixelview.mjs';
-import { attention, runRows, desks, teamRoom, chip, teamCard, workspaceRoom } from './pixelrooms.mjs';
+import { createMotionMemory, stagePixelOf } from './pixelstate.mjs';
+import { createHandoffMemory } from './flowstate.mjs';
+import { mountRails, flowStill, toggleFlowMotion } from './flowview.mjs';
+import { observeRuns, stagesOf, runBanner, workshop, station, refreshRails } from './pixelview.mjs';
+import { attention, runRows, desks, teamRoom, chip, teamCard, workspaceRoom, miniPath } from './pixelrooms.mjs';
 import { tickPixels, startTicker } from './pixeltick.mjs';
 import { scopeField, scopeLine, profileField, modelPlan, fallbackLine, redoVisualInput } from './runplan.mjs';
 const app = document.querySelector('#app');
@@ -28,16 +31,16 @@ let preflightShown = null;
 const detailRequests = new Map();
 const dirtyForms = new Set();
 const disclosures = new Set();
-const stageSnapshots = new Map(), stageMotions = new Map(), motion = createMotionMemory();
+const stageSnapshots = new Map(), stageMotions = new Map(), motion = createMotionMemory(), handoffs = createHandoffMemory();
 // The pixel views read the summary run (waiting, operations, current jobs), never a loaded runs.get detail.
-const pixelCtx = (extra={}) => ({now:Date.now(),memory:motion,limits:ui.state?.limits,cancelling:ui.cancelling,fullTitle:title,selectedId:ui.nodeId,...extra});
+const pixelCtx = (extra={}) => ({now:Date.now(),memory:motion,handoffs,flowStill:flowStill(),limits:ui.state?.limits,cancelling:ui.cancelling,fullTitle:title,selectedId:ui.nodeId,...extra});
 const MOTION_MS = 700;
 let workspaceAgentsPending = false, workspaceAgentsDirty = false;
 let navigation = 0, renderPending = false, detailPending = false, refreshPromise = null, refreshQueued = false, hostRefreshQueued = false;
 const revision = () => ui.state?.revision ?? 0;
 const assignmentMutable = node => !node.active && !['passed','awaiting-approval','skipped'].includes(node.status);
 const ownedTerminal = id => (ui.state?.runs??[]).some(r=>(r.jobs??[]).some(j=>j.terminalId===id));
-const currentWorkspaceRoom = (showIdle = false) => workspaceRoom(ui.state?.agents??[], {now:Date.now(), ownedTerminal, showIdle});
+const currentWorkspaceRoom = (showIdle = false, at = '') => workspaceRoom(ui.state?.agents??[], {now:Date.now(), ownedTerminal, showIdle, at});
 const draft = (form,name,fallback='') => ui.drafts[form+'.'+name]??fallback;
 const providers = () => (ui.state?.providers??['codex','claude','cursor','grok','antigravity','gemini','opencode','kiro']).map(p=>typeof p==='string'?p:p.id);
 const providerOptions = selected => options(providers(),selected);
@@ -57,6 +60,7 @@ function acceptState(state) {
   if(typeof state?.revision==='number'&&state.revision<revision())return false;
   ui.state={...(ui.state??{}),...state};
   observeRuns(motion,ui.state.runs,Date.now()); // one-shot poses follow pushes, never renders (panel/pixelstate.mjs)
+  handoffs.observe(ui.state.runs,{now:Date.now(),poseOf:(r,n)=>stagePixelOf(r,n,{now:Date.now(),limits:ui.state.limits}).pose,open:ui.tab==='studio'&&document.visibilityState!=='hidden'}); // panel/flowstate.mjs
   if(!ui.state.runs?.some(r=>r.id===ui.runId))ui.runId=orderedRuns()[0]?.id??null;
   return true;
 }
@@ -214,7 +218,7 @@ function restoreDisclosures(root) {
 }
 function render({background=false}={}) {
   if(background&&dirtyForms.size) {
-    ui.pendingUpdate=true;
+    ui.pendingUpdate=true;redrawPieces([...app.querySelectorAll('[data-px-piece]')]); // poses and rails stay current while a form is open
     app.setAttribute('aria-busy',String(ui.busy));
     const notice=app.querySelector('[data-update-notice]');
     if(notice)notice.hidden=false;
@@ -227,7 +231,7 @@ function render({background=false}={}) {
   const active=(ui.state?.runs??[]).filter(r=>r.status==='running').length;
   app.setAttribute('aria-busy',String(ui.busy));
   app.innerHTML='<div class="shell"><header class="topbar"><div class="brand-mark" aria-hidden="true">N</div><div class="grow"><div class="brand-name">TORIS NEON</div><div class="brand-meta"><span>APP STUDIO</span><span>·</span><span>FOR ORCA</span></div></div><div class="top-actions"><span class="status-label"><i class="dot '+(!ui.state?'offline':'')+'"></i>'+(active?active+'개 실행':ui.state?'연결됨':'연결 대기')+'</span><button class="icon-button" data-action="refresh" aria-label="새로고침" title="새로고침" '+(ui.busy?'disabled':'')+'>↻</button></div></header><nav class="nav" aria-label="주요 메뉴">'+[['today','오늘 이어하기'],['studio','Auto App'],['play','Play Store'],['agents','에이전트']].map(([id,label])=>'<button data-action="tab" data-tab="'+id+'" class="'+(ui.tab===id?'active':'')+'" aria-current="'+(ui.tab===id?'page':'false')+'">'+label+'</button>').join('')+'</nav><main class="main"><div class="update-notice" data-update-notice hidden>새 상태가 도착했습니다. 작성 중인 내용은 저장하거나 화면을 이동할 때 갱신됩니다.</div>'+(ui.error?'<div class="callout error page-error" role="alert">'+e(ui.error)+'</div>':'')+(ui.state?.warnings??[]).map(w=>'<div class="callout warning">'+e(w)+'</div>').join('')+(ui.tab==='today'?renderToday():ui.tab==='studio'?renderStudio():ui.tab==='play'?renderPlay():renderAgents())+'<footer class="footer"><span>상태와 근거를 남기는 앱 제작 공간</span><span>'+e(ui.state?.build?.label??'버전 확인 중')+' · Asia/Seoul</span></footer></main></div>';
-  restoreDisclosures(app);
+  restoreDisclosures(app);mountRails(app);
   ui.pendingUpdate=false;
   if(focusId) {
     const control=app.querySelector('#'+focusId);
@@ -239,7 +243,7 @@ function render({background=false}={}) {
 function renderToday() {
   const data=ui.today,runs=ui.state?.runs??[];
   const yesterdayCount=(data?.yesterdayEvents?.length??0)+(data?.worklogs?.filter(w=>w.day===data.yesterdayDate).length??0);
-  let html='<section class="hero today-hero"><div class="hero-row"><h1>오늘 이어하기</h1>'+button('+ 새 앱','new-run','','small primary')+'</div><p class="hint">'+e(todayDate())+' · 어제의 기록 '+yesterdayCount+'건</p></section>'+attention(orderedRuns(),pixelCtx())+currentWorkspaceRoom()+runRows(orderedRuns(),pixelCtx());
+  let html='<section class="hero today-hero"><div class="hero-row"><h1>오늘 이어하기</h1>'+button('+ 새 앱','new-run','','small primary')+'</div><p class="hint">'+e(todayDate())+' · 어제의 기록 '+yesterdayCount+'건</p></section>'+'<div class="px-today-grid">'+attention(orderedRuns(),pixelCtx())+currentWorkspaceRoom(false,'narrow')+runRows(orderedRuns(),pixelCtx())+'</div>'+currentWorkspaceRoom(false,'wide');
   if(!data)html+=empty(ui.busy?'기록을 읽고 있습니다':'기록을 연결해 주세요','Orca 작업 공간과 날짜별 인계 기록이 이곳에 표시됩니다.');
   else {
     const warnings=data.warnings??[];
@@ -289,9 +293,8 @@ function renderStudio() {
   if(!item) return html+currentWorkspaceRoom()+empty('첫 앱의 흐름을 만들어 보세요','목표와 프로젝트를 선택하면 조사부터 테스트까지(출시 준비를 고르면 출시까지)의 흐름이 준비됩니다. 실행은 시작 버튼을 누를 때 진행됩니다.',button('앱 제작 흐름 만들기','new-run','','primary'));
   const nodes=item.nodes??[],selected=selectedNode(item),ctx=flowContext(item),live=summaryOf(item),px=pixelCtx(),id=e(item.id);
   // What is happening first: the header, the run's actions, the workshop, then the selected stage's detail.
-  html+=runPicker(item)+runBanner(live,px)+runActions(item)+currentWorkspaceRoom()+workshop(live,px);
-  if(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId) html+=attachCard(item,ctx);
-  html+=inspector(item,selected,ctx);
+  html+=runPicker(item)+runBanner(live,px)+runActions(item)+'<div class="px-auto-grid">'+currentWorkspaceRoom(false,'narrow')+'<div class="px-auto-main">'+workshop(live,px)+(item.workspaceCreation?.state==='uncertain'&&!item.workspaceId?attachCard(item,ctx):'')+'</div>';
+  html+=inspector(item,selected,ctx)+currentWorkspaceRoom(false,'wide')+'</div>'; // narrow: workspace first; wider: beside or under (panel/responsive.css)
   const alerts=item.runtimeMessage||item.storageWarning||item.stopFailures?.length||item.autonomy?.stopped; // never folded away
   html+='<details class="card px-fold" data-disclosure="setup:'+id+'"'+(item.started&&!alerts?'':' open')+'><summary>'+(FINISHED_RUN.has(item.status)?'실행 설정':'실행 전 점검 · 실행 설정')+'</summary>'+runSummaryCard(item,nodes)+modelPlan(item)+'</details>';
   html+='<details class="card px-fold" data-disclosure="results:'+id+'"'+(item.status==='completed'?' open':'')+'><summary>결과 · 비용 · 작업 기록</summary>'+runResult(item,{runs:ui.state?.runs??[],play:ui.play,playError:ui.playError,tokens:tokensOf(item)})+(item.template==='diagnose'?candidateList(item):'');
@@ -327,7 +330,7 @@ function announce(item,changes) {
 }
 function runPicker(item) {
   const short=text=>text.length>60?text.slice(0,59)+'…':text; // one line in the select; the whole title in its title attribute
-  return '<select class="field run-select" aria-label="앱 제작 흐름 선택" id="run-select" title="'+e(goalTitle(item.goal))+'">'+options(orderedRuns().map(r=>({value:r.id,label:'['+(statusNames[r.status]??r.status)+'] '+short(goalTitle(r.goal))})),item.id)+'</select>';
+  return '<div class="px-run-bar"><label for="run-select">실행 선택</label><select class="field run-select" aria-label="실행 선택 · 앱 제작 흐름" id="run-select" title="'+e(goalTitle(item.goal))+'">'+options(orderedRuns().map(r=>({value:r.id,label:'['+(statusNames[r.status]??r.status)+'] '+short(goalTitle(r.goal))})),item.id)+'</select><span class="px-count">최근 실행 '+orderedRuns().length+'개</span></div>';
 }
 // Cancel states as confirmed: requested, done (Orca confirmed every owned terminal closed), or needs checking.
 function stopBadge(item) {
@@ -380,34 +383,7 @@ function autonomyLine(item) {
     button(on?'자율 진행 끄기':'자율 진행 켜기','toggle-autonomy','data-run="'+e(item.id)+'" data-enabled="'+(!on)+'"','small')+'</div>'+
     (on&&state.stopped?'<div class="callout warning" role="status">'+e(state.stopped.reason)+'</div>':'');
 }
-function approvalForm(item,node) {
-  if(node.humanApproval)return catalogApprovalForm(item,node,{draft:(name,fallback)=>draft('catalog-approval',name,fallback)});
-  const canSubmit=submissionAccounts.length>0;
-  const actual=canSubmit&&draft('approval','actualSubmission',false);
-  const required=actual?'required':'';
-  const accounts=submissionAccounts.map(account=>({value:playAccountValue(account),label:account.name+' · '+account.developerId}));
-  return `<div class="divider"></div><form id="approval" data-run="${e(item.id)}" data-node="${e(node.id)}">
-    <label class="label" for="approval-note">이번 단계에서 허용할 작업</label>
-    <textarea class="field" id="approval-note" name="note" required maxlength="2000" placeholder="예: 내부 테스트 빌드와 업로드 전 자료를 준비해 주세요.">${e(draft('approval','note'))}</textarea>
-    <label class="checkbox"><input type="checkbox" name="actualSubmission" id="actual-submission" ${actual?'checked':''} ${canSubmit?'':'disabled'}>실제 Play 제출까지 승인</label>
-    ${canSubmit?'':'<p class="hint">실제 제출을 승인하려면 Play Store 탭에서 개발자 계정 ID와 대상 패키지를 등록하세요.</p>'}
-    <div id="submission-fields" ${actual?'':'hidden'}>
-      <label class="label" for="submission-account">Play 개발자 계정</label>
-      <select class="field" id="submission-account" name="playAccount" ${required}>
-        <option value="">개발자 계정 선택</option>${options(accounts,draft('approval','playAccount'))}
-      </select>
-      <label class="label" for="submission-package">패키지 이름</label>
-      <input class="field mono" id="submission-package" name="packageName" value="${e(draft('approval','packageName'))}" placeholder="com.example.app" ${required}>
-      <div class="field-grid"><div><label class="label" for="submission-track">트랙</label>
-        <input class="field" id="submission-track" name="track" value="${node.id==='internal'?'internal':'production'}" readonly></div>
-        <div><label class="label" for="submission-version">버전 코드</label>
-        <input class="field" id="submission-version" type="number" min="1" max="2100000000" name="versionCode" value="${e(draft('approval','versionCode'))}" ${required}></div></div>
-      <p class="hint">배정 전에 Play 조회 권한을 확인합니다. 제출에는 해당 프로젝트의 배포 도구와 출시 권한이 필요합니다.</p>
-    </div>
-    <div class="actions"><button class="button primary" type="submit">범위 승인 후 계속</button></div>
-    <p class="hint">기본 승인 범위는 준비와 검토입니다.</p>
-  </form>`;
-}
+const approvalForm=(item,node)=>stageApprovalForm(item,node,{accounts:submissionAccounts,draft,accountValue:playAccountValue});
 // "Improve this result": the new run links to the previous one and never changes it.
 function parentNotice() {
   const id=draft('new-run','parentRunId');if(!id)return'';
@@ -503,10 +479,10 @@ function accountForm() {
 function renderAgents() {
   const item=run();
   const limits=ui.state?.limits;
-  let html='<section class="hero flow-tab"><h1>에이전트</h1></section>'+currentWorkspaceRoom(true)+desks(limits);
+  let html='<section class="hero flow-tab"><h1>에이전트</h1></section>'+currentWorkspaceRoom(true)+(item?'<div class="px-agents-grid">':'')+desks(limits);
   if(item) {
     selectedNode(item);const ctx=flowContext(item),id=e(item.id);
-    html+='<div class="agent-overview">'+runPicker(item)+'</div>'+teamRoom(summaryOf(item),pixelCtx());
+    html+='<div class="agent-overview">'+runPicker(item)+'</div>'+teamRoom(summaryOf(item),pixelCtx())+'</div>';
     html+='<details class="card px-fold" data-disclosure="operations"><summary>운영 현황 · 슬롯과 터미널</summary>'+operationsOverview({runs:ui.state?.runs??[],limits,resources:ui.state?.resources,now:Date.now()})+'</details>';
     html+='<details class="card px-fold" data-disclosure="people:'+id+'"'+(ui.peopleOpen===item.id?' open':'')+'><summary>팀별 작업자와 검토자</summary>'+collabStrip(item,ctx)+teamNavigator(item,ctx)+'<div class="people">'+people(item,ctx)+'</div></details>';
     html+='<section class="section"><details class="card" data-disclosure="assignments"><summary>전체 배정 · '+(item.nodes?.length??0)+'개 단계</summary><p class="hint">모델과 추론 강도는 실행의 속도·비용 프로필을 따르고, 여기서 단계별로 고르면 그 선택이 우선합니다. 검토자는 매번 별도 세션으로 시작합니다.</p>'+assignmentForm(item,item.nodes??[],ctx)+'</details></section>';
@@ -516,19 +492,19 @@ function renderAgents() {
 }
 // One panel timer (panel/pixeltick.mjs): time text in place, and only pieces whose time boundary passed are redrawn.
 function redrawPieces(elements) {
-  const now=Date.now(),ctx=pixelCtx({now});
+  const now=Date.now(),ctx=pixelCtx({now}),railRuns=new Set();
   for(const element of elements) {
     if(!element.isConnected)continue;
     try {
       const item=(ui.state?.runs??[]).find(r=>r.id===element.dataset.pxRun),kind=element.dataset.pxPiece;
       const stage=item&&stagesOf(item,ctx).find(entry=>entry.node.id===element.dataset.node);
-      const html=!item?'':kind==='banner'?runBanner(item,ctx):kind==='team'?teamCard(item,element.dataset.pxTeam,ctx)
+      const html=!item?'':kind==='banner'?runBanner(item,ctx):kind==='team'?teamCard(item,element.dataset.pxTeam,ctx):kind==='path'?miniPath(item,ctx)
         :!stage?'':kind==='station'?station(item,stage.node,stage.view,ctx):kind==='chip'?chip(item,stage.node,stage.view,ctx):'';
       if(!html)throw new Error('no current state for '+(kind??'piece')+' '+(element.dataset.node??element.dataset.pxRun??''));
-      const focused=document.activeElement===element,id=element.id,before=element.getAttribute('aria-label');
-      element.outerHTML=html;
+      const focused=document.activeElement===element,inside=!focused&&element.contains?.(document.activeElement)?document.activeElement.dataset?.node:null,id=element.id,before=element.getAttribute('aria-label');
+      element.outerHTML=html;if(kind==='station')railRuns.add(item);
       const next=id?app.querySelector('#'+CSS.escape(id)):null;
-      if(focused)next?.focus?.({preventScroll:true});
+      if(focused)next?.focus?.({preventScroll:true});else if(inside)next?.querySelector?.('[data-node="'+CSS.escape(inside)+'"]')?.focus?.({preventScroll:true});
       // A pose that changed with time (15 s start, 180 s quiet) is a real change: say it once.
       const after=next?.getAttribute?.('aria-label');
       if(after&&before&&after!==before){const announcer=document.querySelector('#announcer');if(announcer)announcer.textContent=after;}
@@ -538,6 +514,7 @@ function redrawPieces(elements) {
       scheduleRender();
     }
   }
+  for(const item of railRuns){try{refreshRails(app,item,ctx);}catch(error){console.error('Toris Neon: 공급선 갱신 실패, 화면 전체를 다시 그립니다:',error);scheduleRender();}}
 }
 function assignmentChange(node,values) {
   const change={};
@@ -579,6 +556,7 @@ app.addEventListener('click',async event=>{
   const target=event.target.closest('[data-action]');
   if(!target||target.disabled)return;
   const action=target.dataset.action;
+  if(action==='flow-motion'){toggleFlowMotion(app,target);return;} // display only, for this viewer (panel/flowview.mjs)
   if(action==='tab'){leaveView();ui.tab=target.dataset.tab;ui.error=null;const epoch=navigation;render();try{await hydrateTab();if(epoch===navigation)render();}catch(err){if(epoch===navigation){ui.error=err.message;render();}}return;}
   if(['select-node','select-agent','inspect-stage','show-agent','open-stage'].includes(action)) {
     const nextTab=action==='show-agent'?'agents':action==='open-stage'?'studio':ui.tab;

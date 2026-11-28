@@ -6,7 +6,8 @@
 import { button, e, goalTitle } from './kit.mjs';
 import { TEAMS, teamOf } from './teams.mjs';
 import { msOf, shortTitle } from './pixelstate.mjs';
-import { sinceText, stagesOf, sprite } from './pixelview.mjs';
+import { sinceText, stagesOf, sprite, rankGroups } from './pixelview.mjs';
+import { runFlows } from './flowstate.mjs';
 
 const FINISHED = new Set(['completed', 'cancelled']);
 // Seen, not for the person: Neon is retrying or the agent is quiet; the reason is shown, no action asked.
@@ -59,11 +60,36 @@ export function runRows(runs, ctx) {
       const chips = stages.length ? stages.map(({ node, view }) => chip(run, node, view, ctx)).join('')
         : '<span class="hint">' + (run.started ? (run.status === 'paused' ? '새 배정 멈춤' : '배정 대기') : '시작 전') + '</span>';
       return '<article class="px-run-row" aria-labelledby="px-run-' + e(run.id) + '"><div class="px-run-head"><button type="button" class="px-run-title" id="px-run-' + e(run.id) + '" data-action="open-run" data-run="' + e(run.id) + '" title="' + e(goalTitle(run.goal)) + '"><span class="px-clamp-2">' + e(goalTitle(run.goal)) + '</span></button>' +
-        '<span class="px-count">' + counted.filter((node) => node.status === 'passed').length + ' / ' + counted.length + ' 통과</span></div><div class="px-chips">' + chips + '</div></article>';
+        '<span class="px-count">' + counted.filter((node) => node.status === 'passed').length + ' / ' + counted.length + ' 통과</span></div><div class="px-chips">' + chips + '</div>' + miniPath(run, ctx) + '</article>';
     }).join('') + '</section>';
 }
 
 const until = (view) => Number.isFinite(view.until) ? ' data-px-until="' + view.until + '"' : '';
+
+// A stage's mark in the path: the most telling of its incoming rails, drawn still (오늘 탭은 기본부터 정지).
+const PATH_ORDER = ['stopped', 'live', 'handoff', 'queue', 'complete', 'idle'];
+const PATH_MARK = { live: 'arrow', handoff: 'arrow', queue: 'queue', complete: 'complete' };
+/**
+ * Every stage of a run in rank order for the medium and wide rows (hidden below 561px, so no ids of its own);
+ * parallel stages are bracketed. Each opens the existing stage detail. Skipped stages stay, not counted.
+ */
+export function miniPath(run, ctx) {
+  const stages = stagesOf(run, ctx);
+  const flows = runFlows(run, stages, { now: ctx.now, cancelling: typeof ctx.cancelling?.has === 'function' ? ctx.cancelling.has(run.id) : Boolean(ctx.cancelling) });
+  const step = '<span class="px-mini-step" aria-hidden="true">→</span>';
+  const button = (node) => {
+    const view = stages.find((stage) => stage.node.id === node.id).view;
+    const flow = flows.filter((item) => item.targetId === node.id).sort((a, b) => PATH_ORDER.indexOf(a.state) - PATH_ORDER.indexOf(b.state))[0];
+    const mark = flow?.mark === 'quiet' ? 'quiet' : PATH_MARK[flow?.state] ?? (flow?.state === 'stopped' ? 'stop' : '');
+    return '<button type="button" class="px-mini-node px-flow-swatch" data-flow="' + e(flow?.state ?? 'idle') + '"' + (flow?.phase ? ' data-phase="' + e(flow.phase) + '"' : '') +
+      (flow?.tone ? ' data-tone="' + e(flow.tone) + '"' : '') + (node.status === 'skipped' ? ' data-skipped' : '') + ' data-action="open-stage" data-run="' + e(run.id) + '" data-node="' + e(node.id) + '"' +
+      ' aria-label="' + e(shortTitle(node) + ' · ' + view.label) + '" title="' + e(shortTitle(node) + ' · ' + view.label) + '">' +
+      (mark ? '<span class="px-flow-mark" data-mark="' + mark + '" aria-hidden="true"></span>' : '') + e(shortTitle(node)) + '</button>';
+  };
+  const soonest = Math.min(...stages.map(({ view }) => view.until ?? Infinity));
+  return '<div class="px-mini-path" id="' + e('path-' + run.id) + '" data-px-piece="path" data-px-run="' + e(run.id) + '"' + until({ until: soonest }) + ' role="group" aria-label="' + e(goalTitle(run.goal) + ' 단계 경로') + '">' +
+    rankGroups(run.nodes ?? []).map((group) => group.length > 1 ? '<span class="px-mini-branch">' + group.map(button).join('') + '</span>' : button(group[0])).join(step) + '</div>';
+}
 /** One live stage of a run row; the tick re-renders it alone when its time boundary passes. */
 export function chip(run, node, view, ctx) {
   return '<button type="button" class="px-chip" id="' + e('chip-' + run.id + '-' + node.id) + '" data-tone="' + e(view.tone) + '" data-action="open-stage" data-run="' + e(run.id) + '" data-node="' + e(node.id) + '"' +
@@ -123,7 +149,8 @@ const ORCA_POSES = {
   done: { pose: 'idle', label: '턴 종료', tone: 'neutral' },
 };
 
-export function workspaceRoom(agents, { now, ownedTerminal, showIdle = false }) {
+// at: 'narrow' or 'wide' when the same room is placed twice for different panel widths (panel/responsive.css).
+export function workspaceRoom(agents, { now, ownedTerminal, showIdle = false, at = '' }) {
   const activeCount = agents.filter((agent) => agent.state === 'working').length;
   const visible = showIdle ? agents : agents.filter((agent) => ['working', 'blocked', 'waiting'].includes(agent.state));
   if (!visible.length && !showIdle) return '';
@@ -136,7 +163,8 @@ export function workspaceRoom(agents, { now, ownedTerminal, showIdle = false }) 
       '<span class="px-team-text"><strong>' + e(agent.title ?? agent.agent ?? 'Orca 에이전트') + '</strong><small>' +
       e(agent.agent ?? 'Orca') + elapsed + '</small></span><span class="px-state">' + view.label + '</span>' + open + '</li>';
   }).join('');
-  return '<section class="px-workspace-room" aria-labelledby="px-workspace-title"><div class="px-section-head"><h2 id="px-workspace-title">현재 작업 공간 · Orca</h2>' +
+  const titleId = 'px-workspace-title' + (at === 'wide' ? '-wide' : '');
+  return '<section class="px-workspace-room"' + (at ? ' data-at="' + e(at) + '"' : '') + ' aria-labelledby="' + titleId + '"><div class="px-section-head"><h2 id="' + titleId + '">현재 작업 공간 · Orca</h2>' +
     '<span class="px-count">' + activeCount + '개 작업 중</span></div>' +
     (rows ? '<ul class="px-team-grid">' + rows + '</ul>' : '<p class="hint">Orca가 보고한 에이전트가 없습니다.</p>') + '</section>';
 }

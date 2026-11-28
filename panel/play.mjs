@@ -54,15 +54,19 @@ export function playAppList(matches, account, ctx) {
   const accountId = account.id;
   if (!matches.length) return empty('검색 결과가 없습니다', '검색어 또는 상태 필터를 바꿔 보세요.', button('검색 및 필터 초기화', 'reset-play-filters', '', 'small'));
   const production = (status) => productionStamp(status, '<span class="sr-only">프로덕션: </span>');
-  return '<ul class="play-list" aria-label="Play Store 앱">' + matches.map(({ item, statuses, check }) => `<li>
+  // Column titles for the wide grid only; every cell says what it is to a screen reader on its own.
+  const head = '<div class="play-list-head" aria-hidden="true"><span></span><span>앱 이름</span><span>패키지</span><span>프로덕션</span><span>트랙</span><span>마지막 확인</span><span></span></div>';
+  return head + '<ul class="play-list" aria-label="Play Store 앱">' + matches.map(({ item, statuses, check }) => `<li>
     <details class="play-app" data-disclosure="play-app:${e(accountId)}:${e(item.packageName)}">
       <summary class="play-app-row">
         <span class="px-mark px-2x play-app-icon" data-mark="app" aria-hidden="true"></span>
         <span class="play-app-name">
           <span class="play-title">${e(item.name || item.packageName)}</span>
-          <span class="mono play-package">${e(item.packageName)}</span>
+          <span class="mono play-package"><span class="sr-only">패키지 </span>${e(item.packageName)}</span>
         </span>
         <span class="play-app-status" title="프로덕션 트랙 기준">${[...statuses.map(production), ...(check ? [productionStamp(check)] : [])].join(' ')}</span>
+        <span class="play-app-tracks-count">${e((item.tracks ?? []).length)}개 트랙</span>
+        <span class="play-app-checked"><span class="sr-only">마지막 확인 </span>${e(lastObserved(item))}</span>
         <span class="play-chevron" aria-hidden="true"></span>
       </summary>
       <div class="play-app-tracks">${(item.tracks ?? []).map(playTrack).join('')}
@@ -70,6 +74,12 @@ export function playAppList(matches, account, ctx) {
         ${playLinkBlock({ account, app: item, links: ctx.links, projects: ctx.projects, internal: ctx.internal(linkKey(accountId, item.packageName)) })}
       </div>
     </details></li>`).join('') + '</ul>';
+}
+
+/** The newest valid observedAt of the app's tracks; the account's checkedAt stays in the account bar. */
+export function lastObserved(item) {
+  const times = (item.tracks ?? []).map((track) => Date.parse(track.observedAt ?? '')).filter(Number.isFinite);
+  return times.length ? localDate(Math.max(...times)) : '미확인';
 }
 
 function playTrack(track) {

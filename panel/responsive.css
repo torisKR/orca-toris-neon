@@ -1,0 +1,121 @@
+/* Panel width modes (docs/design/pixel-ui/RESPONSIVE.md): narrow ≤ 560px keeps today's order; medium > 560px and
+   wide ≥ 900px rearrange the same elements. Widths come from the #app container, never from the window, so
+   resizing the panel changes layout only: the selected run and stage, filters, open details and focus stay. */
+#app { container: neon-panel / inline-size; }
+.px-auto-grid > *, .px-today-grid > *, .px-agents-grid > * { min-width: 0; }
+/* Duplicate placements of one section for different widths: the hidden one is display:none (out of focus
+   order and the accessibility tree) and carries no ids of its own. */
+[data-at="wide"] { display: none; }
+:is(.hero, .section-heading, .callout, .px-section-head) p, .hint, .inspector-desc, .px-banner-detail {
+  max-inline-size: min(100%, 72ic); word-break: keep-all; overflow-wrap: anywhere;
+}
+.mono, .play-package, .goal-full { overflow-wrap: anywhere; }
+.details, [id^="station-"], .px-run-row, #run-select { scroll-margin-block-start: 64px; }
+
+/* Workshop floor: cards on half-lane tracks, rails behind them in one SVG, port marks between. */
+.px-floor { position: relative; isolation: isolate; padding: 22px 14px 14px; }
+.px-flow-svg { position: absolute; inset: 0; z-index: 0; overflow: visible; pointer-events: none; }
+.px-flow-ports { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.px-flow-port { position: absolute; display: flex; line-height: 0; translate: -50% calc(-100% - 1px); }
+.px-flow-port:is([data-dir="right"], [data-dir="left"]) { translate: -100% -50%; }
+.px-flow-port[hidden] { display: none; }
+.px-grid { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px 12px; align-items: stretch; }
+.px-cell { grid-row: var(--r2); grid-column: var(--c2) / span 2; min-width: 0; }
+.px-cell[data-end2] .px-tip { left: auto; right: 0; }
+.px-release, .px-repair { position: relative; z-index: 1; }
+.px-release { margin-top: 14px; }
+.px-release[open] > .px-grid { margin-top: 28px; }
+@container px-workshop (width >= 560px) {
+  .px-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 40px 16px; }
+  .px-cell { grid-row: var(--r3); grid-column: var(--c3) / span 2; }
+  .px-cell[data-end2] .px-tip { left: 0; right: auto; }
+  .px-cell[data-end3] .px-tip { left: auto; right: 0; }
+  .px-release[open] > .px-grid { margin-top: 40px; }
+}
+.px-flow-help { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; margin-top: 8px; }
+.px-flow-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; color: var(--px-muted); font-size: 11px; line-height: 16px; }
+.px-flow-legend li { display: flex; align-items: center; gap: 4px; }
+.px-flow-help .button { min-height: 32px; }
+.px-flow-help .button[aria-pressed="true"] { border-color: var(--px-focus); }
+
+/* Run bar: the existing picker with a label and a count once there is room. */
+.px-run-bar { display: flex; align-items: center; gap: 8px 10px; min-width: 0; }
+.px-run-bar .run-select { flex: 1 1 auto; min-width: 0; }
+.px-run-bar label, .px-run-bar .px-count { display: none; color: var(--px-muted); font-size: 11px; white-space: nowrap; }
+
+/* 오늘 이어하기: chips stay in the narrow row; the whole path shows once there is room. */
+.px-mini-path { display: none; }
+
+@container neon-panel (width > 560px) {
+  [data-at="narrow"] { display: none; }
+  [data-at="wide"] { display: block; }
+  .px-run-bar { padding: 7px 10px; background: var(--px-bg); border: 1px solid var(--px-line); color-scheme: dark; }
+  .px-run-bar label, .px-run-bar .px-count { display: inline; }
+  .px-run-bar .px-count { margin-left: auto; }
+  .px-run-bar .run-select { flex: 0 1 min(60%, 420px); }
+  .px-run-actions { flex-wrap: wrap; }
+  .px-auto-grid { display: grid; gap: 12px; }
+  .px-auto-grid > * { margin-block: 0; }
+  .px-attention-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+  .px-run-row .px-chips { display: none; }
+  .px-mini-path { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 2px 0; }
+  .px-agents-grid .px-desk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container neon-panel (width >= 900px) {
+  .px-auto-grid { grid-template-columns: minmax(0, 1fr) minmax(280px, 30%); gap: 16px; align-items: start; }
+  .px-auto-grid > .px-auto-main { grid-column: 1; }
+  .px-auto-grid > .details { grid-column: 2; grid-row: 1; position: sticky; top: 64px; align-self: start; margin: 8px 0 0; }
+  .px-auto-grid > [data-at="wide"] { grid-column: 1 / -1; }
+  .px-today-grid { display: grid; grid-template-columns: minmax(260px, 32%) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .px-today-grid > .px-attention { grid-column: 1; }
+  .px-today-grid > .px-runs { grid-column: 2; grid-row: 1; }
+  .px-today-grid .px-attention-list { grid-template-columns: minmax(0, 1fr); }
+  .px-today-grid:not(:has(> .px-runs)) { grid-template-columns: minmax(0, 1fr); }
+  .px-auto-grid:not(:has(> .details)) { grid-template-columns: minmax(0, 1fr); }
+  .px-agents-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(235px, 26%); grid-template-areas: "picker picker" "team desks"; gap: 0 16px; align-items: start; }
+  .px-agents-grid > .agent-overview { grid-area: picker; }
+  .px-agents-grid > .px-team-room { grid-area: team; }
+  .px-agents-grid > .px-desks { grid-area: desks; margin-top: 16px; }
+  .px-agents-grid .px-desk-grid { grid-template-columns: minmax(0, 1fr); }
+  .px-agents-grid .px-team-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container neon-panel (width >= 1160px) {
+  .px-agents-grid .px-team-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* Mini path: every stage of a run in rank order, a still mark for its incoming rails, parallel stages bracketed. */
+.px-mini-node { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 2px 6px; background: var(--px-well); border: 1px solid var(--px-line);
+  color: var(--px-text); font: inherit; font-size: 11px; line-height: 16px; text-align: left; cursor: pointer; }
+.px-mini-node:hover { background: var(--px-raised); }
+.px-mini-node:focus-visible { outline: 2px solid var(--px-focus); outline-offset: 2px; }
+.px-mini-node[data-flow="stopped"] { border-color: var(--px-stop); }
+.px-mini-node[data-flow="stopped"][data-tone="warn"] { border-color: var(--px-warn); }
+.px-mini-node[data-flow="live"] { color: var(--px-good); }
+.px-mini-node[data-flow="live"][data-phase="review"] { color: var(--px-review); }
+.px-mini-node[data-skipped] { opacity: .72; text-decoration: line-through; }
+.px-mini-node .px-flow-mark[data-mark="arrow"] { rotate: 0deg; }
+.px-mini-branch { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 2px 4px; border-inline: 2px solid var(--px-strong-line); }
+.px-mini-step { color: var(--px-muted); font-size: 11px; }
+
+/* Play Store: one shared five-column grid for the header and every row, once the panel is wide. */
+.play-list-head, .play-app-tracks-count, .play-app-checked { display: none; }
+@container neon-panel (width < 420px) {
+  .play-app-row { flex-wrap: wrap; }
+  .play-app-name { flex-basis: calc(100% - 72px); }
+  .play-app-status { order: 3; flex-basis: 100%; max-width: none; justify-content: flex-start; padding-left: 40px; }
+  .play-chevron { order: 2; }
+}
+@container neon-panel (width >= 900px) {
+  .play-catalog { --play-columns: 32px minmax(115px, 1.1fr) minmax(150px, 1.5fr) minmax(145px, 1fr) minmax(80px, .65fr) minmax(105px, .75fr) 12px; }
+  .play-list-head { display: grid; grid-template-columns: var(--play-columns); gap: 10px; align-items: center; padding: 7px 10px; color: var(--muted); font-size: 11px;
+    border: 1px solid var(--line); border-bottom: 0; border-radius: 10px 10px 0 0; background: color-mix(in srgb, var(--neon) 4%, var(--card)); }
+  .play-list-head + .play-list { border-radius: 0 0 10px 10px; }
+  .play-app-row { display: grid; grid-template-columns: var(--play-columns); gap: 10px; }
+  .play-app-name { display: contents; }
+  .play-app-name > * { min-width: 0; overflow-wrap: anywhere; }
+  .play-app-status { justify-content: flex-start; max-width: none; }
+  .play-app-tracks-count, .play-app-checked { display: block; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .play-app-tracks > .track { display: inline-block; vertical-align: top; width: calc((100% - 16px) / 3); margin: 8px 8px 0 0; }
+  .play-app-tracks > .track:nth-of-type(3n) { margin-right: 0; }
+}

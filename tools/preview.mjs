@@ -201,6 +201,13 @@ export function createPreviewModel({ liveAt = PREVIEW_STAMP } = {}) {
       if(!['work','queued','review','return','qa','idle'].includes(input.scenario))throw Error('지원되지 않는 미리보기 상태입니다.');
       return scenario(input.scenario);
     }
+    if(name==='preview.pass'){ // a stage passes now with a new completedAt, as a review verdict would (supply-line handoff check)
+      const run=clone(lookup(input.runId)),node=run.nodes.find(item=>item.id===input.nodeId);if(!node)throw Error('미리보기 단계를 찾을 수 없습니다.');
+      Object.assign(node,{status:'passed',completedAt:new Date().toISOString(),active:null});run.jobs=(run.jobs??[]).filter(job=>job.nodeId!==node.id);
+      if(!input.startId)return replace(run);
+      const nonce='preview-start-'+input.startId,started=claimNode(run,input.startId,{phase:'work',nonce,now:Date.now()}); // the runtime starts the next stage in the same push
+      started.jobs.push({nodeId:input.startId,nonce,state:'launching',agent:'codex',phase:'work',attempt:1,startedAt:new Date().toISOString()});return replace(started);
+    }
     if(name==='state.get')return snapshot(input);
     if(name==='workspace.agents')return state.agents;
     if(name==='runs.get')return lookup(input.runId,true);

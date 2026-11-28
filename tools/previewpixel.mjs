@@ -8,8 +8,8 @@ import { createRun, claimNode, templateGraph } from '../src/engine.mjs';
 const iso = (ms) => new Date(ms).toISOString();
 const CODE_MODE_MESSAGE = 'claude가 시작 화면의 "Code Mode (experimental)" 안내에서 멈춰 작업 지시를 받지 않았습니다. Claude 설정(CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1)이 띄운 안내라 Neon 밖의 조건입니다. 해결: Claude 설정의 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE를 끄거나, Claude Code를 직접 열어 안내를 확인하세요. (미리보기 자료)';
 
-function base(id, goal, project, { now, template = 'new-app', kind, passed = [], updatedAt }) {
-  const nodes = template === 'new-app' ? undefined : templateGraph(template, { kind });
+function base(id, goal, project, { now, template = 'new-app', kind, passed = [], updatedAt, nodes: graph }) {
+  const nodes = graph ?? (template === 'new-app' ? undefined : templateGraph(template, { kind }));
   const run = createRun({ id, goal, projectId: project, now: now - 3_600_000, ...(nodes ? { nodes } : {}) });
   Object.assign(run, { started: true, status: 'running', workspaceId: 'preview-workspace-' + id, workspacePath: '/example/' + id, autonomous: true, jobs: [], updatedAt: iso(updatedAt) });
   if (template !== 'new-app') Object.assign(run, { template, improvement: { kind, options: {}, projectName: id, playLink: null } });
@@ -20,6 +20,7 @@ function base(id, goal, project, { now, template = 'new-app', kind, passed = [],
 // A turn proven by the agent in its own session after the prompt was sent.
 function working(run, nodeId, { now, startedAgo, lastAgo, phase = 'work', agent = 'codex' }) {
   const nonce = run.id + '-' + nodeId + '-' + phase;
+  if (phase === 'review') Object.assign(run.nodes.find((node) => node.id === nodeId), { status: 'review', attempts: 1, report: { outcome: 'passed', summary: '미리보기 자료', evidence: [] } }); // the work report was accepted
   const next = claimNode(run, nodeId, { phase, nonce, now: now - startedAgo });
   next.jobs.push({ runId: run.id, nodeId, nonce, phase, attempt: 1, agent, state: 'running', selfDelivery: true, terminalId: 'preview-t-' + nonce,
     startedAt: iso(now - startedAgo), promptRecovery: { state: 'sent', at: iso(now - startedAgo + 6000) }, promptSeen: true,
@@ -63,5 +64,34 @@ export function pixelSamples(now) {
   const longGoal = '하루 일정과 습관을 한 화면에서 기록하고 주간 통계를 보여 주며 알림 시간과 위젯을 사용자가 직접 고를 수 있는 생산성 앱의 첫 버전을 만들고 안드로이드 실기기에서 저장과 복원까지 확인해 주세요 그리고 다크 모드와 큰 글씨 설정, 접근성 대비도 함께 꼭 지원해야 합니다';
   let long = base('preview-longgoal', longGoal, 'preview-project-4', { now, template: 'improve', kind: 'bugfix', updatedAt: now - 500, passed: ['identity', 'reproduce', 'build', 'test'].slice(0, 3) });
   long = working(long, 'test', { now, startedAgo: 60_000, lastAgo: 5000 });
-  return [stuck, parallel, quiet, dialog, approval, long];
+  return [...flowSamples(now), stuck, parallel, quiet, dialog, approval, long];
+}
+
+/**
+ * The RESPONSIVE.md supply-line samples: brief feeds three parallel stages (two proven working, one stopped on a
+ * start screen) that all join at build; a review about to pass (preview.pass turns it into one handoff); and a
+ * slot wait. Sample names only.
+ */
+export function flowSamples(now) {
+  const nodes = templateGraph('new-app').flatMap((node) => node.id === 'design'
+    ? [node, { ...node, id: 'notify', title: '알림 설계', deps: ['brief'] }]
+    : [node.id === 'build' ? { ...node, deps: [...node.deps, 'notify'] } : node]);
+  let fork = base('preview-starbook', '별가람 일지 · 새 앱', 'preview-project-6', { now, nodes, passed: ['research', 'brief'], updatedAt: now + 1000 });
+  fork.maxConcurrency = 3;
+  fork = working(fork, 'architecture', { now, startedAgo: 140_000, lastAgo: 12_000 });
+  fork = working(fork, 'design', { now, startedAgo: 120_000, lastAgo: 9000, phase: 'review', agent: 'claude' });
+  fork = claimNode(fork, 'notify', { phase: 'work', nonce: 'preview-starbook-notify', now: now - 78_000 });
+  Object.assign(fork.nodes.find((node) => node.id === 'notify'), { agent: 'claude' });
+  fork.jobs.push({ runId: fork.id, nodeId: 'notify', nonce: 'preview-starbook-notify', phase: 'work', attempt: 1, agent: 'claude', state: 'running', selfDelivery: true,
+    terminalId: 'preview-t-notify', startedAt: iso(now - 78_000), blocker: { kind: 'start-dialog', agent: 'claude', dialog: 'code-mode' } });
+
+  // 제품 기획 is in review now; preview.pass hands it to the next stage once, as a real pass would.
+  let pass = base('preview-cloudstep', '구름 스텝 · 운동 기록', 'preview-project-7', { now, passed: ['research'], updatedAt: now + 900 });
+  pass = working(pass, 'brief', { now, startedAgo: 90_000, lastAgo: 4000, phase: 'review', agent: 'claude' });
+
+  // Every run-level slot is taken: the next stage waits for one.
+  let slot = base('preview-smallseed', '작은 씨앗 · 물주기 알림', 'preview-project-8', { now, passed: ['research', 'brief'], updatedAt: now + 800 });
+  slot.maxConcurrency = 1;
+  slot = working(slot, 'architecture', { now, startedAgo: 60_000, lastAgo: 7000 });
+  return [fork, pass, slot];
 }
