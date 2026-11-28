@@ -11,3 +11,14 @@
 /* The pixel cards stay dark in Orca's light theme; page-styled hints inside them take the card's muted
    colour (#aab8cf on #181f2e, 8.2:1) instead of the light page's grey (2.8:1). */
 :is(.px-desks, .px-run-row, .px-workshop, .px-banner, .px-attention-item, .px-team-card) .hint { color: var(--px-muted); }
+/* The same in one place for every page-styled piece on the dark floor (an open fold's summary takes
+   details[open] > summary's --fg, a .button takes --fg): in the light theme the page tokens are dark ink,
+   so inside the pixel pieces they point at the pixel ink. Open release fold before 1.13:1, after 16.0:1;
+   motion button 1.05:1 → 15.0:1. The dark theme keeps its own tokens (already 4.5:1 or more). */
+html.light :is(.px-banner, .px-workshop, .px-attention, .px-runs, .px-desks, .px-team-room, .px-stamp, .px-team-card) {
+  --fg: var(--px-text); --muted: var(--px-muted); --line: var(--px-line);
+}
+/* A page button's border is its only edge on the floor (--px-line would be 1.7:1; --px-strong-line 3.9:1), and
+   the page focus ring (light --neon, 2.8:1) takes the pixel focus colour (11:1) as the pixel controls do. */
+html.light :is(.px-banner, .px-workshop, .px-attention, .px-runs, .px-desks, .px-team-room, .px-stamp, .px-team-card) .button:not(.primary) { border-color: var(--px-strong-line); }
+html.light :is(.px-banner, .px-workshop, .px-attention, .px-runs, .px-desks, .px-team-room, .px-stamp, .px-team-card) :is(.button, summary):focus-visible { outline-color: var(--px-focus); }

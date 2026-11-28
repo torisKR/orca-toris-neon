@@ -8,13 +8,14 @@ import { kindInstruction } from './kinds.mjs';
 import { reuseInstruction } from './reuse.mjs';
 import { reportLimitsText } from './reportlimits.mjs';
 import { researchInstruction } from './research.mjs';
+import { targetInstruction } from './target.mjs';
 
 /** The assignment typed into a stage's agent: goal, scope, upstream results, report contract. */
 export const STAGE_BRIEFS = {
   research: '정확히 여섯 질문에 답하는 research.md를 쓰고 v1 결론을 내리세요: 목표 사용자(누가 쓰나), 문제(무엇을 푸나), 경쟁 앱 3~5개(각각에서 배울 점), 차별점(왜 다른가), 수익화(어떻게 벌고 근거는 무엇인가), 남은 질문(조사로 정하지 못한 것과 누가·무엇이 정하나). ' +
     '경쟁 앱마다 스토어나 공식 페이지를 이번 실행에서 한 번은 직접 열어 확인하고(checked=true), 열지 못했으면 검색 결과만 봤다고 적으세요(checked=false). 확인한 사실과 추정을 구분하고 추정에는 "(추정)"을 붙이세요. ' +
     '여섯 질문에 답하면 멈추세요. 목표가 명시적으로 요구하지 않으면 리뷰 수집·평점 통계·영상 프레임 시트·출처 대량 수집을 하지 마세요.',
-  brief: '조사 결과로 MVP 요구사항, 사용자 여정, 기능별 수용 조건, 비기능 요구사항, 제외 범위를 확정한 brief.md를 작성하세요.',
+  brief: '조사 결과로 타겟(이 앱이 누구를 위한 것인지), MVP 요구사항, 사용자 여정, 기능별 수용 조건, 비기능 요구사항, 제외 범위를 확정한 brief.md를 작성하세요. 기능과 제외 범위는 타겟에서 나와야 합니다.',
   architecture: '실제 저장소를 읽고 기존 Kotlin/Compose·Flutter·기타 스택을 존중하며 화면·상태·데이터·API·인증·오프라인·테스트 구조와 구현 순서를 설계하세요.',
   design: 'MVP 화면 흐름, 각 화면의 레이아웃·상태·접근성·피드백, 일관된 색상·간격·타이포그래피와 에셋 명세를 산출하세요. 개발자가 구현할 수 있는 구체적인 명세가 필요합니다.',
   assets: '승인된 화면/에셋 명세에 맞는 실제 앱 에셋을 만들고 소스에 연결하세요. 사용한 생성/편집 스킬과 라이선스, 파일 크기·해상도·투명도 검증을 기록하세요.',
@@ -67,6 +68,7 @@ export function buildNodePrompt(run, node, job) {
     '실행 범위/완료 조건: ' + (node.instructions || node.description || (['improve', 'diagnose'].includes(run.template) ? IMPROVE_BRIEFS : STAGE_BRIEFS)[node.id] || node.title),
     kindInstruction(run, node, job),
     researchInstruction(run, node, job),
+    targetInstruction(run, node, job),
     reuseInstruction(job),
     budgetInstruction(node, job.phase),
     review ? reviewInstruction(node) : followUpsInstruction(run, node),

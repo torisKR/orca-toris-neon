@@ -11,6 +11,7 @@ import { createLaunchOverrides } from '../src/visual.mjs';
 import { AUTONOMY_BRIEF, DECIDE_PROMPT } from '../src/autonomy.mjs';
 import { INDEX_KEY, LEGACY_KEY, runKey, archiveKey } from '../src/store.mjs';
 import { sampleFindings } from './fixtures/research.mjs';
+import { sampleTarget } from './fixtures/target.mjs';
 import { STAGE_BUDGETS } from '../src/proportion.mjs';
 import { createRemoteControl } from '../src/remote.mjs';
 import { CREATE_SETTLE_MS } from '../src/wscreate.mjs';
@@ -174,6 +175,7 @@ function harness(options = {}) {
       evidence: [{ kind: 'command', command: 'npm test', exitCode: 0 }, { kind: 'artifact', path: job.receiptDirectory + '/verification.md' }],
       ...(job.phase === 'review' ? { sourceFingerprint: job.sourceFingerprint } : {}),
       ...(job.nodeId === 'research' && job.phase === 'work' ? { findings: sampleFindings() } : {}),
+      ...(job.nodeId === 'brief' && job.phase === 'work' ? { target: sampleTarget() } : {}),
       ...overrides
     };
     receipts.set(job.receiptPath, value);

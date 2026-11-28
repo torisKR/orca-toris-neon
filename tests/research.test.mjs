@@ -5,6 +5,7 @@ import { STAGE_BRIEFS, buildNodePrompt } from '../src/prompt.mjs';
 import { STAGE_BUDGETS, budgetInstruction } from '../src/proportion.mjs';
 import { isReportFormError } from '../src/reportfix.mjs';
 import { competitor, sampleFindings } from './fixtures/research.mjs';
+import { sampleTarget } from './fixtures/target.mjs';
 import { findingsOf, findingsContract, researchInstruction, RESEARCH_QUESTIONS, FINDINGS_EXAMPLE } from '../src/research.mjs';
 
 const NOW = Date.parse('2026-11-28T09:00:00Z');
@@ -88,7 +89,7 @@ test('findings sent by a review or another stage are not checked against the res
   const nodes = base.nodes.map((node) => node.id === 'research' ? { ...node, status: 'passed' } : node);
   const run = claimNode({ ...base, nodes }, 'brief', { phase: 'work', nonce: 'n-2', now: NOW });
   const after = applyReport(run, 'brief', { runId: run.id, nodeId: 'brief', nonce: 'n-2', attempt: 1, phase: 'work', outcome: 'passed', summary: '기획',
-    evidence: [{ kind: 'artifact', path: 'brief.md' }], findings: { decision: '다른 단계의 값' } }, { now: NOW + 1 });
+    evidence: [{ kind: 'artifact', path: 'brief.md' }], target: sampleTarget(), findings: { decision: '다른 단계의 값' } }, { now: NOW + 1 });
   assert.equal(JSON.parse(JSON.stringify(after.nodes.find((node) => node.id === 'brief').report)).findings, undefined);
 });
 

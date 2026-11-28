@@ -410,6 +410,13 @@
 .research-check.is-search { color: var(--amber); border-style: dashed; }
 .research-findings .result-part p { margin: 0; font-size: 13px; }
 .research-sources { margin-top: 10px; }
+/* Target block (panel/target.mjs): the research block's look; the copy examples read as quoted lines. */
+.target-findings > h5 { margin: 0; font-size: 13px; }
+.target-findings > .target-note { margin: 0 0 6px; font-size: 11px; }
+.target-findings .result-part p + * { margin-top: 4px; }
+.target-findings .result-part ul { font-size: 13px; }
+.target-copy { list-style: none; padding-left: 0 !important; }
+.target-copy li { margin: 2px 0; padding-left: 8px; border-left: 2px solid var(--line); }
 .result-chain p { margin: 4px 0; }
 .run-result .button:focus-visible, .artifact video:focus-visible, .artifact:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
 /* Token usage (panel/tokens.mjs): a compact figure that opens to the exact integer and its scope. */

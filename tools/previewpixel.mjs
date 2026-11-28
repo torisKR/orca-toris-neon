@@ -22,6 +22,18 @@ export const previewResearch=()=>({
   criteria:['목표 사용자','문제','경쟁 앱 3~5개','차별점','수익화','남은 질문'].map(criterion=>({criterion,met:true,evidence:'research.md · 미리보기 자료'})),
 });
 
+// Sample brief target (src/target.mjs contract): a sample app, no real names.
+export const previewTarget=()=>({
+  target:{primaryUser:'출근 전 30분 안에 스트레칭과 물 마시기를 지키려는 3년 차 직장인. 지하철역까지 걸으며 한 손으로 체크하고, 지금은 메모 앱 체크리스트를 쓰다 사흘이면 잊습니다.',
+    notFor:['습관 통계와 그래프를 분석하고 싶은 사람','가족·팀과 기록을 공유하려는 사람'],
+    job:'걸으면서 한 손으로 5초 안에 오늘 루틴을 기록하는 순간',promise:'아침 루틴, 걸으면서 한 번 눌러 끝낸다.',
+    decisions:['첫 화면이 오늘의 체크리스트: 목표 설정 마법사를 넣지 않습니다','계정 없이 기기 안에만 저장합니다','통계 화면 대신 연속 일수 한 줄만 보여 줍니다'],
+    voice:{tone:'짧은 존댓말, 과장된 칭찬 없이 사실만',examples:['물 한 잔, 했어요.','오늘 남은 건 스트레칭 하나예요.']},
+    look:{direction:'밝은 미색 바탕, 큰 체크 버튼, 낮은 정보 밀도, 굵은 산세리프 한 종류, 강조색 하나',why:'걸으면서 엄지로 누르므로 큰 터치 영역과 한눈에 읽히는 대비가 필요합니다'},
+    avoid:['목표 설정 마법사로 시작하지 않습니다','온보딩 캐러셀을 넣지 않습니다','"생산성을 높여 보세요" 같은 어느 앱에나 맞는 문구를 쓰지 않습니다'],
+    signals:['앱을 열고 첫 기록까지 10초 이내','첫 화면 버튼은 체크 외에 2개 이하']},
+});
+
 function base(id, goal, project, { now, template = 'new-app', kind, passed = [], updatedAt, nodes: graph }) {
   const nodes = graph ?? (template === 'new-app' ? undefined : templateGraph(template, { kind }));
   const run = createRun({ id, goal, projectId: project, now: now - 3_600_000, ...(nodes ? { nodes } : {}) });

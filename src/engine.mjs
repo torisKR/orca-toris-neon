@@ -6,6 +6,7 @@
 import { kindFieldsOf, requireKindProof } from './kinds.mjs';
 import { candidatesOf, requireCandidates } from './candidates.mjs';
 import { findingsOf, requireFindings } from './research.mjs';
+import { targetOf, identityTargetOf, requireTarget } from './target.mjs';
 import { followUpFieldsOf, failOnDefects, requireBrokenCriterion } from './followups.mjs';
 import { parallelFieldsOf, requireParallel } from './fanout.mjs';
 import { REPORT_LIMITS as LIMITS, overCap } from './reportlimits.mjs';
@@ -425,8 +426,8 @@ function resultFieldsOf(report) {
 }
 /** What the app is (identity stage): flat facts, strings, booleans or short string lists. */
 function identityOf(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > LIMITS.identity) fail('invalid_report', 'identity는 최대 ' + LIMITS.identity + '개 항목의 객체여야 합니다.');
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).filter(key => key !== 'target').length > LIMITS.identity) fail('invalid_report', 'identity는 최대 ' + LIMITS.identity + '개 항목의 객체여야 합니다.');
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'target').map(([key, item]) => { // target: src/target.mjs
     if (typeof item === 'boolean' || item === null) return [key, item];
     if (Array.isArray(item)) return [key, item.slice(0, 20).map(entry => reportText(entry, 'identity.' + key, 300))];
     return [key, reportText(String(item), 'identity.' + key, 600)];
@@ -475,12 +476,14 @@ function normalizeReport(run, nodeId, report) {
     ...section(report.next, () => ({ next: requiredText(report.next, '다음 행동', LIMITS.next) })),
     ...part(() => followUpFieldsOf(report), {}), ...part(() => parallelFieldsOf(report), {}), // classified follow-ups, the build's module split
     ...section(report.products !== undefined, () => ({ products: productsOf(report) })),
-    ...section(report.identity !== undefined, () => ({ identity: identityOf(report.identity) })),
+    ...section(report.identity !== undefined, () => ({ identity: identityTargetOf(run, nodeId, identityOf(report.identity), report) })),
     ...part(() => resultFieldsOf(report), {}),
     // Only a passed report's candidates can be started; a failed or blocked one's are dropped, not refused.
     ...section(report.candidates !== undefined, () => ({ candidates: report.outcome === 'passed' ? candidatesOf(report.candidates, Object.keys(IMPROVE_KINDS)) : undefined })),
     // The research conclusion (src/research.mjs): only a passed research work report's is checked and kept.
     ...section(report.findings !== undefined, () => ({ findings: nodeId === 'research' && report.phase === 'work' && report.outcome === 'passed' ? findingsOf(report.findings) : undefined })),
+    // Who the app is for (src/target.mjs): only a passed brief work report's is checked and kept.
+    ...section(report.target !== undefined, () => ({ target: nodeId === 'brief' && report.phase === 'work' && report.outcome === 'passed' ? targetOf(report.target) : undefined })),
     ...(kinds ?? {}),
   }), null); // a criterion-breaking follow-up fails the review now
   if (clean && kinds) { // what the stage must prove, once its fields have a valid shape
@@ -489,6 +492,7 @@ function normalizeReport(run, nodeId, report) {
     part(() => requireKindProof(run, nodeId, clean)); // design, performance and release proof (src/kinds.mjs)
     part(() => requireCandidates(run, nodeId, clean)); // a passed diagnosis carries 3-5 startable candidates (src/candidates.mjs)
     part(() => requireFindings(nodeId, clean)); // a passed research carries its v1 decision and six answers (src/research.mjs)
+    part(() => requireTarget(run, nodeId, clean)); // a passed brief, or a character-keeping identity, names who the app is for (src/target.mjs)
   }
   if (problems.length === 1) throw problems[0];
   if (problems.length) {

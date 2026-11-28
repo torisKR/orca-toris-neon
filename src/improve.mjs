@@ -46,7 +46,8 @@ export function identityInstruction(run) {
   const identity = run.nodes?.find((node) => node.id === 'identity');
   const report = identity?.status === 'passed' ? identity.report : null;
   if (!report) return '';
-  const facts = report.identity ? JSON.stringify(report.identity).slice(0, 2000) : '';
+  const { target: _target, ...rest } = report.identity ?? {}; // the target is quoted on its own (src/target.mjs)
+  const facts = report.identity ? JSON.stringify(rest).slice(0, 2000) : '';
   return ['앱 정체성(정체성 확인 단계 결과): ' + String(report.summary ?? '').slice(0, 1000) + (facts ? '\n' + facts : ''),
     '이 스택·패키지·빌드 대상을 유지하세요. 다른 스택으로 다시 만들지 마세요.',
     report.identity?.storedData === true ? '필수 검증 항목: 기존 사용자 데이터가 새 버전에서 열리는지 확인하세요(이전 버전이 저장한 데이터로 시작).' : ''].filter(Boolean).join('\n');

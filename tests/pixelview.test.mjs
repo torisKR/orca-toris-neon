@@ -154,3 +154,20 @@ test('a long run goal is a clamped title with the full text in its title attribu
   assert.match(needs, /<strong class="px-clamp-2" title="하루 일정과[^"]*">/);
   assert.match(needs, /<small class="px-clamp-3">/);
 });
+
+test('in the light theme the dark pixel floor points the page ink tokens at pixel ink that meets AA', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = (name) => readFile(new URL('../panel/' + name, import.meta.url), 'utf8');
+  const [readable, layout] = await Promise.all([css('pixel-readable.css'), css('pixel-layout.css')]);
+  const rule = readable.match(/html\.light :is\(([^)]*)\) \{([^}]*)\}/);
+  assert.ok(rule, 'a light-theme override for the pixel pieces');
+  assert.match(rule[1], /\.px-workshop/);
+  for (const [page, pixel] of [['fg', 'px-text'], ['muted', 'px-muted'], ['line', 'px-line']]) assert.match(rule[2], new RegExp('--' + page + ': var\\(--' + pixel + '\\)'), page);
+  const token = (name) => layout.match(new RegExp('--' + name + ': (#[0-9a-f]{6})'))[1];
+  const lum = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  for (const ink of ['px-text', 'px-muted']) for (const ground of ['px-bg', 'px-panel', 'px-raised', 'px-well', 'px-work-bg', 'px-warn-bg', 'px-stop-bg']) {
+    assert.ok(ratio(token(ink), token(ground)) >= 4.5, ink + ' on ' + ground);
+  }
+});
