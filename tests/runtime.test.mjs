@@ -2946,6 +2946,46 @@ test('a typed prompt that lands in the hook modal is closed and reported with it
   assert.equal(launchCalls(h).at(-1).input.agent, 'claude');
 });
 
+// Live defect: claude showed its "Code Mode (experimental)" notice at start-up, never reported ready, and was
+// relaunched three times while the panel said only 진행 중.
+const CODE_MODE_NOTICE = ['│ Code Mode (experimental)                    │', '│ In Code Mode, Claude works by writing and running JavaScript that calls its tools │', '│ ❯ 1. Continue │', '  Enter to confirm · Esc to exit'];
+const unreadyOnDialog = (terminals) => harness({ host: async (name, input) => {
+  if (name === 'agents.list') return { agents: [] }; // the dialog holds claude before it reports in
+  if (name === 'terminal.read') return { lines: terminals.includes(input.terminalId) ? CODE_MODE_NOTICE : ['› '], truncated: false };
+} });
+
+test('a claude start dialog that keeps the agent from reporting ready is recognised at once: nothing typed, no blind relaunch', async () => {
+  // Arrange
+  const h = unreadyOnDialog(['t1']);
+  await h.create([{ id: 'build', title: '앱 구현', deps: [], write: true, agent: 'claude', reviewer: 'codex' }]);
+  // Act
+  await h.start();
+  // Assert
+  const run = h.getRun();
+  assert.equal(sendCalls(h).length, 0, 'nothing is typed into the dialog');
+  assert.equal(launchCalls(h).length, 1, 'the same agent is not relaunched into the same dialog');
+  assert.deepEqual(closedTerminals(h), ['t1']);
+  assert.deepEqual(run.jobs[0].blocker, { kind: 'start-dialog', agent: 'claude', dialog: 'code-mode' });
+  assert.equal(run.nodes[0].status, 'blocked');
+  assert.match(run.nodes[0].runtimeMessage, /CLAUDE_CODE_EXPERIMENTAL_CODE_MODE를 끄거나, Claude Code를 직접 열어 안내를 확인하세요/);
+  assert.equal(run.nodes[0].attempts, 0, 'the attempt is given back: no turn ever started');
+  assert.equal(run.nodes[0].deliveryRetries, undefined, 'not counted as an unready start');
+  assert.ok(run.jobs[0].refunded);
+});
+
+test('autonomy treats a start dialog like the other agent screens: first occurrence, then the other agent', async () => {
+  // Arrange
+  const h = unreadyOnDialog(['t1']);
+  await auto(h, twoStages.map((node) => ({ ...node, agent: 'claude', reviewer: 'claude' })));
+  // Act
+  await h.start();
+  // Assert
+  assert.equal(sendCalls(h).filter((call) => call.input.terminalId === 't1').length, 0);
+  assert.deepEqual(launchCalls(h).slice(0, 2).map((call) => call.input.agent), ['claude', 'codex']);
+  assert.match(notices(h)[0].input.body, /CLAUDE_CODE_EXPERIMENTAL_CODE_MODE/);
+  assert.equal(notices(h).filter((call) => /Code Mode/.test(call.input.body)).length, 1, 'the dialog is reported once');
+});
+
 // --- Attempts that never started work (live run d5b7ce8d design: 3/3 spent on the hook-review modal).
 const endTurnWithoutSession = async (h, terminalId = 't1') => {
   const agent = h.agents.find((item) => item.terminalId === terminalId);

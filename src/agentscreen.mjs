@@ -1,7 +1,8 @@
 /**
  * Screens an agent CLI can show that no typed prompt answers: Codex's "Hooks need review" modal
  * (a hook in the user's Codex hooks.json is new or changed; seen with Codex 0.172.0), an account
- * usage limit, or a missing login. Retrying the same agent or typing more cannot help, and typing
+ * usage limit, a missing login, or a Claude Code start-up dialog (the "Code Mode (experimental)"
+ * notice, the folder trust prompt). Retrying the same agent or typing more cannot help, and typing
  * into the hook review page toggles hook trust, so the stage stops with the exact action needed.
  */
 const TAIL_LINES = 60;
@@ -18,16 +19,29 @@ const SCREENS = [
     message: (agent) => agent + ' 계정의 사용 한도에 걸려 작업을 시작하지 못했습니다(계정 조건, Neon 밖). 한도가 풀린 뒤 다시 시도하거나 다른 에이전트로 진행하세요.' },
   { kind: 'login', tail: STATUS_LINES, pattern: /please run \/login|run `?codex login/i,
     message: (agent) => agent + '에 로그인되어 있지 않아 작업을 시작하지 못했습니다(계정 조건, Neon 밖). 터미널에서 ' + agent + '에 로그인한 뒤 다시 시도하세요.' },
+  // Start-up dialogs that wait for a person before the agent takes any input. Each needs its title as a
+  // line of its own (box drawing allowed) and a second distinctive line; a sentence quoting them is not one.
+  { kind: 'start-dialog', dialog: 'code-mode', tail: TAIL_LINES, pattern: /^[\s│|╭╰─]*Code Mode \(experimental\)[\s│|─╮╯]*$/m,
+    layout: /^[\s│|]*In Code Mode, Claude works by writing and running JavaScript that calls its tools/m,
+    message: (agent) => agent + '가 시작 화면의 "Code Mode (experimental)" 안내에서 멈춰 작업 지시를 받지 않았습니다. ' +
+      'Claude 설정(CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1)이 띄운 안내라 Neon 밖의 조건입니다. 해결: Claude 설정의 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE를 끄거나, Claude Code를 직접 열어 안내를 확인하세요. ' +
+      'Neon은 설정을 바꾸거나 안내에 키를 입력하지 않으며, 이 단계는 다른 에이전트로 진행할 수 있습니다.' },
+  { kind: 'start-dialog', dialog: 'folder-trust', tail: TAIL_LINES, pattern: /^[\s│|]*(?:Do you trust the files in this folder\?|Quick safety check: Is this a project you created or one you trust\?)/m,
+    layout: /^[\s│|❯›>]*2\.\s*No, exit\b/m,
+    message: (agent) => agent + '가 시작 화면의 폴더 신뢰 확인("Do you trust the files in this folder?")에서 멈춰 작업 지시를 받지 않았습니다(Neon 밖의 조건). ' +
+      '해결: 이 작업 공간 폴더에서 ' + agent + '를 직접 한 번 실행해 폴더 신뢰를 확인하세요. Neon은 신뢰 여부를 대신 고르지 않으며, 이 단계는 다른 에이전트로 진행할 수 있습니다.' },
 ];
+/** Screens that appear before the agent takes any turn: a job stopped on one did no work (src/refund.mjs). */
+export const BEFORE_ANY_TURN = new Set(['hook-review', 'start-dialog']);
 
-/** { kind, message } for the newest lines of an agent terminal, or null. */
+/** { kind, dialog?, message } for the newest lines of an agent terminal, or null. */
 export function screenBlocker({ agent, lines }) {
   const all = Array.isArray(lines) ? lines.map(String) : [];
   const screen = SCREENS.find((item) => {
     const text = all.slice(-item.tail).join('\n');
     return item.pattern.test(text) && (!item.layout || item.layout.test(text));
   });
-  return screen ? { kind: screen.kind, message: screen.message(agent) } : null;
+  return screen ? { kind: screen.kind, ...(screen.dialog ? { dialog: screen.dialog } : {}), message: screen.message(agent) } : null;
 }
 
 /** Reads the job's terminal; an unreadable one is logged and leaves the decision to the existing checks. */

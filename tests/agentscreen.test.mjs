@@ -68,3 +68,44 @@ test('an unreadable terminal is logged and treated as no blocker, so the existin
   assert.match(logged[0], /terminal gone/);
   assert.equal(await readBlocker(call, { terminalId: null, agent: 'codex' }), null);
 });
+
+// Claude Code start-up dialogs that wait for a person (plain-text form, box drawing kept).
+// The Code Mode notice appears when the person's Claude settings set CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1.
+const CODE_MODE_NOTICE = ['╭────────────────────────────────────────────────────────────╮', '│ Code Mode (experimental)                                   │', '│                                                            │',
+  '│ In Code Mode, Claude works by writing and running JavaScript that calls its tools, instead of calling tools one at a time. │',
+  '│                                                            │', '│ ❯ 1. Continue                                              │', '╰────────────────────────────────────────────────────────────╯', '  Enter to confirm · Esc to exit'];
+const FOLDER_TRUST = ['╭──────────────────────────────────────────────╮', '│ Do you trust the files in this folder?       │', '│                                              │', '│ /example/worktree                            │',
+  '│ Claude Code may read files in this folder. Reading untrusted files may lead Claude Code to behave in unexpected ways. │',
+  '│ ❯ 1. Yes, proceed                            │', '│   2. No, exit                                │', '╰──────────────────────────────────────────────╯', '   Enter to confirm · Esc to exit'];
+const FOLDER_TRUST_NEW = [' Quick safety check: Is this a project you created or one you trust?', ' /example/worktree', ' ❯ 1. Yes, I trust this folder', '   2. No, exit', ' Enter to confirm · Esc to cancel'];
+
+test('the Claude Code Mode notice is a start dialog that names the setting and the action', () => {
+  // Arrange / Act
+  const blocker = screenBlocker({ agent: 'claude', lines: CODE_MODE_NOTICE });
+  // Assert
+  assert.equal(blocker.kind, 'start-dialog');
+  assert.equal(blocker.dialog, 'code-mode');
+  assert.match(blocker.message, /Code Mode \(experimental\)/);
+  assert.match(blocker.message, /Claude 설정의 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE를 끄거나, Claude Code를 직접 열어 안내를 확인하세요/);
+  assert.match(blocker.message, /Neon 밖/);
+});
+
+test('Claude Code\'s folder trust prompt, old and new wording, is a start dialog', () => {
+  for (const lines of [FOLDER_TRUST, FOLDER_TRUST_NEW]) {
+    const blocker = screenBlocker({ agent: 'claude', lines });
+    assert.equal(blocker?.kind, 'start-dialog');
+    assert.equal(blocker.dialog, 'folder-trust');
+    assert.match(blocker.message, /폴더 신뢰/);
+  }
+});
+
+test('near-miss text about the same dialogs is not a start dialog', () => {
+  // The sentence quoted inside a task or an answer, without the dialog's title line.
+  assert.equal(screenBlocker({ agent: 'claude', lines: ['› Detect the notice whose text starts "In Code Mode, Claude works by writing and running JavaScript that calls its tools"', '• Working'] }), null);
+  // The title mentioned inside a sentence, not as its own line.
+  assert.equal(screenBlocker({ agent: 'claude', lines: ['The screen was a notice titled "Code Mode (experimental)" shown because of a setting.', 'In Code Mode, Claude works by writing and running JavaScript that calls its tools.'] }), null);
+  // A trust question in the agent's output with no choice of exiting.
+  assert.equal(screenBlocker({ agent: 'claude', lines: ['Do you trust the files in this folder? is the prompt we detect.', '1. Yes, proceed'] }), null);
+  // The trust dialog's options alone, without its question.
+  assert.equal(screenBlocker({ agent: 'claude', lines: ['❯ 1. Yes, proceed', '  2. No, exit'] }), null);
+});

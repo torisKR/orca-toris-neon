@@ -22,7 +22,8 @@ import { approvalScope } from './approval.mjs';
 import { stageBudget } from './proportion.mjs';
 import { createTerminalCleanup, cleanupRecorder, describeSweep, CLEANUP_INTERVAL_MS } from './cleanup.mjs';
 import { classifySendError, focusTerminal, SEND_RETRY_DELAYS_MS } from './delivery.mjs';
-import { readBlocker } from './agentscreen.mjs';
+import { readBlocker, BEFORE_ANY_TURN } from './agentscreen.mjs';
+import { safeError } from './safeerror.mjs';
 import { sendingEvidence, workEvidence } from './sending.mjs';
 import { refundAttempts, planManualRefund, NO_WORK } from './refund.mjs';
 import { within, assertNoSymlinks, boundedJson, resultFiles } from './receipts.mjs';
@@ -80,7 +81,6 @@ function jsonValue(value) {
 }
 const nowIso = (clock) => new Date(clock()).toISOString();
 
-
 export function runtimeError(code, message) {
   return Object.assign(new Error(message), { code });
 }
@@ -89,15 +89,6 @@ function requireString(value, label, maximum = 4000) {
     throw runtimeError('invalid_params', label + ' 값이 필요합니다 (최대 ' + maximum + '자).');
   }
   return value.trim();
-}
-function safeError(error) {
-  return {
-    code: typeof error?.code === 'string' ? error.code : 'action_failed',
-    message: String(error?.message || '요청을 완료하지 못했습니다.')
-      .replace(/-----BEGIN[\s\S]*?-----END[^-]*-----/g, '[redacted]')
-      .replace(/(Bearer\s+|(?:access_token|private_key|client_secret)\s*[:=]\s*)[^\s,]+/gi, '$1[redacted]')
-      .slice(0, 1200)
-  };
 }
 function isLocal(row) {
   return !row?.hostId || row.hostId === 'local';
@@ -314,10 +305,10 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     let closed = false, closeError = '';
     try { closed = (await call('terminal.close', { terminalId: job.terminalId }))?.closed === true; }
     catch (error) { closeError = ' (' + safeError(error).message + ')'; }
-    job.blocker = { kind: blocker.kind, agent: job.agent };
+    job.blocker = { kind: blocker.kind, agent: job.agent, ...(blocker.dialog ? { dialog: blocker.dialog } : {}) };
     markBlocked(run, job, blocker.message + (closed ? '' : ' 터미널을 닫지 못해' + closeError + ' 입력된 지시가 나중에 실행될 수 있으니 터미널을 직접 닫은 뒤 재시도하세요.'), !closed);
-    // Only the hook-review modal comes before any turn; a usage limit or login can follow real work.
-    const worked = closed && (blocker.kind !== 'hook-review' || await evidenceOf(job).catch((error) => '결과 폴더를 읽지 못함 (' + safeError(error).message + ')'));
+    // Hook review and start dialogs come before any turn; a usage limit or login can follow real work.
+    const worked = closed && (!BEFORE_ANY_TURN.has(blocker.kind) || await evidenceOf(job).catch((error) => '결과 폴더를 읽지 못함 (' + safeError(error).message + ')'));
     if (closed && !worked) replaceRun(giveBack(getRun(run.id), job.nodeId, [job.nonce], '에이전트 화면(' + blocker.kind + ')에서 멈춰 작업을 시작하지 않았고 터미널을 닫았습니다.').run);
     return persist();
   };
@@ -766,6 +757,8 @@ export function createRuntime({ orca, now = Date.now, receiptRoot = path.join(ho
     const { run, job } = currentDeliveryJob(runId, nonce);
     if (!job || job.promptRecovery) return;
     if (job.readyAt && !refused) return deliverWhenReady(runId, nonce);
+    const blocker = refused ? null : await screenOf(job); // a start dialog holds the agent before it reports in: no blind relaunch
+    if (blocker) return blockOnScreen(getRun(runId), job, blocker);
     let closed = false, closeError = '';
     try { closed = (await call('terminal.close', { terminalId: job.terminalId }))?.closed === true; }
     catch (error) { closeError = ' (' + safeError(error).message + ')'; }
